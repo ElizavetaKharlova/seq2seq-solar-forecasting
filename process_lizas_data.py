@@ -105,7 +105,7 @@ weather, load = process_weather_load(weather_data, load_data)
 # num_steps: the number of steps in the forecast in the lenght of samples
 # forecast_steps: length of the forecast in desired sample size
 # num_tiles: number of tiles in the probability distribution
-specs_dict = {'target': 21,
+specs_dict = {'target': [21],
             'sw_steps': 7*96,
             'num_steps':96,
             'forecast_steps':24,

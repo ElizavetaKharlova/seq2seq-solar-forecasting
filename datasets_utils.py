@@ -26,7 +26,7 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
 
     target_variable = data[:, target_dims] #extract target vars
 
-    if not isinstance(target_dims, int): #get min_max
+    if len(target_dims) > 1: #get min_max
         target_min_max = __get_min_max(__reconstruct(target_variable)) # reconstruct into one array, get min_max
     else:
         target_min_max = __get_min_max(target_variable)
@@ -41,7 +41,7 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
         sliced_input = sliced_sample[:-fc_len_samples, :]
         sliced_target = sliced_sample[-fc_len_samples:, target_dims]
 
-        if not isinstance(target_dims, int):
+        if len(target_dims) > 1:
             sliced_target = __reconstruct(sliced_target)
 
         if np.sum(sliced_input[:, -1]) == 0:  # see if we are free of faults

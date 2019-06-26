@@ -133,10 +133,10 @@ class encoder_LSTM(tf.keras.layers.Layer):
                                                  return_state=True,
                                                  recurrent_initializer='glorot_uniform'))
         for layer in range(self.layers-1):
-            self.encoder.append(tf.keras.layers.LSTM(self.units,
+            self.encoder.append(ZoneoutWrapper(tf.keras.layers.LSTM(self.units,
                                                      return_sequences=True,
                                                      return_state=True,
-                                                     recurrent_initializer='glorot_uniform'))
+                                                     recurrent_initializer='glorot_uniform'), zoneout_prob=dropout_rate)
     
     def call(self, encoder_inputs):
         encoder_states = []
@@ -163,10 +163,10 @@ class decoder_LSTM(tf.keras.layers.Layer):
         self.reshape_to_1ts = tf.keras.layers.Reshape((1,out_shape[1]))
         self.concat_layer = tf.keras.layers.Concatenate(axis=1)
         for layer in range(self.layers):
-            self.decoder.append(tf.keras.layers.LSTM(self.units,
+            self.decoder.append(ZoneoutWrapper(tf.keras.layers.LSTM(self.units,
                                                      return_sequences=True,
                                                      return_state=True,
-                                                     recurrent_initializer='glorot_uniform'))
+                                                     recurrent_initializer='glorot_uniform'), zoneout_prob=dropout_rate))
         
         self.decoder_wrap = [] #currently it seems that this layer is still creating errors of we have more than one... why?
         if self.units > 512:
@@ -223,12 +223,12 @@ def build_model(E_D_layers, E_D_units, in_shape, out_shape):
     units = E_D_units
     #   Encoder
     encoder_inputs = tf.keras.layers.Input(shape=(inp_train.shape[1], inp_train.shape[2]))
-    encoder = encoder_LSTM(layers, units, dropout_rate=0.0)
+    encoder = encoder_LSTM(layers, units, dropout_rate=0.2)
     # ------------------------------------------------------------------------------------------
     #   Decoder
     decoder_inputs = tf.keras.layers.Input(shape=(out_shape[0], out_shape[1]))
     blend_factor_input = tf.keras.layers.Input(shape=(1))
-    decoder = decoder_LSTM(layers, units, dropout_rate=0.0)
+    decoder = decoder_LSTM(layers, units, dropout_rate=0.2)
     # ------------------------------------------------------------------------------------------
     encoder_states, encoder_outputs = encoder(encoder_inputs)
     decoder_output = decoder(decoder_inputs, encoder_states=encoder_states, blend_factor_input=blend_factor_input)

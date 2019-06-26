@@ -82,6 +82,37 @@ import tensorflow as tf
 from tensorflow import keras
 keras.backend.clear_session() # make sure we are working clean
 
+# Application of feed-forward & recurrent dropout on encoder & decoder hidden states.
+class DropoutWrapper(tf.keras.layers.Layer):
+    def __init__(self, layer, zoneout_prob):
+        super(ZoneoutWrapper, self).__init__()
+        self.zoneout_prob = zoneout_prob
+        self._layer = layer
+    
+    def call(self, inputs, initial_state):
+        inputs = tf.nn.dropout(inputs, self.zoneout_prob)
+        output, state_h, state_c = self._layer(inputs, initial_state)
+        state_h = tf.nn.dropout(state_h, self.zoneout_prob)
+        state_c = tf.nn.dropout(state_c, self.zoneout_prob)
+        inputs = tf.nn.dropout(inputs, self.zoneout_prob)
+        
+        return output, state_h, state_c
+
+# Application of Zopneout on hidden encoder & decoder states.
+class ZoneoutWrapper(tf.keras.layers.Layer):
+    def __init__(self, layer, zoneout_prob):
+        super(ZoneoutWrapper, self).__init__()
+        self.zoneout_prob = zoneout_prob
+        self._layer = layer
+    
+    def call(self, inputs, initial_state):
+        inputs = tf.nn.dropout(inputs, self.zoneout_prob) # add feed forward dropout (i think the performance is better)
+        output, state_h, state_c = self._layer(inputs, initial_state)
+        state_h = (1-self.zoneout_prob)*tf.nn.dropout((state_h - initial_state[0]), self.zoneout_prob) + state_h
+        state_c = (1-self.zoneout_prob)*tf.nn.dropout((state_c - initial_state[1]), self.zoneout_prob) + state_c
+        
+        return output, state_h, state_c
+
 
 # this builds the wrapper class for the multilayer LSTM we will be using for most of the stuff
 # in addition to the multiple LSTM layers it adds
@@ -97,7 +128,11 @@ class encoder_LSTM(tf.keras.layers.Layer):
         self.layers = num_layers
         self.units = num_units
         self.encoder = [] # define the encoder layers
-        for layer in range(self.layers):
+        self.encoder.append(tf.keras.layers.LSTM(self.units,
+                                                 return_sequences=True,
+                                                 return_state=True,
+                                                 recurrent_initializer='glorot_uniform'))
+        for layer in range(self.layers-1):
             self.encoder.append(tf.keras.layers.LSTM(self.units,
                                                      return_sequences=True,
                                                      return_state=True,
@@ -113,7 +148,7 @@ class encoder_LSTM(tf.keras.layers.Layer):
                 encoder_states.append([state_h, state_c])
                 encoder_outputs.append(enc_output_layer)
             else:
-                enc_output_layer, state_h, state_c = self.encoder[layer](enc_output_layer)
+                enc_output_layer, state_h, state_c = self.encoder[layer](enc_output_layer, initial_state=encoder_states[layer])
                 encoder_states.append([state_h, state_c])
                 encoder_outputs.append(enc_output_layer)
         

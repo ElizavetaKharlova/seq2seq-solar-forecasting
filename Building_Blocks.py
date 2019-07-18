@@ -157,37 +157,51 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
         return all_out, states
 
 
-class BahdanauAttention(tf.keras.Model):
-    def __init__(self, units):
-        super(BahdanauAttention, self).__init__()
+class Attention(tf.keras.Model):
+    def __init__(self, units, bahdanau):
+        super(Attention, self).__init__()
         self.W1 = tf.keras.layers.Dense(units)
         self.W2 = tf.keras.layers.Dense(units)
+        self.W3 = tf.keras.layers.Dense(units)
         self.V = tf.keras.layers.Dense(1)
-
+        self.bahdanau = bahdanau
+    
     def call(self, query, values):
         # hidden shape == (batch_size, hidden size)
         # hidden_with_time_axis shape == (batch_size, 1, hidden size)
         # we are doing this to perform addition to calculate the score
         query_stacked = tf.concat(query, -1)
         values_stacked = tf.concat(values, -1)
-
+        
         # make sure the first dimension is the batch dimension
         if query_stacked.shape[0] is not None:
-            query_stacked = tf.transpose(query_stacked, [1, 0, 2])
+            query_stacked = tf.transpose(query_stacked, [1,0,2])
             values_stacked = tf.transpose(values_stacked, [1, 0, 2])
-
-        # score shape == (batch_size, max_length, 1)
-        # we get 1 at the last axis because we are applying score to self.V
-        # the shape of the tensor before applying self.V is (batch_size, max_length, units)
-        score = self.V(tf.nn.tanh(self.W1(values_stacked) + self.W2(query_stacked)))
-
-        # attention_weights shape == (batch_size, max_length, 1)
-        attention_weights = tf.nn.softmax(score, axis=1)
-
+        
+        if self.bahdanau:
+            # Bahdaau style attention: score = tanh(Q + V)
+            # score shape == (batch_size, max_length, 1)
+            # we get 1 at the last axis because we are applying score to self.V
+            # the shape of the tensor before applying self.V is (batch_size, max_length, units)
+            score = self.V(tf.nn.tanh(self.W1(values_stacked) + self.W2(query_stacked)))
+            # attention_weights shape == (batch_size, max_length, 1)
+            attention_weights = tf.nn.softmax(score, axis=1)
+            context_vector = attention_weights * values_stacked
+        else:
+            # Trasformer style attention: score=Q*K/sqrt(dk)
+            # in this case keys = values
+            matmul_qk = tf.matmul(self.W1(query_stacked), self.W2(values_stacked), transpose_b=True)  # (..., seq_len_q, seq_len_k)
+            
+            # scale matmul_qk
+            dk = tf.cast(tf.shape(values)[-1], tf.float32)
+            score = matmul_qk / tf.math.sqrt(dk)
+            
+            attention_weights = tf.nn.softmax(score, axis=1)
+            context_vector = tf.matmul(attention_weights, self.W3(values_stacked))
+        
         # context_vector shape after sum == (batch_size, hidden_size)
-        context_vector = attention_weights * values_stacked
         context_vector = tf.reduce_sum(context_vector, axis=1)
-
+        
         return context_vector, attention_weights
 
 
@@ -227,7 +241,7 @@ class decoder_LSTM(tf.keras.layers.Layer):
             (1, self.out_shape[1]))  # Keras is finicky with dimensions, this is to make sure the dim is specified
         self.concat_timestep = tf.keras.layers.Concatenate(axis=1)  # concatenates the timeteps together
 
-        self.attention = BahdanauAttention(num_units)
+        self.attention = Attention(num_units, bahdanau=False) # choose the attention style (Bahdanau, Transformer)
         self.decoder = MultiLayer_LSTM(num_layers, num_units, use_dropout, dropout_rate)
 
         self.decoder_wrap = []

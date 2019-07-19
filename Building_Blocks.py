@@ -17,7 +17,7 @@ from tensorflow import keras
 # output [timesteps, dimensions]
 
 #ToDo: change in a way, that we can pass different encoders and decoders as arguments or something
-def build_model(E_D_layers, E_D_units, in_shape, out_shape, dropout_rate=0.3):
+def build_model(E_D_layers, E_D_units, in_shape, out_shape, dropout_rate=0.2):
 
     keras.backend.clear_session()  # make sure we are working clean
 
@@ -43,26 +43,35 @@ def build_model(E_D_layers, E_D_units, in_shape, out_shape, dropout_rate=0.3):
     return model
 
 # Application of feed-forward & recurrent dropout on encoder & decoder hidden states.
-# ToDO: explain to Daniel, why is_training is in the Init, and how we change isTraining during the validation process?
 class DropoutWrapper(tf.keras.layers.Layer):
-    def __init__(self, layer, dropout_prob, isTraining):
+    def __init__(self, layer, dropout_prob):
         super(DropoutWrapper, self).__init__()
         self.dropout_prob = dropout_prob
         self._layer = layer
-        self.isTraining = isTraining
+        # self.isTraining = isTraining
 
     def call(self, inputs, initial_state):
-        if self.isTraining:
-            # add feed forward dropout
-            inputs = tf.nn.dropout(inputs, self.dropout_prob)
-            # get the output and hidden states in one layer of the network
-            output, state_h, state_c = self._layer(inputs, initial_state)
-            # apply dropout to each state of an LSTM layer
-            state_h = tf.nn.dropout(state_h, self.dropout_prob)
-            state_c = tf.nn.dropout(state_c, self.dropout_prob)
-            # ToDo: GRU functionality?
-        else:  # test/validation time
-            output, state_h, state_c = self._layer(inputs, initial_state)
+
+        # get the flag for training
+        istraining = tf.keras.backend.learning_phase()
+        # see which inputs to use
+        def drop_inputs():
+            return tf.nn.dropout(inputs, self.dropout_prob)
+        inputs = tf.keras.backend.in_train_phase(x=drop_inputs(), alt=inputs, training=istraining)
+        # get the output and hidden states in one layer of the network
+        output, state_h, state_c = self._layer(inputs, initial_state)
+        # apply dropout to each state of an LSTM layer
+        # see which states to use
+        def drop_state_h():
+            return tf.nn.dropout(state_h, self.dropout_prob)
+        state_h = tf.keras.backend.in_train_phase(x=drop_state_h(), alt=state_h, training=istraining)
+
+        def drop_state_c():
+            return tf.nn.dropout(state_c, self.dropout_prob)
+        state_c = tf.keras.backend.in_train_phase(x=drop_state_c(), alt=state_c, training=istraining)
+        # ToDo: GRU functionality?
+        # else:  # test/validation time
+        #     output, state_h, state_c = self._layer(inputs, initial_state)
         return output, state_h, state_c
 
 
@@ -77,17 +86,27 @@ class ZoneoutWrapper(tf.keras.layers.Layer):
     def call(self, inputs, initial_state):
         if self.isTraining:  # apply dropout at the training stage
             # add feed forward dropout
-            inputs = tf.nn.dropout(inputs, self.zoneout_prob)
+            # get the flag for training
+            istraining = tf.keras.backend.learning_phase()
+            # see which inputs to use
+            def drop_inputs():
+                return tf.nn.dropout(inputs, self.dropout_prob, )
+            inputs = tf.keras.backend.in_train_phase(x=drop_inputs(), alt=inputs, training=istraining)
+
             # get outputs & hidden states in one layer of the network
             output, state_h, state_c = self._layer(inputs, initial_state)
             # apply zoneout to each state of an LSTM
-            state_h = (1 - self.zoneout_prob) * tf.nn.dropout((state_h - initial_state[0]), self.zoneout_prob) + state_h
-            state_c = (1 - self.zoneout_prob) * tf.nn.dropout((state_c - initial_state[1]), self.zoneout_prob) + state_c
-            # ToDo: add functionality for GRU?
-        else:  # test/validation time
-            output, state_h, state_c = self._layer(inputs, initial_state)
-            state_h = (1 - self.zoneout_prob) * state_h + self.zoneout_prob * initial_state[0]
-            state_c = (1 - self.zoneout_prob) * state_c + self.zoneout_prob * initial_state[1]
+            def zone_state_h():
+                return (1 - self.zoneout_prob) * tf.nn.dropout((state_h - initial_state[0]), self.zoneout_prob) + state_h
+            def no_zone_state_h():
+                return (1 - self.zoneout_prob) * state_h + self.zoneout_prob * initial_state[0]
+            state_h = tf.keras.backend.in_train_phase(x=zone_state_h(), alt=no_zone_state_h(), training=istraining)
+
+            def zone_state_c():
+                return (1 - self.zoneout_prob) * tf.nn.dropout((state_c - initial_state[1]), self.zoneout_prob) + state_c
+            def no_zone_state_c():
+                return (1 - self.zoneout_prob) * state_c + self.zoneout_prob * initial_state[1]
+            state_c = tf.keras.backend.in_train_phase(x=zone_state_c(), alt=no_zone_state_c(), training=istraining)
         return output, state_h, state_c
 
 
@@ -117,6 +136,7 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
 
             # Do we need to initialize the layer in the loop?
             one_LSTM_layer = tf.keras.layers.LSTM(self.num_units,
+                                                  activation=tf.nn.tanh,
                                                   return_sequences=True,
                                                   return_state=True,
                                                   recurrent_initializer='glorot_uniform')
@@ -128,7 +148,8 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                 self.LSTM.append(one_LSTM_layer)
             else:
                 self.LSTM.append(
-                    ZoneoutWrapper(one_LSTM_layer, zoneout_prob=self.dropout_rate, isTraining=self.isTraining))
+                    DropoutWrapper(one_LSTM_layer, dropout_prob=self.dropout_rate)
+                            )
 
             if self.use_norm:
                 self.norm.append(tf.keras.layers.LayerNormalization(axis=-1,
@@ -158,7 +179,7 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
 
 
 class Attention(tf.keras.Model):
-    def __init__(self, units, bahdanau):
+    def __init__(self, units, bahdanau=True):
         super(Attention, self).__init__()
         self.W1 = tf.keras.layers.Dense(units)
         self.W2 = tf.keras.layers.Dense(units)
@@ -252,8 +273,9 @@ class decoder_LSTM(tf.keras.layers.Layer):
 
     def call(self, decoder_inputs, encoder_outputs, initial_states, blend_factor_input):
 
-        blend_factor = self.reshape_to_1ts(
-            blend_factor_input)  # because, otherwise keras will be acting wierd as the decoder_output is (1,1) and this would be (1)
+
+
+
 
         dec_states_t = initial_states  # get the initial states for the first timestep
         output_decoder_LSTM = encoder_outputs  # for the first time step for attention
@@ -264,8 +286,15 @@ class decoder_LSTM(tf.keras.layers.Layer):
             target_support_t = self.reshape_to_1ts(decoder_inputs[:, t, :])  # slice a timestep of the support
             if t == 0:  # if no previous output we cannot blend
                 dec_in_t = target_support_t
-            else:  # otherwise blend as desired
-                dec_in_t = (1.0 - blend_factor) * dec_out_t + blend_factor * target_support_t
+            else:  # otherwise blend during training and no blend during val
+                istraining = tf.keras.backend.learning_phase()
+                def get_train_inp():
+                    blend_factor = self.reshape_to_1ts(
+                        blend_factor_input)  # because, otherwise keras will be acting wierd as the decoder_output is (1,1) and this would be (1)
+                    dec_in_t_train = (1.0 - blend_factor) * dec_out_t + blend_factor * target_support_t
+                    return dec_in_t_train
+
+                dec_in_t = tf.keras.backend.in_train_phase(x=get_train_inp(), alt=dec_out_t, training=istraining)
 
             # add the Attention context vector
             if self.use_attention:

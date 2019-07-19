@@ -99,13 +99,13 @@ class ZoneoutWrapper(tf.keras.layers.Layer):
             def zone_state_h():
                 return (1 - self.zoneout_prob) * tf.nn.dropout((state_h - initial_state[0]), self.zoneout_prob) + state_h
             def no_zone_state_h():
-                return (1 - self.zoneout_prob) * state_h + self.zoneout_prob * initial_state[0]
+                return state_h
             state_h = tf.keras.backend.in_train_phase(x=zone_state_h(), alt=no_zone_state_h(), training=istraining)
 
             def zone_state_c():
                 return (1 - self.zoneout_prob) * tf.nn.dropout((state_c - initial_state[1]), self.zoneout_prob) + state_c
             def no_zone_state_c():
-                return (1 - self.zoneout_prob) * state_c + self.zoneout_prob * initial_state[1]
+                return state_c
             state_c = tf.keras.backend.in_train_phase(x=zone_state_c(), alt=no_zone_state_c(), training=istraining)
         return output, state_h, state_c
 

@@ -17,7 +17,7 @@ from tensorflow import keras
 # output [timesteps, dimensions]
 
 #ToDo: change in a way, that we can pass different encoders and decoders as arguments or something
-def build_model(E_D_layers, E_D_units, in_shape, out_shape, dropout_rate=0.2):
+def build_model(E_D_layers, E_D_units, in_shape, out_shape, dropout_rate=0.2, use_CNN=True):
 
     keras.backend.clear_session()  # make sure we are working clean
 
@@ -25,7 +25,10 @@ def build_model(E_D_layers, E_D_units, in_shape, out_shape, dropout_rate=0.2):
     units = E_D_units
     #   Encoder init
     encoder_inputs = tf.keras.layers.Input(shape=(in_shape[1], in_shape[2]))
-    encoder = encoder_LSTM(layers, units, use_dropout=True, dropout_rate=dropout_rate)
+    if use_CNN:
+        encoder = encoder_CNN(layers, units, use_dropout=True, dropout_rate=dropout_rate)
+    else:
+        encoder = encoder_LSTM(layers, units, use_dropout=True, dropout_rate=dropout_rate)
     # ------------------------------------------------------------------------------------------
     #   Decoder init
     decoder_inputs = tf.keras.layers.Input(shape=(out_shape[1], out_shape[2]))
@@ -33,9 +36,14 @@ def build_model(E_D_layers, E_D_units, in_shape, out_shape, dropout_rate=0.2):
     decoder = decoder_LSTM(layers, units, use_dropout=True, dropout_rate=dropout_rate, out_shape=out_shape[1:])
     # ------------------------------------------------------------------------------------------
     # Run
-    encoder_outputs, encoder_states = encoder(encoder_inputs)
-    decoder_output = decoder(decoder_inputs, encoder_outputs=encoder_outputs, initial_states=encoder_states,
-                             blend_factor_input=blend_factor_input)
+    if use_CNN:
+        encoder_outputs = encoder(encoder_inputs)
+        decoder_output = decoder(decoder_inputs, encoder_outputs=encoder_outputs, initial_states=None,
+                                 blend_factor_input=blend_factor_input)
+    else:
+        encoder_outputs, encoder_states = encoder(encoder_inputs)
+        decoder_output = decoder(decoder_inputs, encoder_outputs=encoder_outputs, initial_states=encoder_states,
+                                 blend_factor_input=blend_factor_input)
 
     # Define the model that will turn
     # `encoder_input_data` & `decoder_input_data` into `decoder_target_data`
@@ -77,36 +85,34 @@ class DropoutWrapper(tf.keras.layers.Layer):
 
 # Application of Zoneout on hidden encoder & decoder states.
 class ZoneoutWrapper(tf.keras.layers.Layer):
-    def __init__(self, layer, zoneout_prob, isTraining):
+    def __init__(self, layer, zoneout_prob):
         super(ZoneoutWrapper, self).__init__()
         self.zoneout_prob = zoneout_prob
         self._layer = layer
-        self.isTraining = isTraining
 
     def call(self, inputs, initial_state):
-        if self.isTraining:  # apply dropout at the training stage
-            # add feed forward dropout
-            # get the flag for training
-            istraining = tf.keras.backend.learning_phase()
-            # see which inputs to use
-            def drop_inputs():
-                return tf.nn.dropout(inputs, self.dropout_prob, )
-            inputs = tf.keras.backend.in_train_phase(x=drop_inputs(), alt=inputs, training=istraining)
+        # add feed forward dropout
+        # get the flag for training
+        istraining = tf.keras.backend.learning_phase()
+        # see which inputs to use
+        def drop_inputs():
+            return tf.nn.dropout(inputs, self.dropout_prob, )
+        inputs = tf.keras.backend.in_train_phase(x=drop_inputs(), alt=inputs, training=istraining)
 
-            # get outputs & hidden states in one layer of the network
-            output, state_h, state_c = self._layer(inputs, initial_state)
-            # apply zoneout to each state of an LSTM
-            def zone_state_h():
-                return (1 - self.zoneout_prob) * tf.nn.dropout((state_h - initial_state[0]), self.zoneout_prob) + state_h
-            def no_zone_state_h():
-                return state_h
-            state_h = tf.keras.backend.in_train_phase(x=zone_state_h(), alt=no_zone_state_h(), training=istraining)
+        # get outputs & hidden states in one layer of the network
+        output, state_h, state_c = self._layer(inputs, initial_state)
+        # apply zoneout to each state of an LSTM
+        def zone_state_h():
+            return (1 - self.zoneout_prob) * tf.nn.dropout((state_h - initial_state[0]), self.zoneout_prob) + state_h
+        def no_zone_state_h():
+            return state_h
+        state_h = tf.keras.backend.in_train_phase(x=zone_state_h(), alt=no_zone_state_h(), training=istraining)
 
-            def zone_state_c():
-                return (1 - self.zoneout_prob) * tf.nn.dropout((state_c - initial_state[1]), self.zoneout_prob) + state_c
-            def no_zone_state_c():
-                return state_c
-            state_c = tf.keras.backend.in_train_phase(x=zone_state_c(), alt=no_zone_state_c(), training=istraining)
+        def zone_state_c():
+            return (1 - self.zoneout_prob) * tf.nn.dropout((state_c - initial_state[1]), self.zoneout_prob) + state_c
+        def no_zone_state_c():
+            return state_c
+        state_c = tf.keras.backend.in_train_phase(x=zone_state_c(), alt=no_zone_state_c(), training=istraining)
         return output, state_h, state_c
 
 
@@ -177,6 +183,43 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
 
         return all_out, states
 
+class Multilayer_CNN(tf.keras.layers.Layer):
+    def __init__(self, num_layers, num_units, use_dropout=True, dropout_rate=0.0, kernel_size=3, strides=1):
+        super(Multilayer_CNN, self).__init__()
+        
+        self.num_layers = num_layers
+        self.num_units = num_units
+        self.dropout_rate = dropout_rate
+        self.use_dropout = use_dropout
+        self.kernel_size = kernel_size
+        self.strides = strides
+        
+        self.CNN = []
+        self.dropout = []
+        
+        for layer in range(self.num_layers):
+            one_CNN_layer = tf.keras.layers.Conv1D(self.num_units,
+                                                   kernel_size=self.kernel_size,
+                                                   strides=self.strides,
+                                                   padding='causal',
+                                                   dilation_rate=2**layer) # increase dilation rate each layer (1,2,4,8...)
+                
+            self.CNN.append(one_CNN_layer)
+            #if self.use_dropout:
+                #self.dropout.append(tf.keras.layers.Dropout(self.dropout_rate))
+
+    def call(self, inputs):
+        all_out = []
+        out = inputs
+        isTraining = tf.keras.backend.learning_phase()
+        for layer in range(self.num_layers):
+            out = self.CNN[layer](out)
+            if self.use_dropout and isTraining:
+                #out = self.dropout[layer](out, training=isTraining)
+                out = tf.nn.dropout(out, self.dropout_rate)
+            all_out.append(out)
+        return all_out
+
 
 class Attention(tf.keras.Model):
     def __init__(self, units, bahdanau=True):
@@ -241,6 +284,18 @@ class encoder_LSTM(tf.keras.layers.Layer):
         encoder_outputs, encoder_states = self.encoder(encoder_inputs, initial_states=initial_states)
 
         return encoder_outputs, encoder_states
+
+class encoder_CNN(tf.keras.layers.Layer):
+    def __init__(self, num_layers, num_units, use_dropout=True, dropout_rate=0.0):
+        super(encoder_CNN, self).__init__()
+        self.layers = num_layers
+        self.units = num_units
+        self.encoder = Multilayer_CNN(num_layers, num_units, use_dropout, dropout_rate)
+    
+    def call(self, encoder_inputs, initial_states=None):
+        encoder_outputs= self.encoder(encoder_inputs)
+        
+        return encoder_outputs
 
 
 # this builds the decoder LSTM

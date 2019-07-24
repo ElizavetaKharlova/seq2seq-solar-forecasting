@@ -26,6 +26,7 @@ inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend
 
 # inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend_factor = get_Lizas_data()
 
+
 keras.backend.clear_session()  # make sure we are working clean
 
 max_value, min_value = __get_max_min_targets(train_targets=ev_train, test_targets=ev_test)
@@ -65,10 +66,10 @@ while decrease < 6:
                               epochs=1,
                               shuffle=True,
                               validation_split=.2)
-    print(train_history)
+    print(train_history.history['val_rMSE'])
 
-    val_metric = val_history[0]
-    val_loss = val_history[1]
+    val_metric = train_history.history['val_rMSE'][0]
+    val_loss = train_history.history['val_loss'][0]
 
     if best_val_metric > val_metric:  # if we see no increase in absolute performance, increase the death counter
         decrease = 0  # reset the death counter
@@ -95,9 +96,9 @@ while decrease < 6:
     prev_val_loss = val_loss
 
     hist_loss.append(train_history.history['loss'])
-    hist_val_loss.append(val_history[0])
+    hist_val_loss.append(train_history.history['val_loss'])
     hist_metric.append(train_history.history['rMSE'])
-    hist_val_metric.append(val_history[1])
+    hist_val_metric.append(train_history.history['val_rMSE'])
 model.set_weights(best_wts)
 
 

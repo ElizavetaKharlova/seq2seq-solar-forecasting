@@ -17,14 +17,18 @@ def get_Daniels_data(target_data='Pv', input_len_samples=int(7 * 24 * (60 / 5)),
                                       fc_steps=fc_steps,
                                       fc_tiles=fc_tiles,
                                       target_dims=target_dims,
-                                      plot=True,
+                                      plot=False,
                                       steps_to_new_sample=15)
     import numpy as np
     ev = np.expand_dims(ev, axis=-1)
     inp_train = inp[:int(0.8 * inp.shape[0]), :, :]
     inp_test = inp[int(0.8 * inp.shape[0]):, :, :]
+
     pdf_train = pdf[:int(0.8 * inp.shape[0]), 1:, :]
     pdf_test = pdf[int(0.8 * inp.shape[0]):, 1:, :]
+    pdf_teacher_train = pdf[:int(0.8 * inp.shape[0]), :-1, :]
+    pdf_teacher_test = pdf[int(0.8 * inp.shape[0]):, :-1, :]
+
     ev_train = ev[:int(0.8 * inp.shape[0]), 1:, :]
     ev_test = ev[int(0.8 * inp.shape[0]):, 1:, :]
     ev_teacher_train = ev[:int(0.8 * inp.shape[0]), :-1, :]
@@ -47,7 +51,7 @@ def get_Daniels_data(target_data='Pv', input_len_samples=int(7 * 24 * (60 / 5)),
           'or alternatively pdf_targets of ',
           ev_test.shape)
 
-    return inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend_factor
+    return inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend_factor, pdf_train, pdf_test, pdf_teacher_train, pdf_teacher_test
 
 
 def get_Lizas_data():

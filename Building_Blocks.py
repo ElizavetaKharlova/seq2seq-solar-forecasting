@@ -2,6 +2,9 @@
 # In a sense, this will be the main modiefied file
 
 # ToDO: clean up commentary
+#ToDo: change in a way, that we can pass different encoders and decoders as arguments or something
+# ToDO: change everything to tf.float32 for speeeeed
+
 
 import tensorflow as tf
 from tensorflow import keras
@@ -16,8 +19,14 @@ from tensorflow import keras
 # the model will have one output
 # output [timesteps, dimensions]
 
-#ToDo: change in a way, that we can pass different encoders and decoders as arguments or something
-def build_model(E_D_layers, E_D_units, in_shape, out_shape, dropout_rate=0.2, use_CNN=True):
+
+def build_model(E_D_layers, E_D_units,
+                in_shape, out_shape,
+                dropout_rate=0.2,
+                use_dropout=False,
+                CNN_encoder=False, LSTM_encoder=True,
+                LSTM_decoder=True,
+                use_attention=False):
 
     keras.backend.clear_session()  # make sure we are working clean
 
@@ -25,25 +34,33 @@ def build_model(E_D_layers, E_D_units, in_shape, out_shape, dropout_rate=0.2, us
     units = E_D_units
     #   Encoder init
     encoder_inputs = tf.keras.layers.Input(shape=(in_shape[1], in_shape[2]))
-    if use_CNN:
-        encoder = encoder_CNN(layers, units, use_dropout=True, dropout_rate=dropout_rate)
-    else:
-        encoder = encoder_LSTM(layers, units, use_dropout=True, dropout_rate=dropout_rate)
+    if CNN_encoder:
+        encoder = encoder_CNN(layers, units, use_dropout=use_dropout, dropout_rate=dropout_rate)
+    if LSTM_encoder:
+        encoder = encoder_LSTM(layers, units, use_dropout=use_dropout, dropout_rate=dropout_rate)
     # ------------------------------------------------------------------------------------------
     #   Decoder init
     decoder_inputs = tf.keras.layers.Input(shape=(out_shape[1], out_shape[2]))
     blend_factor_input = tf.keras.layers.Input(shape=(1))
-    decoder = decoder_LSTM(layers, units, use_dropout=True, dropout_rate=dropout_rate, out_shape=out_shape[1:])
+    if LSTM_decoder:
+        decoder = decoder_LSTM(layers, units,
+                               use_dropout=use_dropout, dropout_rate=dropout_rate,
+                               out_shape=out_shape[1:],
+                               use_attention=use_attention)
+    else:
+        print('whoops, no other decoders available atm!!')
     # ------------------------------------------------------------------------------------------
     # Run
-    if use_CNN:
+    if CNN_encoder:
         encoder_outputs = encoder(encoder_inputs)
-        decoder_output = decoder(decoder_inputs, encoder_outputs=encoder_outputs, initial_states=None,
-                                 blend_factor_input=blend_factor_input)
-    else:
+        encoder_states=None
+    if LSTM_encoder:
         encoder_outputs, encoder_states = encoder(encoder_inputs)
+
+    if LSTM_decoder:
         decoder_output = decoder(decoder_inputs, encoder_outputs=encoder_outputs, initial_states=encoder_states,
                                  blend_factor_input=blend_factor_input)
+
 
     # Define the model that will turn
     # `encoder_input_data` & `decoder_input_data` into `decoder_target_data`
@@ -58,25 +75,35 @@ class DropoutWrapper(tf.keras.layers.Layer):
         self._layer = layer
         # self.isTraining = isTraining
 
+        self.dropout_layer = tf.keras.layers.Dropout(rate=self.dropout_prob)
+
     def call(self, inputs, initial_state):
 
         # get the flag for training
         istraining = tf.keras.backend.learning_phase()
         # see which inputs to use
-        def drop_inputs():
-            return tf.nn.dropout(inputs, self.dropout_prob)
-        inputs = tf.keras.backend.in_train_phase(x=drop_inputs(), alt=inputs, training=istraining)
+
+        def drop_stuff(input_to_drop_from):
+            return tf.nn.dropout(input_to_drop_from, self.dropout_prob)
+
+        inputs = tf.keras.backend.in_train_phase(x=drop_stuff(inputs), alt=inputs, training=istraining)
+
         # get the output and hidden states in one layer of the network
         output, state_h, state_c = self._layer(inputs, initial_state)
         # apply dropout to each state of an LSTM layer
         # see which states to use
-        def drop_state_h():
-            return tf.nn.dropout(state_h, self.dropout_prob)
-        state_h = tf.keras.backend.in_train_phase(x=drop_state_h(), alt=state_h, training=istraining)
 
-        def drop_state_c():
-            return tf.nn.dropout(state_c, self.dropout_prob)
-        state_c = tf.keras.backend.in_train_phase(x=drop_state_c(), alt=state_c, training=istraining)
+
+        state_h = tf.keras.backend.in_train_phase(x=drop_stuff(state_h), alt=state_h, training=istraining)
+        state_c = tf.keras.backend.in_train_phase(x=drop_stuff(state_c), alt=state_c, training=istraining)
+
+        # state_h = self.dropout_layer(state_h, istraining)
+        # state_c = self.dropout_layer(state_c, istraining)
+
+        # def drop_state_c():
+        #     return tf.nn.dropout(state_c, self.dropout_prob)
+        #
+        #
         # ToDo: GRU functionality?
         # else:  # test/validation time
         #     output, state_h, state_c = self._layer(inputs, initial_state)
@@ -274,7 +301,7 @@ class Attention(tf.keras.Model):
 # ToDO: add a projection layer, that might be important for the attention mechs later on
 # this will reduce the size of attention needed :-)
 class encoder_LSTM(tf.keras.layers.Layer):
-    def __init__(self, num_layers, num_units, use_dropout=True, dropout_rate=0.0):
+    def __init__(self, num_layers, num_units, use_dropout=False, dropout_rate=0.0):
         super(encoder_LSTM, self).__init__()
         self.layers = num_layers
         self.units = num_units
@@ -304,7 +331,11 @@ class encoder_CNN(tf.keras.layers.Layer):
 # ToDO: same thing here, add an isTraining thingie, where the blend factor will be used, and if isTraining is false then the blend_factor will be multiplied by 0
 
 class decoder_LSTM(tf.keras.layers.Layer):
-    def __init__(self, num_layers, num_units, out_shape, use_dropout=True, dropout_rate=0.0, use_attention=True,
+    def __init__(self, num_layers, num_units,
+                 out_shape=1,
+                 use_dropout=False,
+                 dropout_rate=0.0,
+                 use_attention=False,
                  attention_hidden=False):
         super(decoder_LSTM, self).__init__()
         self.layers = num_layers
@@ -315,6 +346,7 @@ class decoder_LSTM(tf.keras.layers.Layer):
 
         self.reshape_to_1ts = tf.keras.layers.Reshape(
             (1, self.out_shape[1]))  # Keras is finicky with dimensions, this is to make sure the dim is specified
+        self.reshape_to_one = tf.keras.layers.Reshape( (1, 1))
         self.concat_timestep = tf.keras.layers.Concatenate(axis=1)  # concatenates the timeteps together
 
         self.attention = Attention(num_units, bahdanau=False) # choose the attention style (Bahdanau, Transformer)
@@ -322,9 +354,15 @@ class decoder_LSTM(tf.keras.layers.Layer):
 
         self.decoder_wrap = []
         if self.units > 512:
-            self.decoder_wrap.append(tf.keras.layers.Dense(units=256,
-                                                           activation='relu'))
+            self.decoder_wrap.append(tf.keras.layers.TimeDistributed(
+                                                tf.keras.layers.Dense(units=256, activation='relu')
+                                                                    )
+                                    )
+
         self.decoder_wrap.append(tf.keras.layers.Dense(units=self.out_shape[1]))
+
+        if self.out_shape[1] > 1:
+            self.softmax = tf.keras.layers.Softmax(axis=-1)
 
     def call(self, decoder_inputs, encoder_outputs, initial_states, blend_factor_input):
 
@@ -344,7 +382,7 @@ class decoder_LSTM(tf.keras.layers.Layer):
             else:  # otherwise blend during training and no blend during val
                 istraining = tf.keras.backend.learning_phase()
                 def get_train_inp():
-                    blend_factor = self.reshape_to_1ts(
+                    blend_factor = self.reshape_to_one(
                         blend_factor_input)  # because, otherwise keras will be acting wierd as the decoder_output is (1,1) and this would be (1)
                     dec_in_t_train = (1.0 - blend_factor) * dec_out_t + blend_factor * target_support_t
                     return dec_in_t_train
@@ -375,5 +413,8 @@ class decoder_LSTM(tf.keras.layers.Layer):
                 decoder_output = dec_out_t
             else:  # else we append
                 decoder_output = self.concat_timestep([decoder_output, dec_out_t])
+
+        if self.out_shape[-1] > 1:
+            decoder_output = self.softmax(decoder_output)
 
         return decoder_output

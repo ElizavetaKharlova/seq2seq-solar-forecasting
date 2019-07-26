@@ -4,7 +4,6 @@ import tensorflow as tf
 from tensorflow import keras
 
 from Building_Blocks import build_model
-from Losses_and_Metrics import loss_rME, loss_rMSE
 from Dataset_loaders import get_Daniels_data, get_Lizas_data
 
 def __get_max_min_targets(train_targets, test_targets):
@@ -22,7 +21,7 @@ def __get_max_min_targets(train_targets, test_targets):
     min_value = np.minimum(min_value_test, min_value_train)
     return max_value, min_value
 
-inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend_factor = get_Daniels_data()
+inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend_factor, pdf_train, pdf_test, pdf_teacher_train, pdf_teacher_test = get_Daniels_data()
 
 # inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend_factor = get_Lizas_data()
 
@@ -31,16 +30,29 @@ keras.backend.clear_session()  # make sure we are working clean
 
 max_value, min_value = __get_max_min_targets(train_targets=ev_train, test_targets=ev_test)
 
-E_D_layers = 4
-E_D_units = 100
-out_shape = ev_train.shape
+E_D_layers = 2
+E_D_units = 200
+out_shape = pdf_train.shape
 in_shape = inp_train.shape
+
+
 # ToDo: enable giving the builder a specific encoder and a specific decoder, that would be nicer maybe? dunno ...
 
-model = build_model(E_D_layers, E_D_units, in_shape, out_shape) #get a E_D_model
+model = build_model(E_D_layers, E_D_units,
+                in_shape, out_shape,
+                dropout_rate=0.2,
+                use_dropout=False,
+                CNN_encoder=False, LSTM_encoder=True,
+                LSTM_decoder=True,
+                use_attention=True) #get a E_D_model
+
 optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3) # set optimizers, metrics and loss
-loss = loss_rME(max_value=max_value, min_value=min_value)
-metrics = [loss_rMSE(max_value=max_value, min_value=min_value)]
+
+from Losses_and_Metrics import loss_expected_rME, loss_expected_rMSE
+from Losses_and_Metrics import loss_tile_to_pdf, loss_pdf_rMSE, loss_pdf_rME, loss_KL_Divergence
+loss = loss_tile_to_pdf(out_steps=out_shape[-2], out_tiles=out_shape[-1])
+# loss = loss_pdf_rMSE(max_value=max_value, min_value=min_value)
+metrics = [loss_pdf_rMSE(max_value=max_value, min_value=min_value), loss_pdf_rME(max_value=max_value, min_value=min_value), loss_KL_Divergence()]
 model.compile(optimizer=optimizer, loss=loss, metrics=metrics) #compile, print summary
 model.summary()
 
@@ -58,15 +70,15 @@ best_val_metric = np.inf
 
 # ToDo: insert loop that adjusts the blend_factor from 1 to 0 depending on how the validation loss develops
 # ToDo: make this nicer, maybe with a isTrainig flag or sth?
+
 while decrease < 6:
-    train_history = model.fit(x=[inp_train, ev_teacher_train, blend_factor],
+    train_history = model.fit(x=[inp_train, pdf_teacher_train, blend_factor],
                               # train for a given set of epochs, look at history
-                              y=ev_train,
+                              y=pdf_train,
                               batch_size=64,
                               epochs=1,
                               shuffle=True,
                               validation_split=.2)
-    print(train_history.history['val_rMSE'])
 
     val_metric = train_history.history['val_rMSE'][0]
     val_loss = train_history.history['val_loss'][0]

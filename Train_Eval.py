@@ -30,7 +30,7 @@ keras.backend.clear_session()  # make sure we are working clean
 
 max_value, min_value = __get_max_min_targets(train_targets=ev_train, test_targets=ev_test)
 
-E_D_layers = 3
+E_D_layers = 4
 E_D_units = 150
 out_shape = pdf_train.shape
 in_shape = inp_train.shape
@@ -52,7 +52,7 @@ from Losses_and_Metrics import loss_expected_rME, loss_expected_rMSE
 from Losses_and_Metrics import loss_tile_to_pdf, loss_pdf_rMSE, loss_pdf_rME, loss_KL_Divergence
 loss = loss_tile_to_pdf(out_steps=out_shape[-2], out_tiles=out_shape[-1])
 # loss = loss_pdf_rMSE(max_value=max_value, min_value=min_value)
-metrics = [loss_pdf_rMSE(max_value=max_value, min_value=min_value), loss_pdf_rME(max_value=max_value, min_value=min_value), loss_KL_Divergence()]
+metrics = [loss_pdf_rMSE(), loss_pdf_rME(), loss_KL_Divergence()]
 model.compile(optimizer=optimizer, loss=loss, metrics=metrics) #compile, print summary
 model.summary()
 
@@ -80,13 +80,13 @@ while decrease < 10:
                               shuffle=True,
                               validation_split=.2)
     print(train_history.history.keys())
-    val_metric = [train_history.history['val_pdf_rMSE'][0], train_history.history['val_pdf_rME'][0], train_history.history['val_KL_D'][0]]
+    val_metrics = [train_history.history['val_pdf_rMSE'][0], train_history.history['val_pdf_rME'][0], train_history.history['val_KL_D'][0]]
     val_loss = train_history.history['val_loss'][0]
 
-    if best_val_loss > val_loss:  # if we see no increase in absolute performance, increase the death counter
+    if best_val_metric > val_metrics[0]:  # if we see no increase in absolute performance, increase the death counter
         decrease = 0  # reset the death counter
         best_val_loss = val_loss
-        best_val_metric = val_metric
+        best_val_metric = val_metrics[0]
         best_wts = model.get_weights()
         print('saving a new model')
     else:

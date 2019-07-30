@@ -359,35 +359,30 @@ class decoder_LSTM(tf.keras.layers.Layer):
                                                                     )
                                     )
 
-        self.decoder_wrap.append(tf.keras.layers.Dense(units=self.out_shape[1]))
+        self.decoder_wrap.append(tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=self.out_shape[1])))
 
         if self.out_shape[1] > 1:
             self.softmax = tf.keras.layers.Softmax(axis=-1)
 
     def call(self, decoder_inputs, encoder_outputs, initial_states, blend_factor_input):
 
-
-
-
+        istraining = tf.keras.backend.learning_phase()
 
         dec_states_t = initial_states  # get the initial states for the first timestep
         output_decoder_LSTM = encoder_outputs  # for the first time step for attention
 
         for t in range(self.out_shape[0]):  # for loop over all timesteps
 
-            # determine the input to the decoder
             target_support_t = self.reshape_to_1ts(decoder_inputs[:, t, :])  # slice a timestep of the support
             if t == 0:  # if no previous output we cannot blend
                 dec_in_t = target_support_t
-            else:  # otherwise blend during training and no blend during val
-                istraining = tf.keras.backend.learning_phase()
-                def get_train_inp():
+            else:  # otherwise blend during training and no blend during va
+                if istraining:
                     blend_factor = self.reshape_to_one(
                         blend_factor_input)  # because, otherwise keras will be acting wierd as the decoder_output is (1,1) and this would be (1)
-                    dec_in_t_train = (1.0 - blend_factor) * dec_out_t + blend_factor * target_support_t
-                    return dec_in_t_train
-
-                dec_in_t = tf.keras.backend.in_train_phase(x=get_train_inp(), alt=dec_out_t, training=istraining)
+                    dec_in_t = (1.0 - blend_factor) * dec_out_t + blend_factor * target_support_t
+                else:
+                    dec_in_t = dec_out_t
 
             # add the Attention context vector
             if self.use_attention:
@@ -408,13 +403,14 @@ class decoder_LSTM(tf.keras.layers.Layer):
                 dec_out_t_not_projected = self.decoder_wrap[layer](dec_out_t_not_projected)
             dec_out_t = self.reshape_to_1ts(dec_out_t_not_projected)
 
+            if self.out_shape[-1] > 1:
+                dec_out_t = self.softmax(dec_out_t)
+
             # construct the output time-series
             if t == 0:
                 decoder_output = dec_out_t
             else:  # else we append
                 decoder_output = self.concat_timestep([decoder_output, dec_out_t])
 
-        if self.out_shape[-1] > 1:
-            decoder_output = self.softmax(decoder_output)
 
         return decoder_output

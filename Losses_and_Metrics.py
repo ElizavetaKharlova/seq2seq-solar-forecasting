@@ -35,9 +35,13 @@ def calculate_expected_rME(target, prediction):
     target = tf.where(tf.equal(target, 0.0),
                       x=1e-7,
                       y=target)
+    prediction = tf.where(tf.equal(prediction, 0.0),
+                      x=1e-7,
+                      y=prediction)
 
-    relative = tf.math.divide(prediction, target)
-    relative_error = tf.math.subtract(relative, 1)
+    relative = tf.math.subtract(prediction, target)
+    relative = tf.math.divide(relative, target)
+    relative_error = tf.abs(relative)
     loss = tf.math.reduce_mean(relative_error)  # (bacthes), get the mean error per timestep
 
     loss = tf.math.multiply(tf.cast(100.0, dtype=tf.float32), loss)  # (batches) convert into percents
@@ -104,13 +108,15 @@ def calculate_expected_rMSE(target, prediction):
     prediction = tf.cast(prediction, dtype=tf.float32)
 
     target = tf.math.square(target)
-    target = tf.maximum(target, 1e-7)
+    target = tf.maximum(target, 1e-8)
 
     prediction = tf.math.square(prediction)
+    prediction = tf.maximum(prediction, 1e-8)
 
     # relative error is (pred/target) - 1
-    relative = tf.math.divide(prediction, target)
-    relative_error = tf.subtract(relative, 1.0)
+    relative = tf.math.subtract(prediction, target)
+    relative = tf.math.divide(relative, target)
+    relative_error = tf.abs(relative)
     relative_error = tf.math.reduce_mean(relative_error)  # (bacthes), get the mean error per timestep
 
     relative_error = tf.math.multiply(tf.cast(100.0, dtype=tf.float32),
@@ -130,6 +136,7 @@ def calculate_pdf_rMSE(target, prediction):
     indices = tf.cast(indices, dtype=tf.float32)
 
     ev_target = tf.multiply(target, indices)
+    print(ev_target)
     ev_target = tf.reduce_sum(ev_target, axis=-1)
 
 
@@ -158,8 +165,9 @@ def pdf_tile_to_fc_loss(target, prediction, distance_tensor):
     distance_tensor = tf.tile(distance_tensor, [batch_size, 1, 1, 1]) # (batches, target_steps, output_tiles, output_tiles)
 
     loss = tf.subtract(prediction, target)
-    loss = tf.abs(loss)
+    # loss = tf.abs(loss)
     loss = tf.subtract(1.0, loss)
+    loss = tf.where(tf.equal(loss, 0.0), x=1e-9, y=loss)
     loss = tf.math.maximum(loss, 1e-9) #prevent 0s, because log and 0 is not good
     loss = -tf.math.log(loss)
     loss = tf.tile(tf.expand_dims(loss, axis=-1), [1, 1, 1, output_tiles])

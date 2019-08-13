@@ -86,14 +86,13 @@ while decrease < 10:
             if key in val_metrics:
                 val_metrics[key].append(train_history.history[key][0])
             else:
-                val_metrics[key] = train_history.history[key][0]
+                val_metrics[key] = [train_history.history[key][0]]
         else:
             if key in train_metrics:
                 train_metrics[key].append(train_history.history[key][0])
             else:
-                train_metrics[key] = train_history.history[key][0]
+                train_metrics[key] = [train_history.history[key][0]]
 
-    val_metrics = [train_history.history['val_pdf_rMSE'][0], train_history.history['val_pdf_rME'][0], train_history.history['val_KL_D'][0]]
     val_loss = train_history.history['val_loss'][0]
 
     if best_val_metric > val_metrics['val_pdf_rMSE'][-1]:  # if we see no increase in absolute performance, increase the death counter
@@ -104,7 +103,7 @@ while decrease < 10:
     else:
         decrease += 1
 
-    if prev_val_loss < val_metrics['val_loss'][-1]:  # see if we are having a relative decrease
+    if prev_val_loss < val_loss:  # see if we are having a relative decrease
         relative_decrease += 1
     else:
         relative_decrease = 0
@@ -118,7 +117,7 @@ while decrease < 10:
         relative_decrease = 0
 
     epoch += 1
-    prev_val_loss = val_metrics['val_loss'][-1]
+    prev_val_loss = val_loss
 
 model.set_weights(best_wts)
 test_results = model.evaluate(x=[inp_test, pdf_teacher_test, blend_factor],

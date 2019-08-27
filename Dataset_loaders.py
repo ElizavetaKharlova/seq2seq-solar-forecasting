@@ -1,4 +1,8 @@
-def get_Daniels_data(target_data='Pv', input_len_samples=int(7 * 24 * (60 / 5)), fc_len_samples=int(1 * 25 * (60 / 5)), fc_steps=25, fc_tiles=33):
+def get_Daniels_data(target_data='Pv',
+                     input_len_samples=int(7 * 24 * (60 / 5)),
+                     fc_len_samples=int(1 * 25 * (60 / 5)),
+                     fc_steps=24,
+                     fc_tiles=33):
     # Daniel loads his data / If we want different data we do that here
     # For a encoder decoder model we will need 3 inputs:
     # encoder input, decoder support, blend factor (for how much we want to do teacher forcing)
@@ -11,28 +15,31 @@ def get_Daniels_data(target_data='Pv', input_len_samples=int(7 * 24 * (60 / 5)),
         print('Not Implemented YET, except funky behavior')
         # ToDo: make sure you can add the load data here!
 
-    inp, ev, pdf = datasets_from_data(raw_data,
-                                      sw_len_samples=input_len_samples,
-                                      fc_len_samples=fc_len_samples,
-                                      fc_steps=fc_steps,
-                                      fc_tiles=fc_tiles,
-                                      target_dims=target_dims,
-                                      plot=False,
-                                      steps_to_new_sample=15)
+    inp, ev_target, ev_support, pdf_target, pdf_support = datasets_from_data(raw_data,
+                                                          sw_len_samples=input_len_samples,
+                                                          fc_len_samples=fc_len_samples,
+                                                          fc_steps=fc_steps,
+                                                          fc_tiles=fc_tiles,
+                                                          target_dims=target_dims,
+                                                          plot=True,
+                                                          steps_to_new_sample=15)
     import numpy as np
-    ev = np.expand_dims(ev, axis=-1)
+    ev_target = np.expand_dims(ev_target, axis=-1)
+    ev_support = np.expand_dims(ev_support, axis=-1)
+
     inp_train = inp[:int(0.8 * inp.shape[0]), :, :]
     inp_test = inp[int(0.8 * inp.shape[0]):, :, :]
 
-    pdf_train = pdf[:int(0.8 * inp.shape[0]), 1:, :]
-    pdf_test = pdf[int(0.8 * inp.shape[0]):, 1:, :]
-    pdf_teacher_train = pdf[:int(0.8 * inp.shape[0]), :-1, :]
-    pdf_teacher_test = pdf[int(0.8 * inp.shape[0]):, :-1, :]
+    print(pdf_target)
+    pdf_train = pdf_target[:int(0.8 * inp.shape[0]), :, :]
+    pdf_test = pdf_target[int(0.8 * inp.shape[0]):, :, :]
+    pdf_teacher_train = pdf_support[:int(0.8 * inp.shape[0]), :, :]
+    pdf_teacher_test = pdf_support[int(0.8 * inp.shape[0]):, :, :]
 
-    ev_train = ev[:int(0.8 * inp.shape[0]), 1:, :]
-    ev_test = ev[int(0.8 * inp.shape[0]):, 1:, :]
-    ev_teacher_train = ev[:int(0.8 * inp.shape[0]), :-1, :]
-    ev_teacher_test = ev[int(0.8 * inp.shape[0]):, :-1, :]
+    ev_target_train = ev_target[:int(0.8 * inp.shape[0]), :, :]
+    ev_target_test = ev_target[int(0.8 * inp.shape[0]):, :, :]
+    ev_teacher_train = ev_support[:int(0.8 * inp.shape[0]), :, :]
+    ev_teacher_test = ev_support[int(0.8 * inp.shape[0]):, :, :]
 
     blend_factor = np.expand_dims(np.ones(inp_train.shape[0]), axis=-1)
     print(blend_factor.shape)
@@ -40,7 +47,7 @@ def get_Daniels_data(target_data='Pv', input_len_samples=int(7 * 24 * (60 / 5)),
     print('The training set has an input data shape of ',
           inp_train.shape,
           'to expected value targets of ',
-          ev_train.shape,
+          ev_target_train.shape,
           'or alternatively pdf_targets of ',
           pdf_train.shape)
     print('-----------------------------------------------')
@@ -49,9 +56,9 @@ def get_Daniels_data(target_data='Pv', input_len_samples=int(7 * 24 * (60 / 5)),
           'to expected value targets of ',
           pdf_test.shape,
           'or alternatively pdf_targets of ',
-          ev_test.shape)
+          ev_target_train.shape)
 
-    return inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend_factor, pdf_train, pdf_test, pdf_teacher_train, pdf_teacher_test
+    return inp_train, inp_test, ev_target_train, ev_target_test, ev_teacher_train, ev_teacher_test, blend_factor, pdf_train, pdf_test, pdf_teacher_train, pdf_teacher_test
 
 
 def get_Lizas_data():
@@ -65,7 +72,7 @@ def get_Lizas_data():
     specs = NetworkData['specs']
     print('Specs:', specs)
 
-    inp, ev, pdf = datasets_from_data(data=mvts_array,
+    inp, ev_target, ev_support, pdf_target, pdf_support = datasets_from_data(data=mvts_array,
                                       sw_len_samples=specs['sw_steps'],
                                       fc_len_samples=specs['num_steps'],
                                       fc_steps=specs['forecast_steps'],
@@ -77,13 +84,19 @@ def get_Lizas_data():
     # ---------------------------------------------------------------------------
 
     import numpy as np
-    ev = np.expand_dims(ev, axis=-1)
+    ev = np.expand_dims(ev_target, axis=-1)
     inp_train = inp[:int(0.8 * inp.shape[0]), :, :]
     inp_test = inp[int(0.8 * inp.shape[0]):, :, :]
-    pdf_train = pdf[:int(0.8 * inp.shape[0]), 1:, :]
-    pdf_test = pdf[int(0.8 * inp.shape[0]):, 1:, :]
+
+    pdf_train = pdf_target[:int(0.8 * inp.shape[0]), :, :]
+    pdf_test = pdf_target[int(0.8 * inp.shape[0]):, :, :]
+
+    pdf_support_train = pdf_support[:int(0.8 * inp.shape[0]), :, :]
+    pdf_support_test = pdf_support[int(0.8 * inp.shape[0]):, :, :]
+
     ev_train = ev[:int(0.8 * inp.shape[0]), 1:, :]
     ev_test = ev[int(0.8 * inp.shape[0]):, 1:, :]
+
     ev_teacher_train = ev[:int(0.8 * inp.shape[0]), :-1, :]
     ev_teacher_test = ev[int(0.8 * inp.shape[0]):, :-1, :]
 
@@ -107,7 +120,7 @@ def get_Lizas_data():
     return inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend_factor
 
 import numpy as np
-from sklearn.preprocessing import scale
+from sklearn.preprocessing import scale, MinMaxScaler
 import matplotlib.pyplot as plt
 
 
@@ -125,14 +138,22 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
         # target_dims, int      - dimensions of the target dimensions
         # the code will assume that the target dimensions are the same variable, just downsampled and will restructure it.
     # -------------------------------------------------------------------------------------------------------------------
+    scaler = MinMaxScaler()
+    faults = data[:,-1]
+
+    scaler.fit(data)
+    data_to_be_scaled = scaler.transform(data)
 
 
 
-    data[:, :-1] = scale(data[:, :-1], axis=0, with_mean=True, with_std=True, copy=True) #scale the dataset
+    data = scale(data, axis=0, with_mean=True, with_std=True, copy=True) #scale the dataset
+    data[:, -1] = faults
+
     if plot: #plot if we want to
-        __plot_data_array(data, label='Scaled Data Set')
+        __plot_data_array(data[:300,:], label='Scaled Data Set')
 
     target_variable = data[:, target_dims] #extract target vars
+
 
     if len(target_dims) > 1: #get min_max
         target_min_max = __get_min_max(__reconstruct(target_variable)) # reconstruct into one array, get min_max
@@ -141,16 +162,20 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
 
     # create the list for the arrays
     pdf_targets = []    # pdf forecast
+    pdf_supports = []
     ev_targets = []     # expected value forecast
+    ev_supports = []
     sw_inputs = []      # inputs
 
     for timestep in range(0, data.shape[0] - fc_len_samples - sw_len_samples, steps_to_new_sample):
         sliced_sample = data[timestep:(timestep + fc_len_samples + sw_len_samples), :]
         sliced_input = sliced_sample[:-fc_len_samples, :]
         sliced_target = sliced_sample[-fc_len_samples:, target_dims]
+        sliced_support = sliced_sample[-(fc_len_samples+1):1, target_dims]
 
         if len(target_dims) > 1:
             sliced_target = __reconstruct(sliced_target)
+            sliced_support = __reconstruct(sliced_support)
 
         if np.sum(sliced_input[:, -1]) == 0:  # see if we are free of faults
 
@@ -160,15 +185,29 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
             pdf_target = __convert_to_pdf(sliced_target,
                                           num_steps=fc_steps, num_tiles=fc_tiles,
                                         min_max=target_min_max)  # pdf for probability distribution thingie
+            pdf_support = __convert_to_pdf(sliced_support,
+                                          num_steps=fc_steps, num_tiles=fc_tiles,
+                                        min_max=target_min_max)  # pdf for probability distribution thingie
+            tolerance = 1e-7
+            if 1.0-tolerance <= np.mean(np.sum(pdf_target, axis=-1)) >= 1.0 + tolerance:
+                print('ooh, u fucked up boi, ', np.mean(np.sum(pdf_target, axis=-1)))
             pdf_targets.append(pdf_target)
+            pdf_supports.append(pdf_support)
 
             ev_target = __convert_to_mv(sliced_target, num_steps=fc_steps)  # ev for expected value
             ev_targets.append(ev_target)
+            ev_support = __convert_to_mv(sliced_support, num_steps=fc_steps)  # ev for expected value
+            ev_supports.append(ev_support)
+
 
         if (int(timestep/steps_to_new_sample) % int(int(data.shape[0] / steps_to_new_sample)/10)) == 0:
             print(int(100*timestep/data.shape[0]), 'percent converted')
-
-    return np.array(sw_inputs), np.array(ev_targets), np.array(pdf_targets)
+    sw_inputs = np.array(sw_inputs)
+    ev_targets = np.array(ev_targets)
+    ev_supports = np.array(ev_supports)
+    pdf_targets = np.array(pdf_targets)
+    pdf_supports = np.array(pdf_supports)
+    return sw_inputs, ev_targets, ev_supports, pdf_targets, pdf_supports
 
 def __plot_data_array(data_arrays, label): # plots any provided 2D data arrat
 
@@ -255,7 +294,6 @@ def load_dataset(weather_data_folder='\_data\Weather_2016', pv_data_path="/_data
     generation = __stack_ts(gen, int(gen.shape[0] / weather_mvts.shape[0]))
 
     full_dataset = np.append(generation, weather_mvts, axis=-1)
-    full_dataset = np.delete(full_dataset, np.s_[5], axis=-1)
     return full_dataset
 
 def _get_weather_data(weather_data_folder):
@@ -337,15 +375,47 @@ def _get_weather_data(weather_data_folder):
         start_this_sim = int(first_appropriate_index[0])
         weather_mvts = np.append(weather_mvts, buffer[(start_this_sim):, :],
                                             axis=0)
-        end_prev_sim = weather_mvts[-1, 0]
         end_prev_sim = weather_mvts[-1,0]
 
+
+
+
+
     print('replacing the fauly values with the mean of the array')
-    faults = weather_mvts[:,-1]
+    faults = weather_mvts[:, -1]
+    weather_mvts = np.delete(weather_mvts, -1, axis=-1)
+
+    print('converting wind to polar coordinates')
+    wind = weather_mvts[:,-1]
+    weather_mvts = np.delete(weather_mvts, -1, axis=-1)
+    wind_in_radians = wind * np.pi / 180
+    wind_in_radians = np.array(wind_in_radians, dtype=np.float)
+    wind_in_cos = np.expand_dims(np.cos(wind_in_radians), axis=-1)
+    wind_in_sin = np.expand_dims(np.sin(wind_in_radians), axis=-1)
+    weather_mvts = np.concatenate((weather_mvts, wind_in_cos, wind_in_sin), axis=-1)
+
+
+    datetime_array = weather_mvts[:,0].tolist()
+    weather_mvts = np.delete(weather_mvts, 0, axis=-1)
+    datetime_array_daytime = [datetime_entry.hour * 60 + datetime_entry.minute for datetime_entry in datetime_array]
+    datetime_array_daytime_normed_to_1 = datetime_array_daytime / np.amax(datetime_array_daytime)
+    daytime_in_radians = datetime_array_daytime_normed_to_1 * 2.0 * np.pi
+    daytime_sin = np.expand_dims(np.sin(daytime_in_radians),axis=-1)
+    daytime_cos = np.expand_dims(np.cos(daytime_in_radians), axis=-1)
+
+    datetime_array_yeartime = [datetime_entry.month * (365/12) * 24 * 60 + datetime_entry.day*24*60 + datetime_entry.hour * 60 + datetime_entry.minute for datetime_entry in datetime_array]
+    datetime_array_yeartime_normed_to_1 = datetime_array_yeartime / np.amax(datetime_array_yeartime)
+    yeartime_in_radians = datetime_array_yeartime_normed_to_1 * 2.0 * np.pi
+    yeartime_sin = np.expand_dims(np.sin(yeartime_in_radians),axis=-1)
+    yeartime_cos = np.expand_dims(np.cos(yeartime_in_radians), axis=-1)
+
+
     for axis in range(1, weather_mvts.shape[-1] - 1): #for all but the last data array
         mean = np.mean(weather_mvts[:,axis])
 
         weather_mvts[:, axis] = np.where(faults == 1, mean, weather_mvts[:, axis])
+    faults = np.expand_dims(faults, axis=-1)
+    weather_mvts = np.concatenate((weather_mvts, daytime_cos, daytime_sin, yeartime_cos, yeartime_sin, faults), axis=-1)
     return weather_mvts, [start_nwp, end_nwp]
 
 def _get_PV(path, start_end_date): #getting the PV data

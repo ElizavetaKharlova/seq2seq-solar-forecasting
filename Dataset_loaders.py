@@ -84,21 +84,22 @@ def get_Lizas_data():
     # ---------------------------------------------------------------------------
 
     import numpy as np
-    ev = np.expand_dims(ev_target, axis=-1)
+    ev_target = np.expand_dims(ev_target, axis=-1)
+    ev_support = np.expand_dims(ev_support, axis=-1)
+
     inp_train = inp[:int(0.8 * inp.shape[0]), :, :]
     inp_test = inp[int(0.8 * inp.shape[0]):, :, :]
 
+    print(pdf_target)
     pdf_train = pdf_target[:int(0.8 * inp.shape[0]), :, :]
     pdf_test = pdf_target[int(0.8 * inp.shape[0]):, :, :]
+    pdf_teacher_train = pdf_support[:int(0.8 * inp.shape[0]), :, :]
+    pdf_teacher_test = pdf_support[int(0.8 * inp.shape[0]):, :, :]
 
-    pdf_support_train = pdf_support[:int(0.8 * inp.shape[0]), :, :]
-    pdf_support_test = pdf_support[int(0.8 * inp.shape[0]):, :, :]
-
-    ev_train = ev[:int(0.8 * inp.shape[0]), 1:, :]
-    ev_test = ev[int(0.8 * inp.shape[0]):, 1:, :]
-
-    ev_teacher_train = ev[:int(0.8 * inp.shape[0]), :-1, :]
-    ev_teacher_test = ev[int(0.8 * inp.shape[0]):, :-1, :]
+    ev_target_train = ev_target[:int(0.8 * inp.shape[0]), :, :]
+    ev_target_test = ev_target[int(0.8 * inp.shape[0]):, :, :]
+    ev_teacher_train = ev_support[:int(0.8 * inp.shape[0]), :, :]
+    ev_teacher_test = ev_support[int(0.8 * inp.shape[0]):, :, :]
 
     blend_factor = np.expand_dims(np.ones(inp_train.shape[0]), axis=-1)
     print(blend_factor.shape)
@@ -106,7 +107,7 @@ def get_Lizas_data():
     print('The training set has an input data shape of ',
           inp_train.shape,
           'to expected value targets of ',
-          ev_train.shape,
+          ev_target_train.shape,
           'or alternatively pdf_targets of ',
           pdf_train.shape)
     print('-----------------------------------------------')
@@ -115,9 +116,9 @@ def get_Lizas_data():
           'to expected value targets of ',
           pdf_test.shape,
           'or alternatively pdf_targets of ',
-          ev_test.shape)
+          ev_target_train.shape)
 
-    return inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend_factor
+    return inp_train, inp_test, ev_target_train, ev_target_test, ev_teacher_train, ev_teacher_test, blend_factor, pdf_train, pdf_test, pdf_teacher_train, pdf_teacher_test
 
 import numpy as np
 from sklearn.preprocessing import scale, MinMaxScaler

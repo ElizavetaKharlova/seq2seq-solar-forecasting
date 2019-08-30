@@ -3,7 +3,8 @@
 import tensorflow as tf
 from tensorflow import keras
 
-from Building_Blocks import build_model
+#from Building_Blocks import build_model
+from benchmarks import build_model
 from Dataset_loaders import get_Daniels_data, get_Lizas_data
 
 def __get_max_min_targets(train_targets, test_targets):
@@ -21,7 +22,9 @@ def __get_max_min_targets(train_targets, test_targets):
     min_value = np.minimum(min_value_test, min_value_train)
     return max_value, min_value
 
-inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend_factor, pdf_train, pdf_test, pdf_teacher_train, pdf_teacher_test = get_Daniels_data()
+#inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend_factor, pdf_train, pdf_test, pdf_teacher_train, pdf_teacher_test = get_Daniels_data()
+
+inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend_factor, pdf_train, pdf_test, pdf_teacher_train, pdf_teacher_test = get_Lizas_data()
 
 # inp_train, inp_test, ev_train, ev_test, ev_teacher_train, ev_teacher_test, blend_factor = get_Lizas_data()
 
@@ -30,8 +33,8 @@ keras.backend.clear_session()  # make sure we are working clean
 
 max_value, min_value = __get_max_min_targets(train_targets=ev_train, test_targets=ev_test)
 
-E_D_layers = 4
-E_D_units = 150
+E_D_layers = 1
+E_D_units = 50 #150
 out_shape = pdf_train.shape
 in_shape = inp_train.shape
 
@@ -112,7 +115,7 @@ while decrease < 10:
         # if we have no relative increase in quality towards the previous iteration
         # then decrease the blend factor
         blend_factor = blend_factor - 0.1
-        blend_factor = max(blend_factor, 0.0)
+        blend_factor = [max(factor, 0.0) for factor in blend_factor]
         print('lowering blend factor')
         relative_decrease = 0
 

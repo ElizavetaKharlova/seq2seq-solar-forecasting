@@ -7,7 +7,6 @@
 
 
 import tensorflow as tf
-from tensorflow import keras
 # this builds a basic encoder decoder model with:
 # encoder layers / units == decoder layers / units
 # output shape is the desired shape of the output [timesteps, dimensions]
@@ -28,7 +27,15 @@ def build_model(E_D_layers, E_D_units,
                 LSTM_decoder=True,
                 use_attention=False):
 
-    keras.backend.clear_session()  # make sure we are working clean
+    tf.keras.backend.clear_session()  # make sure we are working clean
+
+    # ToDo: allow for the uses of 'none' as Encoder setting, just passes data through
+
+    # ToDo: allow for 'none' as initial states for the decoder, do some zero initialization or something?
+
+    # ToDo: change in a way that we can give it an encoder and a decoder and this just builds the model
+
+    # ToDo: write decoder wrapper
 
     layers = E_D_layers  # remember units and layers
     units = E_D_units
@@ -180,6 +187,7 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
             if layer == 0 or self.use_dropout == False:
                 self.LSTM.append(one_LSTM_layer)
             else:
+                print('re doibng dropout')
                 self.LSTM.append(
                     DropoutWrapper(one_LSTM_layer, dropout_prob=self.dropout_rate)
                             )
@@ -189,12 +197,13 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                                                                     center=True,
                                                                     scale=True))
 
-    def call(self, inputs, initial_states):
+    def call(self, inputs, initial_states=None):
         if initial_states is None:  # ToDo: think about noisy initialization?
             initial_states = []
+            state_h = tf.zeros([tf.shape(inputs)[0], self.num_units])
+            state_c = tf.zeros([tf.shape(inputs)[0], self.num_units])
+
             for layer in range(self.num_layers):
-                state_h = tf.zeros([tf.shape(inputs)[0], self.num_units])
-                state_c = tf.zeros([tf.shape(inputs)[0], self.num_units])
                 initial_states.append([state_h, state_c])
 
         all_out = []  # again, we are working with lists, so we might just as well do the same for the outputs
@@ -300,17 +309,20 @@ class Attention(tf.keras.Model):
 # basically just a simple pseudowrapper for the MultiLayer_LSTM layer
 # ToDO: add a projection layer, that might be important for the attention mechs later on
 # this will reduce the size of attention needed :-)
-class encoder_LSTM(tf.keras.layers.Layer):
-    def __init__(self, num_layers, num_units, use_dropout=False, dropout_rate=0.0):
-        super(encoder_LSTM, self).__init__()
-        self.layers = num_layers
-        self.units = num_units
-        self.encoder = MultiLayer_LSTM(num_layers, num_units, use_dropout, dropout_rate)
+
+class block_LSTM(tf.keras.layers.Layer):
+    def __init__(self, num_layers, num_units, use_dropout=False, dropout_rate=0.0, use_norm=True, only_last_layer_output=True):
+        super(block_LSTM, self).__init__()
+        self.only_last_layer_output = only_last_layer_output
+        self.encoder = MultiLayer_LSTM(num_layers=num_layers, num_units=num_units, use_dropout=use_dropout, dropout_rate=dropout_rate, use_norm=use_norm)
 
     def call(self, encoder_inputs, initial_states=None):
         encoder_outputs, encoder_states = self.encoder(encoder_inputs, initial_states=initial_states)
 
-        return encoder_outputs, encoder_states
+        if self.only_last_layer_output:
+            return encoder_outputs[-1]
+        else:
+            return encoder_outputs, encoder_states
 
 class encoder_CNN(tf.keras.layers.Layer):
     def __init__(self, num_layers, num_units, use_dropout=True, dropout_rate=0.0):
@@ -414,3 +426,33 @@ class decoder_LSTM(tf.keras.layers.Layer):
 
 
         return decoder_output
+
+class decoder_LSTM_block(tf.keras.layers.Layer):
+    def __init__(self, num_layers, num_units,
+                 use_dropout=False,
+                 dropout_rate=0.0,
+                 use_attention=False,
+                 attention_hidden=False):
+        super(decoder_LSTM_block, self).__init__()
+        self.layers = num_layers
+        self.units = num_units
+        self.use_attention = use_attention
+        self.attention_hidden = attention_hidden
+
+        self.attention = Attention(num_units, bahdanau=False) # choose the attention style (Bahdanau, Transformer)
+        self.decoder = MultiLayer_LSTM(num_layers, num_units, use_dropout, dropout_rate)
+
+
+    def call(self, decoder_inputs, decoder_state, attention_value):
+        # add the Attention context vector
+        if self.use_attention:
+            context_vector, attention_weights = self.attention(decoder_inputs,
+                                                               values=attention_value)
+            # add attention to the input
+            decoder_inputs = tf.concat([tf.expand_dims(context_vector, 1), decoder_inputs], axis=-1)
+        # use the decodeer_LSTM
+        decoder_out, decoder_state = self.decoder(decoder_inputs,
+                                                  initial_states=decoder_state)
+
+        return decoder_out[-1], decoder_state
+

@@ -47,8 +47,12 @@ def calculate_E_nMSE(target, prediction, last_output_dim_size):
 
     expected_nMSE = tf.subtract(target, prediction)
     expected_nMSE = tf.square(expected_nMSE)
-
-    return tf.reduce_mean(expected_nMSE)
+    expected_nMSE = tf.reduce_mean(expected_nMSE)
+    if last_output_dim_size > 1:
+        normalizer = tf.square(last_output_dim_size)
+        return tf.divide(expected_nMSE, tf.cast(normalizer, dtype=tf.float32))
+    else:
+        return expected_nMSE
 
 def calculate_E_nME(target, prediction, last_output_dim_size):
 
@@ -60,7 +64,11 @@ def calculate_E_nME(target, prediction, last_output_dim_size):
     expected_nME = tf.subtract(target, prediction)
     expected_nME = tf.abs(expected_nME)
 
-    return tf.reduce_mean(expected_nME)
+    if last_output_dim_size > 1:
+        normalizer = last_output_dim_size
+        return tf.divide(expected_nME, tf.cast(normalizer, dtype=tf.float32))
+    else:
+        return expected_nME
 
 def calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size):
     absolute_probability_errors = tf.abs(tf.subtract(prediction, target))

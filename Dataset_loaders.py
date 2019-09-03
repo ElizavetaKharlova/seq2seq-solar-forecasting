@@ -1,6 +1,6 @@
 def get_Daniels_data(target_data='Pv',
-                     input_len_samples=int(7 * 24 * (60 / 5)),
-                     fc_len_samples=int(1 * 25 * (60 / 5)),
+                     input_len_samples=int(1 * 24 * (60 / 5)),
+                     fc_len_samples=int(1 * 24 * (60 / 5)),
                      fc_steps=24,
                      fc_tiles=33):
     # Daniel loads his data / If we want different data we do that here
@@ -279,7 +279,6 @@ def __convert_to_mv(target, num_steps):  # creates expected value targets
 import os, datetime, re
 import pandas as pd
 import numpy as np
-from utils import import_profile
 
 
 def load_dataset(weather_data_folder='\_data\Weather_2016', pv_data_path="/_data/"):
@@ -434,7 +433,7 @@ def _get_PV(path, start_end_date): #getting the PV data
 
 
     print('Loading generation data from ', start.strftime('%Y-%m-%d%H:%M:%S'), ' to ', stop.strftime('%Y-%m-%d%H:%M:%S'))
-    profile = import_profile(profile_path, time_start=start.strftime('%Y-%m-%d%H:%M:%S'),
+    profile = __import_profile(profile_path, time_start=start.strftime('%Y-%m-%d%H:%M:%S'),
                              time_end=stop.strftime('%Y-%m-%d%H:%M:%S'))
 
     generation = profile['gen']['profile']
@@ -463,3 +462,37 @@ def __stack_ts(timeseries, downsampling_factor):
     return stacked_ts
 
 
+def import_zp(filename):
+    import gzip, pickle
+    f = gzip.open(filename + '.zp', 'rb')
+    p_obj = pickle.load(f)
+    f.close()
+    return p_obj
+
+def __import_profile(pickle_path_name, time_start=None, time_end=None):
+    from datetime import datetime
+    offline_profile = import_zp(pickle_path_name)
+
+    if 'load' not in offline_profile:
+        return None
+
+    time_start_dt = None
+    time_start_index = 0
+    time_end_index = len(offline_profile['load']['profile'])-1
+
+    if time_start is not None:
+        time_start_dt = datetime.strptime(time_start, '%Y-%m-%d%H:%M:%S')
+        time_start_index = int((time_start_dt - offline_profile['load']['time_start']).total_seconds() / 60)
+
+    if time_end is not None:
+        time_end_dt = datetime.strptime(time_end, '%Y-%m-%d%H:%M:%S')
+        time_end_index = int((time_end_dt - offline_profile['load']['time_start']).total_seconds() / 60)
+
+    offline_profile['load']['time_start'] = time_start_dt
+    offline_profile['load']['profile'] = offline_profile['load']['profile'][time_start_index:time_end_index]
+
+    if 'gen' in offline_profile:
+        offline_profile['gen']['time_start'] = time_start_dt
+        offline_profile['gen']['profile'] = offline_profile['gen']['profile'][time_start_index:time_end_index]
+
+    return offline_profile

@@ -3,8 +3,8 @@
 import tensorflow as tf
 
 #from Building_Blocks import build_model
-from benchmarks import build_model
-from Dataset_loaders import get_Daniels_data, get_Lizas_data
+from Benchmarks import build_model
+from Dataset_Loaders import get_Daniels_data, get_Lizas_data
 
 def __get_max_min_targets(train_targets, test_targets):
     import numpy as np
@@ -33,10 +33,6 @@ max_value, min_value = __get_max_min_targets(train_targets=ev_train, test_target
 
 E_D_layers = 3
 E_D_units = 80
-inp_train = inp_train[:400,:,:]
-blend_factor = blend_factor[:400]
-pdf_train = pdf_train[:400,:,:]
-pdf_teacher_train = pdf_teacher_train[:400,:,:]
 out_shape = pdf_train.shape
 in_shape = inp_train.shape
 

@@ -1,220 +1,103 @@
 # will contain losses and metrics used to analyse whatever we wanna train
 import tensorflow as tf
-# Loss and Metric for relative Mean Error for expected value forecasts
 
-# this calculates the normed mean error,  meaning it is with regards to the biggest and smallest values within the set
-def calculate_expected_normME(y_true, y_pred, min_value, max_value):
-    y_true = tf.cast(y_true, dtype=tf.float32)
-    y_pred = tf.cast(y_pred, dtype=tf.float32)
-    min_value = tf.cast(min_value, dtype=tf.float32)
-    max_value = tf.cast(max_value, dtype=tf.float32)
+def loss_wrapper(last_output_dimension_size=30, loss_type='nME'):
+    if loss_type == 'NME' or loss_type == 'nME' or loss_type == 'nme':
+        def loss_nME(target, prediction):
+            target = tf.cast(target, dtype=tf.float32)
+            prediction = tf.cast(prediction, dtype=tf.float32)
+            return calculate_E_nME(target, prediction, last_output_dimension_size)
+        return loss_nME
 
+    elif loss_type == 'NMSE' or loss_type == 'nMSE' or loss_type == 'nmse':
+        def loss_nMSE(target, prediction):
+            target = tf.cast(target, dtype=tf.float32)
+            prediction = tf.cast(prediction, dtype=tf.float32)
+            return calculate_E_nMSE(target, prediction, last_output_dimension_size)
+        return loss_nMSE
 
-    abs_offset = tf.subtract(min_value, max_value)
+    elif loss_type == 'KL-D' or loss_type == 'kl-d' or loss_type == 'KL-Divergence':
+        def loss_KLD(target, prediction):
+            target = tf.cast(target, dtype=tf.float32)
+            prediction = tf.cast(prediction, dtype=tf.float32)
+            return calculate_KL_Divergence(target, prediction, last_output_dimension_size)
+        return loss_KLD
 
-    loss = tf.math.subtract(y_true, y_pred)  # (batches, steps, 1)
-    loss = tf.math.subtract(loss, min_value)  # (batches, steps, 1), make the minimum value 0
+    elif loss_type == 'tile-to-forecast':
+        def loss_designed(target, prediction):
+            target = tf.cast(target, dtype=tf.float32)
+            prediction = tf.cast(prediction, dtype=tf.float32)
+            return calculate_tile_to_pdf_loss(target, prediction, last_output_dimension_size)
+        return loss_designed
+    else:
+        print('loss_type ', loss_type, ' not recognized.')
+        print('please elect loss from available options: nME, nMSE, KL-Divergence, tile-to-forecast')
 
-    loss = tf.math.abs(loss)  # to make sure the error is positive
-    loss = tf.math.divide(loss, abs_offset)  # (batches, steps, 1), normalize the errors relative to the largest error
-    loss = tf.math.reduce_mean(loss, axis=-1)  # (bacthes), get the mean error per timestep
+def __calculate_expected_value(signal, last_output_dim_size):
+    indices = tf.range(last_output_dim_size, dtype=tf.float32) # (last_output_dim_size)
+    weighted_signal = tf.multiply(signal, indices) # (batches, timesteps, last_output_dim_size)
+    return tf.reduce_sum(weighted_signal, keepdims=True)
 
-    loss = tf.math.multiply(tf.cast(100.0, dtype=tf.float32), loss)  # (batches) convert into percents
+def calculate_E_nMSE(target, prediction, last_output_dim_size):
 
-    return loss
-def loss_expected_normME(max_value, min_value):
-    def normME(y_true, y_pred):
-        return calculate_expected_normME(y_true, y_pred, min_value, max_value)
-    return normME
+    # if pdfs, convert to expected values
+    if last_output_dim_size > 1:
+        target = __calculate_expected_value(target, last_output_dim_size)
+        prediction = __calculate_expected_value(prediction, last_output_dim_size)
 
-# this calculates the relative mean error, absolute meaning it is with regards to the target
-def calculate_expected_rME(target, prediction):
-    target = tf.cast(target, dtype=tf.float32)
-    prediction = tf.cast(prediction, dtype=tf.float32)
+    expected_nMSE = tf.subtract(target, prediction)
+    expected_nMSE = tf.square(expected_nMSE)
 
-    target = tf.where(tf.equal(target, 0.0),
-                      x=1e-7,
-                      y=target)
-    prediction = tf.where(tf.equal(prediction, 0.0),
-                      x=1e-7,
-                      y=prediction)
+    return tf.reduce_mean(expected_nMSE)
 
-    relative = tf.math.subtract(prediction, target)
-    relative = tf.math.divide(relative, target)
-    relative_error = tf.abs(relative)
-    loss = tf.math.reduce_mean(relative_error)  # (bacthes), get the mean error per timestep
+def calculate_E_nME(target, prediction, last_output_dim_size):
 
-    loss = tf.math.multiply(tf.cast(100.0, dtype=tf.float32), loss)  # (batches) convert into percents
+    # if pdfs, convert to expected values
+    if last_output_dim_size > 1:
+        target = __calculate_expected_value(target, last_output_dim_size)
+        prediction = __calculate_expected_value(prediction, last_output_dim_size)
 
-    return loss
-def loss_expected_rME():
-    def rME(y_true, y_pred):
-        return calculate_expected_rME(y_true, y_pred)
-    return rME
+    expected_nME = tf.subtract(target, prediction)
+    expected_nME = tf.abs(expected_nME)
 
-# this calculates the relative mean expected error, absolute meaning it is with regards to the target for a PDF
-def calculate_pdf_rME(target, prediction):
+    return tf.reduce_mean(expected_nME)
 
-    output_tiles = tf.shape(target)
-    output_tiles = output_tiles[-1]
-    indices = tf.range(output_tiles)
-    indices = tf.cast(indices, dtype=tf.float32)
+def calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size):
+    absolute_probability_errors = tf.abs(tf.subtract(prediction, target))
+    inverse_probability_errors = tf.subtract(1.0, absolute_probability_errors)
+    inverse_probability_errors_nonzero = tf.math.maximum(inverse_probability_errors, 1e-8)
+    inverse_log_probability_error = - tf.math.log(inverse_probability_errors_nonzero)
 
-    ev_target = tf.multiply(target, indices)
-    ev_target = tf.reduce_sum(ev_target, axis=-1)
+    loss = 0.0
 
-    ev_prediction = tf.multiply(prediction, indices)
-    ev_prediction = tf.reduce_sum(ev_prediction, axis=-1)
+    for prediction_tile in range(last_output_dim_size):
+        forecast_tile_inverse_log_loss = inverse_log_probability_error[:, :, prediction_tile]
 
-    loss = calculate_expected_rME(ev_target, ev_prediction)
+        for target_tile in range(last_output_dim_size):
+            tile_distance = target_tile - prediction_tile
+            tile_distance_sq = tf.square(tile_distance)
+            tile_distance_sq = tf.cast(tile_distance_sq, dtype=tf.float32)
 
-    return loss
-def loss_pdf_rME():
-    def pdf_rME(target, prediction):
-        return calculate_pdf_rME(target, prediction)
-    return pdf_rME
+            target_tile_probability = target[:, :, target_tile]
 
-# same thing, just relative mean squared error
-def calculate_expected_normMSE(y_true, y_pred, min_value, max_value):
-    y_true = tf.cast(y_true, dtype=tf.float32)
-    y_pred = tf.cast(y_pred, dtype=tf.float32)
-    min_value = tf.cast(min_value, dtype=tf.float32)
-    max_value = tf.cast(max_value, dtype=tf.float32)
+            loss += tile_distance_sq * target_tile_probability * forecast_tile_inverse_log_loss
 
-    abs_offset = tf.subtract(min_value, max_value)
-
-    y_true = tf.math.subtract(y_true, min_value) # make sure they start at 0
-    y_pred = tf.math.subtract(y_pred, min_value)
-
-    y_true = tf.square(y_true)
-    y_pred = tf.square(y_pred)
-
-    loss = tf.math.subtract(y_true, y_pred)  # (batches, steps, 1)
-    loss = tf.math.abs(loss)
-    loss = tf.math.divide(loss, tf.square(
-        abs_offset))  # (batches, steps, 1), normalize the errors relative to the largest error
-    loss = tf.math.reduce_mean(loss)  # (bacthes), get the mean error per timestep
-
-    loss = tf.math.multiply(tf.cast(100.0, dtype=tf.float32), loss)  # (batches) convert into percents
+    loss = tf.reduce_sum(loss)
 
     return loss
-def loss_expected_normMSE(min_value, max_value):
-    def normMSE(y_true, y_pred):
-        return calculate_expected_normMSE(y_true, y_pred, min_value, max_value)
-    return normMSE
 
-def calculate_expected_rMSE(target, prediction):
-    target = tf.cast(target, dtype=tf.float32)
-    prediction = tf.cast(prediction, dtype=tf.float32)
+def calculate_KL_Divergence(target, prediction, last_output_dim_size):
 
-    target = tf.math.square(target)
-    target = tf.maximum(target, 1e-8)
+    if last_output_dim_size == 1:
+        return tf.nan
 
-    prediction = tf.math.square(prediction)
-    prediction = tf.maximum(prediction, 1e-8)
+    else:
 
-    # relative error is (pred/target) - 1
-    relative = tf.math.subtract(prediction, target)
-    relative = tf.math.divide(relative, target)
-    relative_error = tf.abs(relative)
-    relative_error = tf.math.reduce_mean(relative_error)  # (bacthes), get the mean error per timestep
+        # KL_divergence = sum_over_bands( q(band) * ln(q(band)/p(band)))
+        KL_divergence = tf.divide(tf.math.maximum(prediction, 1e-8), tf.math.maximum(target, 1e-8))
 
-    relative_error = tf.math.multiply(tf.cast(100.0, dtype=tf.float32),
-                                      relative_error)  # (batches) convert into percents
-
-    return relative_error
-def loss_expected_rMSE():
-    def rMSE(y_true, y_pred):
-        return calculate_expected_rMSE(y_true)
-    return rMSE
-
-def calculate_pdf_rMSE(target, prediction):
-
-    output_tiles = tf.shape(target)
-    output_tiles = output_tiles[-1]
-    indices = tf.range(output_tiles)
-    indices = tf.cast(indices, dtype=tf.float32)
-
-    ev_target = tf.multiply(target, indices)
-    print(ev_target)
-    ev_target = tf.reduce_sum(ev_target, axis=-1)
-
-
-    ev_prediction = tf.multiply(prediction, indices)
-    ev_prediction = tf.reduce_sum(ev_prediction, axis=-1)
-
-    relative_error = calculate_expected_rMSE(ev_target, ev_prediction)
-
-    return relative_error
-def loss_pdf_rMSE():
-    def pdf_rMSE(target, prediction):
-        return calculate_pdf_rMSE(target, prediction)
-    return pdf_rMSE
-
-# ToDo: add the probailistic losses n shit
-def pdf_tile_to_fc_loss(target, prediction, distance_tensor):
-    # We wanna compare evrery single tile of the PDF to the whole target pdf
-    # this way, we develop a measure that includes attributes of the KL divergence and of a distance based error
-    target_shape = tf.shape(target)
-    output_tiles = target_shape[-1]
-    batch_size = target_shape[0]
-
-    target = tf.cast(target, dtype=tf.float32)
-    prediction = tf.cast(prediction, dtype=tf.float32)
-
-    distance_tensor = tf.tile(distance_tensor, [batch_size, 1, 1, 1]) # (batches, target_steps, output_tiles, output_tiles)
-
-    loss = tf.subtract(prediction, target)
-    # loss = tf.abs(loss)
-    loss = tf.subtract(1.0, loss)
-    loss = tf.where(tf.equal(loss, 0.0), x=1e-9, y=loss)
-    loss = tf.math.maximum(loss, 1e-9) #prevent 0s, because log and 0 is not good
-    loss = -tf.math.log(loss)
-    loss = tf.tile(tf.expand_dims(loss, axis=-1), [1, 1, 1, output_tiles])
-
-    weighted_distance_tensor = tf.tile(tf.expand_dims(target, axis=-1), [1, 1, 1, output_tiles]) # (batches, target_steps, output_tiles, output_tiles)
-    weighted_distance_tensor = tf.multiply(tf.cast(distance_tensor, dtype=tf.float32), weighted_distance_tensor)
-    weighted_distance_tensor = tf.transpose(weighted_distance_tensor, perm=[0, 1, 3, 2]) # iIrc this is necessary to shift
-
-    loss = tf.multiply(weighted_distance_tensor, loss)
-    loss = tf.reduce_sum(loss, axis=-1)  # sum over tile-to-tile errors for each tile
-    loss = tf.reduce_sum(loss, axis=-1)  # sum over tiles for each timestep
-    loss = tf.reduce_mean(loss)  # average
-
-    return loss
-def loss_tile_to_pdf(out_steps, out_tiles):
-
-    # for that, we need a tensor that holds the distances from each point to another
-    # if theres a smarter way to do that, I'd be happy
-    distance_tensor = [tf.range(out_tiles)]  # shape (output_tiles)
-    for tile in range(1, out_tiles):
-        distance_tensor = tf.concat([distance_tensor, [tf.subtract(tf.range(out_tiles), tile)]], axis=0)
-    distance_tensor = tf.abs(distance_tensor)  # shape (output_tiles, output_tiles)
-    distance_tensor = tf.expand_dims(distance_tensor, axis=0)
-    distance_tensor = tf.expand_dims(distance_tensor, axis=0)  # shape (1,1, output_tiles, output_tiles)
-    distance_tensor = tf.tile(distance_tensor,
-                              [1, out_steps, 1, 1])  # (1, target_steps, output_tiles, output_tiles)
-
-    def tile_to_pdf(target, prediction):
-        return pdf_tile_to_fc_loss(target, prediction, distance_tensor)
-    return tile_to_pdf
-
-
-
-
-def calculate_KL_Divergence(target, prediction):
-    target = tf.cast(target, dtype=tf.float32)
-    prediction = tf.cast(prediction, dtype=tf.float32)
-
-    # KL_divergence = sum_over_bands( q(band) * ln(q(band)/p(band)))
-    KL_divergence = tf.divide(tf.math.maximum(prediction, 1e-8), tf.math.maximum(target, 1e-8))
-    KL_divergence = tf.math.log(KL_divergence)
-    KL_divergence = tf.multiply(prediction, KL_divergence)
-    KL_divergence = tf.reduce_sum(KL_divergence, axis=-1)
-    KL_divergence = tf.reduce_mean(KL_divergence)
-    return KL_divergence
-
-def loss_KL_Divergence():
-    def KL_D(target, prediction):
-        return calculate_KL_Divergence(target, prediction)
-    return KL_D
+        KL_divergence = tf.math.log(KL_divergence)
+        KL_divergence = tf.multiply(prediction, KL_divergence)
+        KL_divergence = tf.reduce_sum(KL_divergence, axis=-1)
+        KL_divergence = tf.reduce_mean(KL_divergence)
+        return KL_divergence

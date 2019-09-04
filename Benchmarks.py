@@ -17,6 +17,7 @@ from tensorflow import keras
 
 def build_model(E_D_layers, E_D_units,
                 in_shape, out_shape,
+                Dense_blocks=4,
                 dropout_rate=0.2,
                 use_dropout=True,
                 CNN_encoder=False, LSTM_encoder=True,
@@ -43,6 +44,9 @@ def build_model(E_D_layers, E_D_units,
         decoder_inputs = tf.keras.layers.Input(shape=(out_shape[1], out_shape[2]))
         network_inputs = [encoder_inputs, decoder_inputs]
         network = seq2seq(layers, units, out_shape=out_shape[1:], use_norm=False)
+    elif network=='dense':
+        network_inputs = tf.keras.layers.Input(shape=(in_shape[1], in_shape[2]))
+        network = DenseTCN(Dense_blocks, layers, growth_rate=12, squeeze_factor=4, use_dropout=False, dropout_rate=dropout_rate, use_norm=False, kernel_sizes=[3, 5], strides=1)
 
     # Run
     network_outputs = network(network_inputs)
@@ -208,6 +212,118 @@ class LSTM(tf.keras.layers.Layer):
                 all_out = tf.concat([all_out, tf.expand_dims(out[:,-1,:],2)], axis=-1) 
         return all_out
 
+
+# Dense temporal convolutional network
+# requires number of block and layers within a block to initialize
+# can change growth rate, squeeze factor, kernel sizes, strides, dropout and norm parameters
+# requires inputs to run
+# can have an arbitrary number of streams determined by the size of the kernel array
+# outputs the raw network output in size [Batches, Timesteps, Features]
+# requires a MIMO or a recursive wrapper to output predictions
+class DenseTCN(tf.keras.layers.Layer):
+    def __init__(self, num_blocks, num_layers, growth_rate=12, squeeze_factor=4, use_dropout=False, dropout_rate=0.0, use_norm=False, kernel_sizes=[3, 5], strides=1):
+        super(DenseTCN, self).__init__()
+        self.num_blocks = num_blocks
+        self.num_layers = num_layers
+        self.growth_rate = growth_rate
+        self.squeeze_factor = squeeze_factor*growth_rate
+        self.use_dropout = use_dropout
+        self.dropout_rate = dropout_rate
+        self.kernel_sizes = kernel_sizes
+        self.strides = strides
+        self.use_norm = use_norm
+        print('HERE')
+        if self.use_norm:
+            self.norm = []
+        # create a stack of squeeze layers to be used between blocks (is not used after the last block)
+        self.squeeze = []
+        for i in range(self.num_blocks-1):
+            self.squeeze.append(tf.keras.layers.Conv1D(self.squeeze_factor,
+                                                kernel_size=1,
+                                                strides=1,
+                                                padding='causal'))
+
+    # initialize one CNN layer with arbitrary parameters
+    def cnn_layer(self, kernel_size, strides, dilation_rate):
+        return tf.keras.layers.Conv1D(self.growth_rate,
+                                                kernel_size=kernel_size,
+                                                strides=strides,
+                                                dilation_rate=dilation_rate,
+                                                padding='causal')
+    # build a stack for one layer of the network
+    def build_layer(self, num_layer, kernel_size):
+        layer = []
+        layer.append(self.cnn_layer(kernel_size=1, strides=1, dilation_rate=1))
+        layer.append(self.cnn_layer(kernel_size, self.strides, dilation_rate=2**num_layer))
+        if self.use_norm:
+            self.norm.append(tf.keras.layers.BatchNormalization())
+        return layer
+
+    # stack the network layers within a stream 
+    def build_stream(self, kernel_size):
+        stream = []
+        for num_layer in range(self.num_layers):
+            stream.append(self.build_layer(num_layer, kernel_size))
+        return stream
+
+    # build a stack of blocks which includes several streams with different kernel sizes
+    def build_block(self):
+        self.blocks = []
+        for block in range(self.num_blocks):
+            all_streams = []
+            for kernel_size in self.kernel_sizes:
+                all_streams.append(self.build_stream(kernel_size))
+            self.blocks.append(all_streams)
+        return None
+
+    # run one basic dense network layer
+    # return output concatednated with input
+    def run_layer(self, block, num_layer, num_stream, inputs):
+        out = inputs
+        out = self.blocks[block][num_stream][num_layer][0](out)
+        out = self.blocks[block][num_stream][num_layer][1](out)
+        if self.use_norm:
+            out = self.norm[num_layer]
+        if self.use_dropout:
+            out = tf.nn.dropout(self.dropout_rate)
+        #TODO: not sure which activation to use
+        out = tf.keras.activations.relu(out)
+        return tf.concat([out, inputs], 2)
+    
+    # run output through one stream
+    def run_stream(self, block, num_stream, inputs):
+        out = inputs
+        for num_layer in range(self.num_layers):
+            out = self.run_layer(block, num_layer, num_stream, out)
+        return out
+
+    # run the output through blocks
+    # within the block run through several streams according to size of the kernel array
+    def run_block(self, block, inputs):
+        out = []
+        for num_stream in range(len(self.blocks[block])):
+            # concatenate the outputs of several streams
+            if num_stream == 0:
+                out = self.run_stream(block, num_stream, inputs)
+            else:
+                out = tf.concat([out, self.run_stream(block, num_stream, inputs)], 2)
+        # return output concatednated with input
+        return tf.concat([out, inputs], 2)
+
+
+    def call(self, inputs):
+        out = inputs
+        # call the initialize function
+        self.build_block()
+        # iterate through blocks
+        for block in range(self.num_blocks):
+            out = self.run_block(block, out)
+            # apply squeeze after each block except last
+            if block < (self.num_blocks-1):
+                out = self.squeeze[block](out)
+        return out
+        
+        
 # temporal convolutional network
 # this implementation includes possibility to use residual blocks or dense blocks 
 # TODO: possibly separate the 2 or remove the residual block

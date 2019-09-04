@@ -97,15 +97,17 @@ def calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size):
 def calculate_KL_Divergence(target, prediction, last_output_dim_size):
 
     if last_output_dim_size == 1:
-        return tf.nan
+        KL_divergence = tf.divide(prediction, target)
+        KL_divergence = tf.abs(KL_divergence)
+        KL_divergence = tf.maximum(KL_divergence, 1e-8)
 
     else:
 
         # KL_divergence = sum_over_bands( q(band) * ln(q(band)/p(band)))
         KL_divergence = tf.divide(tf.math.maximum(prediction, 1e-8), tf.math.maximum(target, 1e-8))
 
-        KL_divergence = tf.math.log(KL_divergence)
-        KL_divergence = tf.multiply(prediction, KL_divergence)
-        KL_divergence = tf.reduce_sum(KL_divergence, axis=-1)
-        KL_divergence = tf.reduce_mean(KL_divergence)
-        return KL_divergence
+    KL_divergence = tf.math.log(KL_divergence)
+    KL_divergence = tf.multiply(prediction, KL_divergence)
+    KL_divergence = tf.reduce_sum(KL_divergence, axis=-1)
+    KL_divergence = tf.reduce_mean(KL_divergence)
+    return KL_divergence

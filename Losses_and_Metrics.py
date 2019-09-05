@@ -36,7 +36,7 @@ def loss_wrapper(last_output_dimension_size=30, loss_type='nME'):
 def __calculate_expected_value(signal, last_output_dim_size):
     indices = tf.range(last_output_dim_size, dtype=tf.float32) # (last_output_dim_size)
     weighted_signal = tf.multiply(signal, indices) # (batches, timesteps, last_output_dim_size)
-    return tf.reduce_sum(weighted_signal, keepdims=True)
+    return tf.reduce_sum(weighted_signal, axis=-1, keepdims=True)
 
 def calculate_E_nMSE(target, prediction, last_output_dim_size):
 
@@ -48,6 +48,7 @@ def calculate_E_nMSE(target, prediction, last_output_dim_size):
     expected_nMSE = tf.subtract(target, prediction)
     expected_nMSE = tf.square(expected_nMSE)
     expected_nMSE = tf.reduce_mean(expected_nMSE)
+
     if last_output_dim_size > 1:
         normalizer = tf.square(last_output_dim_size)
         return tf.divide(expected_nMSE, tf.cast(normalizer, dtype=tf.float32))

@@ -1,8 +1,8 @@
 def get_Daniels_data(target_data='Pv',
-                     input_len_samples=int(1 * 24 * (60 / 5)),
+                     input_len_samples=int(3 * 24 * (60 / 5)),
                      fc_len_samples=int(1 * 24 * (60 / 5)),
                      fc_steps=24,
-                     fc_tiles=33):
+                     fc_tiles=40):
     # Daniel loads his data / If we want different data we do that here
     # For a encoder decoder model we will need 3 inputs:
     # encoder input, decoder support, blend factor (for how much we want to do teacher forcing)
@@ -15,7 +15,7 @@ def get_Daniels_data(target_data='Pv',
         print('Not Implemented YET, except funky behavior')
         # ToDo: make sure you can add the load data here!
 
-    inp, ev_target, ev_support, pdf_target, pdf_support = datasets_from_data(raw_data,
+    inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = datasets_from_data(raw_data,
                                                           sw_len_samples=input_len_samples,
                                                           fc_len_samples=fc_len_samples,
                                                           fc_steps=fc_steps,
@@ -24,41 +24,10 @@ def get_Daniels_data(target_data='Pv',
                                                           plot=True,
                                                           steps_to_new_sample=15)
     import numpy as np
-    ev_target = np.expand_dims(ev_target, axis=-1)
-    ev_support = np.expand_dims(ev_support, axis=-1)
+    ev_targets = np.expand_dims(ev_targets, axis=-1)
+    ev_teacher = np.expand_dims(ev_teacher, axis=-1)
 
-    inp_train = inp[:int(0.8 * inp.shape[0]), :, :]
-    inp_test = inp[int(0.8 * inp.shape[0]):, :, :]
-
-    print(pdf_target)
-    pdf_train = pdf_target[:int(0.8 * inp.shape[0]), :, :]
-    pdf_test = pdf_target[int(0.8 * inp.shape[0]):, :, :]
-    pdf_teacher_train = pdf_support[:int(0.8 * inp.shape[0]), :, :]
-    pdf_teacher_test = pdf_support[int(0.8 * inp.shape[0]):, :, :]
-
-    ev_target_train = ev_target[:int(0.8 * inp.shape[0]), :, :]
-    ev_target_test = ev_target[int(0.8 * inp.shape[0]):, :, :]
-    ev_teacher_train = ev_support[:int(0.8 * inp.shape[0]), :, :]
-    ev_teacher_test = ev_support[int(0.8 * inp.shape[0]):, :, :]
-
-    blend_factor = np.expand_dims(np.ones(inp_train.shape[0]), axis=-1)
-    print(blend_factor.shape)
-
-    print('The training set has an input data shape of ',
-          inp_train.shape,
-          'to expected value targets of ',
-          ev_target_train.shape,
-          'or alternatively pdf_targets of ',
-          pdf_train.shape)
-    print('-----------------------------------------------')
-    print('The testing set has an input data shape of ',
-          inp_test.shape,
-          'to expected value targets of ',
-          pdf_test.shape,
-          'or alternatively pdf_targets of ',
-          ev_target_train.shape)
-
-    return inp_train, inp_test, ev_target_train, ev_target_test, ev_teacher_train, ev_teacher_test, blend_factor, pdf_train, pdf_test, pdf_teacher_train, pdf_teacher_test
+    return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher
 
 
 def get_Lizas_data():
@@ -72,7 +41,7 @@ def get_Lizas_data():
     specs = NetworkData['specs']
     print('Specs:', specs)
 
-    inp, ev_target, ev_support, pdf_target, pdf_support = datasets_from_data(data=mvts_array,
+    inp, ev_target, ev_teacher, pdf_targets, pdf_teacher = datasets_from_data(data=mvts_array,
                                       sw_len_samples=specs['sw_steps'],
                                       fc_len_samples=specs['num_steps'],
                                       fc_steps=specs['forecast_steps'],
@@ -84,41 +53,10 @@ def get_Lizas_data():
     # ---------------------------------------------------------------------------
 
     import numpy as np
-    ev_target = np.expand_dims(ev_target, axis=-1)
-    ev_support = np.expand_dims(ev_support, axis=-1)
+    ev_targets = np.expand_dims(ev_targets, axis=-1)
+    ev_teacher = np.expand_dims(ev_teacher, axis=-1)
 
-    inp_train = inp[:int(0.8 * inp.shape[0]), :, :]
-    inp_test = inp[int(0.8 * inp.shape[0]):, :, :]
-
-    print(pdf_target)
-    pdf_train = pdf_target[:int(0.8 * inp.shape[0]), :, :]
-    pdf_test = pdf_target[int(0.8 * inp.shape[0]):, :, :]
-    pdf_teacher_train = pdf_support[:int(0.8 * inp.shape[0]), :, :]
-    pdf_teacher_test = pdf_support[int(0.8 * inp.shape[0]):, :, :]
-
-    ev_target_train = ev_target[:int(0.8 * inp.shape[0]), :, :]
-    ev_target_test = ev_target[int(0.8 * inp.shape[0]):, :, :]
-    ev_teacher_train = ev_support[:int(0.8 * inp.shape[0]), :, :]
-    ev_teacher_test = ev_support[int(0.8 * inp.shape[0]):, :, :]
-
-    blend_factor = np.expand_dims(np.ones(inp_train.shape[0]), axis=-1)
-    print(blend_factor.shape)
-
-    print('The training set has an input data shape of ',
-          inp_train.shape,
-          'to expected value targets of ',
-          ev_target_train.shape,
-          'or alternatively pdf_targets of ',
-          pdf_train.shape)
-    print('-----------------------------------------------')
-    print('The testing set has an input data shape of ',
-          inp_test.shape,
-          'to expected value targets of ',
-          pdf_test.shape,
-          'or alternatively pdf_targets of ',
-          ev_target_train.shape)
-
-    return inp_train, inp_test, ev_target_train, ev_target_test, ev_teacher_train, ev_teacher_test, blend_factor, pdf_train, pdf_test, pdf_teacher_train, pdf_teacher_test
+    return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher
 
 import numpy as np
 from sklearn.preprocessing import scale, MinMaxScaler

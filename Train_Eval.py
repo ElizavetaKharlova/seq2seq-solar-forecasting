@@ -4,7 +4,6 @@ import tensorflow as tf
 import numpy as np
 #from Building_Blocks import build_model
 from Benchmarks import build_model
-from Dataset_Loaders import get_Daniels_data, get_Lizas_data
 
 def __get_max_min_targets(train_targets, test_targets):
     import numpy as np
@@ -21,8 +20,66 @@ def __get_max_min_targets(train_targets, test_targets):
     min_value = np.minimum(min_value_test, min_value_train)
     return max_value, min_value
 
+import matplotlib.pyplot as plt
+def __plot_training_curves(train_dict, val_dict):
+
+    for key in train_dict.keys():
+        for val_key in val_dict.keys():
+            if str(key) in str(val_key):
+                plt.plot(train_dict[key], label=str(key))
+                plt.plot(val_dict[val_key], label=str(val_key))
+                plt.xlabel('number of Epochs')
+                plt.show()
+
+def __slice_and_delete(inp, teacher, target, len_slice, seed):
+    num_total_samples = inp.shape[0]
+    len_slice = int(len_slice)
+    max_index_before_extraction = num_total_samples - len_slice
+    np.random.seed(seed)
+    index_start = np.random.uniform(low=0,
+                                       high=max_index_before_extraction,
+                                       size=None)
+    index_start = int(index_start)
+    test_slice = np.s_[index_start:(index_start + len_slice)]
+    inp_slice = inp[index_start:(index_start + len_slice), :, :]
+    inp = np.delete(inp, test_slice, axis=0)
+    teacher_slice = teacher[index_start:(index_start + len_slice), :, :]
+    teacher = np.delete(teacher, test_slice, axis=0)
+    slice_inputs = [inp_slice, teacher_slice, np.array([0] * inp_slice.shape[0])]
+
+    target_slice = target[index_start:(index_start + len_slice), :, :]
+    target = np.delete(target, test_slice, axis=0)
 
 
+
+    return slice_inputs, target_slice, inp, teacher, target
+
+
+
+def __split_dataset(inp, target, teacher, training_ratio):
+    if training_ratio > 1:
+        print('... seems like you want more than a full training set, the training ratio needs to be smaller than 1!')
+
+    remainder_for_test_val = 1.0-training_ratio
+    test_len =  (remainder_for_test_val/2.0) * inp.shape[0]
+    val_len = (remainder_for_test_val/2.0) * inp.shape[0]
+    dataset = {}
+
+    dataset['test_inputs'], dataset['test_targets'], inp, teacher, target = __slice_and_delete(inp, teacher, target, test_len, seed=42)
+    dataset['val_inputs'], dataset['val_targets'], inp, teacher, target = __slice_and_delete(inp, teacher, target, val_len, seed=23)
+
+    dataset['train_inputs'] = [inp, teacher, np.array([1]*inp.shape[0])]
+    dataset['train_targets'] = target
+
+    print('Dataset has', dataset['train_targets'].shape[0], 'training samples', dataset['val_targets'].shape[0], 'val samples', dataset['test_targets'].shape[0], 'test samples')
+
+    return dataset
+
+
+
+
+
+from Dataset_Loaders import get_Daniels_data, get_Lizas_data
 inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = get_Daniels_data()
 
 # inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = get_Lizas_data()
@@ -30,50 +87,34 @@ inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = get_Daniels_data()
 out_shape = pdf_targets.shape[1:]
 in_shape = inp.shape[1:]
 
-from sklearn.model_selection import train_test_split
-test_size = 0.15
-inp_train, inp_test = train_test_split(inp, test_size=test_size, random_state=42)
-pdf_targets_train, pdf_targets_test = train_test_split(pdf_targets, test_size=test_size, random_state=42)
-pdf_teacher_train, pdf_teacher_test = train_test_split(pdf_teacher, test_size=test_size, random_state=42)
-
-
-inp_train, inp_val = train_test_split(inp_train, test_size=test_size/(1-test_size), random_state=42)
-pdf_targets_train, pdf_targets_val = train_test_split(pdf_targets_train, test_size=test_size/(1-test_size), random_state=42)
-pdf_teacher_train, pdf_teacher_val = train_test_split(pdf_teacher_train, test_size=test_size/(1-test_size), random_state=42)
-blend_factor_val = [1] * inp_val.shape[0]
-blend_factor_val = np.array(blend_factor_val)
-blend_factor_train = [1] * inp_train.shape[0]
-blend_factor_train = np.array(blend_factor_train)
+dataset = __split_dataset(inp=inp, target=pdf_targets, teacher=pdf_teacher, training_ratio=0.6)
 
 tf.keras.backend.clear_session()  # make sure we are working clean
 from Building_Blocks import decoder_LSTM_block, block_LSTM
 from Models import encoder_decoder_model, mimo_model
-# decoder_model=decoder_LSTM_block(num_layers=3,
-#                                  num_units=50,
-#                                  use_dropout=False,
-#                                  use_attention=True,
-#                                  attention_hidden=False)
-# # ToDo: would it be smarter to have this in the encoder decoder thingie instead of outside?
-# projection_model=tf.keras.layers.Dense(units=out_shape[-1], activation=tf.keras.layers.Softmax(axis=-1))
-#
-# model = encoder_decoder_model(encoder_block=None,
-#                               decoder_block=decoder_model,
-#                               projection_block=projection_model,
-#                               use_teacher=True,
-#                               input_shape=in_shape,
-#                               output_shape=out_shape,
-#                               )
-
-lstm_block = block_LSTM(num_layers=3,
-                         num_units=70,
+decoder_model=decoder_LSTM_block(num_layers=3,
+                                  num_units=128,
+                                  use_dropout=True,
+                                  dropout_rate=0.2,
+                                  use_attention=True,
+                                  attention_hidden=False)
+encoder_block = block_LSTM(num_layers=3,
+                         num_units=128,
                          use_dropout=True,
                          dropout_rate=0.2,
                          use_norm=True,
-                        only_last_layer_output=True)
-model = mimo_model(function_block=lstm_block,
-                   input_shape=in_shape,
-                   output_shape=out_shape,
-                   mode='project')
+                        only_last_layer_output=False)
+# # ToDo: would it be smarter to have this in the encoder decoder thingie instead of outside?
+projection_model=tf.keras.layers.Dense(units=out_shape[-1], activation=tf.keras.layers.Softmax(axis=-1))
+
+model = encoder_decoder_model(encoder_block=encoder_block,
+                              decoder_block=decoder_model,
+                              projection_block=projection_model,
+                              use_teacher=True,
+                              input_shape=in_shape,
+                              output_shape=out_shape,
+                              )
+
 optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4) # set optimizers, metrics and loss
 
 from Losses_and_Metrics import loss_wrapper
@@ -111,13 +152,13 @@ train_metrics = {}
 # pdf_targets_val = pdf_targets_val.tolist()
 decrease = 0
 while decrease < 10:
-    train_history = model.fit(x=[inp_train, pdf_teacher_train, blend_factor_train],
+    train_history = model.fit(x=dataset['train_inputs'],
                               # train for a given set of epochs, look at history
-                              y=pdf_targets_train,
+                              y=dataset['train_targets'],
                               batch_size=64,
                               epochs=1,
                               shuffle=True,
-                              validation_data=([inp_val, pdf_teacher_val, blend_factor_val], pdf_targets_val))
+                              validation_data=(dataset['val_inputs'], dataset['val_targets']))
 
     for key in train_history.history.keys():
         if 'val' in str(key):
@@ -149,20 +190,22 @@ while decrease < 10:
     if relative_decrease > 1:
         # if we have no relative increase in quality towards the previous iteration
         # then decrease the blend factor
-        blend_factor = blend_factor - 0.1
-        blend_factor = [max(factor, 0.0) for factor in blend_factor]
+        blend_factor_train = blend_factor_train - 0.1
+        blend_factor_train = np.maximum(0.0, blend_factor_train)
         print('lowering blend factor')
         relative_decrease = 0
 
     epoch += 1
     prev_val_loss = val_loss
 
+__plot_training_curves(train_metrics, val_metrics)
+
 model.set_weights(best_wts)
-test_results = model.evaluate(x=[inp_test],
-                              y=[pdf_targets_test],
+test_results = model.evaluate(x=dataset['test_inputs'],
+                              y=dataset['test_targets'],
                               batch_size=64,
                               verbose=1)
-print(test_results)
+
 
 
 

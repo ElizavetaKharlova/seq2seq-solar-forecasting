@@ -10,11 +10,11 @@ def loss_wrapper(last_output_dimension_size=30, loss_type='nME'):
         return loss_nME
 
     elif loss_type == 'NMSE' or loss_type == 'nMSE' or loss_type == 'nmse':
-        def loss_nMSE(target, prediction):
+        def loss_nRMSE(target, prediction):
             target = tf.cast(target, dtype=tf.float32)
             prediction = tf.cast(prediction, dtype=tf.float32)
-            return calculate_E_nMSE(target, prediction, last_output_dimension_size)
-        return loss_nMSE
+            return calculate_E_nRMSE(target, prediction, last_output_dimension_size)
+        return loss_nRMSE
 
     elif loss_type == 'KL-D' or loss_type == 'kl-d' or loss_type == 'KL-Divergence':
         def loss_KLD(target, prediction):
@@ -38,7 +38,7 @@ def __calculate_expected_value(signal, last_output_dim_size):
     weighted_signal = tf.multiply(signal, indices) # (batches, timesteps, last_output_dim_size)
     return tf.reduce_sum(weighted_signal, axis=-1, keepdims=True)
 
-def calculate_E_nMSE(target, prediction, last_output_dim_size):
+def calculate_E_nRMSE(target, prediction, last_output_dim_size):
 
     # if pdfs, convert to expected values
     if last_output_dim_size > 1:
@@ -48,10 +48,11 @@ def calculate_E_nMSE(target, prediction, last_output_dim_size):
     expected_nMSE = tf.subtract(target, prediction)
     expected_nMSE = tf.square(expected_nMSE)
     expected_nMSE = tf.reduce_mean(expected_nMSE)
+    expected_nRMSE = tf.sqrt(expected_nMSE)
 
     if last_output_dim_size > 1:
-        normalizer = tf.square(last_output_dim_size)
-        return tf.divide(expected_nMSE, tf.cast(normalizer, dtype=tf.float32))
+        normalizer = last_output_dim_size
+        return tf.divide(expected_nRMSE, tf.cast(normalizer, dtype=tf.float32))
     else:
         return expected_nMSE
 
@@ -64,6 +65,7 @@ def calculate_E_nME(target, prediction, last_output_dim_size):
 
     expected_nME = tf.subtract(target, prediction)
     expected_nME = tf.abs(expected_nME)
+    expected_nME = tf.reduce_mean(expected_nME)
 
     if last_output_dim_size > 1:
         normalizer = last_output_dim_size
@@ -78,19 +80,26 @@ def calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size):
     inverse_log_probability_error = - tf.math.log(inverse_probability_errors_nonzero)
 
     loss = 0.0
-
+    target_len = target.get_shape().as_list()
+    num_entries = 0.0
     for prediction_tile in range(last_output_dim_size):
         forecast_tile_inverse_log_loss = inverse_log_probability_error[:, :, prediction_tile]
-
+        tile_loss = 0.0
         for target_tile in range(last_output_dim_size):
             tile_distance = target_tile - prediction_tile
             tile_distance_sq = tf.square(tile_distance)
             tile_distance_sq = tf.cast(tile_distance_sq, dtype=tf.float32)
 
             target_tile_probability = target[:, :, target_tile]
+            tile_tile_loss = tf.multiply(forecast_tile_inverse_log_loss, target_tile_probability)
+            tile_tile_loss = tf.multiply(tile_tile_loss, tile_distance_sq)
+            num_entries += 1
+            tile_loss += tile_tile_loss
 
-            loss += tile_distance_sq * target_tile_probability * forecast_tile_inverse_log_loss
+        loss += tile_loss
 
+    # loss = tf.sqrt(loss)
+    loss = tf.divide(loss, num_entries)
     loss = tf.reduce_sum(loss)
 
     return loss
@@ -109,6 +118,5 @@ def calculate_KL_Divergence(target, prediction, last_output_dim_size):
 
     KL_divergence = tf.math.log(KL_divergence)
     KL_divergence = tf.multiply(prediction, KL_divergence)
-    KL_divergence = tf.reduce_sum(KL_divergence, axis=-1)
     KL_divergence = tf.reduce_mean(KL_divergence)
     return KL_divergence

@@ -32,7 +32,6 @@ def __plot_training_curves(train_dict, val_dict):
                 plt.show()
 
 def __delete_list_slice(list, start, len_slice):
-    print('deleting from ', len(list), 'from ', start, 'to ', start+len_slice)
     for step in range(len_slice):
         del list[start]
     return list
@@ -50,23 +49,25 @@ def __slice_and_delete(inp, teacher, target, len_slice, seed):
 
     inp_slice = inp[index_start:index_end][:][:]
     inp = __delete_list_slice(inp, index_start, len_slice)
+    inp_slice = tf.convert_to_tensor(inp_slice, dtype=tf.float32)
 
     teacher_slice = teacher[index_start:index_end][:][:]
     teacher = __delete_list_slice(teacher, index_start, len_slice)
+    teacher_blend = np.array([0] * len(teacher_slice))
+    teacher_slice = tf.convert_to_tensor(teacher_slice, dtype=tf.float32)
+    teacher_blend = tf.convert_to_tensor(teacher_blend, dtype=tf.float32)
 
-    slice_inputs = [np.array(inp_slice) , np.array(teacher_slice), np.array([0] * len(inp_slice))]
+    slice_inputs = [inp_slice , teacher_slice, teacher_blend]
 
     target_slice = target[index_start:index_end][:][:]
+    target_slice = tf.convert_to_tensor(target_slice, dtype=tf.float32)
     target = __delete_list_slice(target, index_start, len_slice)
 
-    return slice_inputs, np.array(target_slice), np.array(inp), np.array(teacher), np.array(target)
+    return slice_inputs, target_slice, inp, teacher, target
 
 def __split_dataset(inp, target, teacher, training_ratio):
     if training_ratio > 1:
         print('... seems like you want more than a full training set, the training ratio needs to be smaller than 1!')
-    inp = inp.tolist()
-    target = target.tolist()
-    teacher = teacher.tolist()
 
     remainder_for_test_val = 1.0-training_ratio
     test_len =  (remainder_for_test_val/2.0) * len(inp)
@@ -75,9 +76,10 @@ def __split_dataset(inp, target, teacher, training_ratio):
     dataset = {}
     dataset['test_inputs'], dataset['test_targets'], inp, teacher, target = __slice_and_delete(inp, teacher, target, test_len, seed=42)
     print(len(inp))
-    dataset['val_inputs'], dataset['val_targets'], inp, teacher, target = __slice_and_delete(inp.tolist(), teacher.tolist(), target.tolist(), val_len, seed=23)
-    dataset['train_inputs'] = [inp, teacher, np.array([1]*inp.shape[0])]
-    dataset['train_targets'] = target
+    dataset['val_inputs'], dataset['val_targets'], inp, teacher, target = __slice_and_delete(inp, teacher, target, val_len, seed=23)
+    blend_train = [1] * len(inp)
+    dataset['train_inputs'] = [tf.convert_to_tensor(inp, dtype=tf.float32), tf.convert_to_tensor(teacher, dtype=tf.float32) ,tf.convert_to_tensor(blend_train, dtype=tf.float32)]
+    dataset['train_targets'] = tf.convert_to_tensor(target, dtype=tf.float32)
 
     print('Dataset has', dataset['train_targets'].shape[0], 'training samples', dataset['val_targets'].shape[0], 'val samples', dataset['test_targets'].shape[0], 'test samples')
 
@@ -124,13 +126,19 @@ def __build_model():
 
 from Dataset_Loaders import get_Daniels_data, get_Lizas_data
 inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = get_Daniels_data()
-
 # inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = get_Lizas_data()
 
 out_shape = pdf_targets.shape[1:]
 in_shape = inp.shape[1:]
 
+inp = inp.tolist()
+ev_targets = ev_targets.tolist()
+ev_teacher = ev_teacher.tolist()
+pdf_targets = pdf_targets.tolist()
+pdf_teacher = pdf_teacher.tolist()
+
 dataset = __split_dataset(inp=inp, target=pdf_targets, teacher=pdf_teacher, training_ratio=0.6)
+del inp, pdf_teacher, pdf_targets, ev_teacher, ev_targets
 
 relative_decrease = 0
 epoch = 0
@@ -169,9 +177,9 @@ while decrease < 10:
 
     val_loss = train_history.history['val_loss'][0]
 
-    if best_val_metric > val_metrics['val_loss_nMSE'][-1]:  # if we see no increase in absolute performance, increase the death counter
+    if best_val_metric > val_metrics['val_loss_nRMSE'][-1]:  # if we see no increase in absolute performance, increase the death counter
         decrease = 0  # reset the death counter
-        best_val_metric = val_metrics['val_loss_nMSE'][-1]
+        best_val_metric = val_metrics['val_loss_nRMSE'][-1]
         best_wts = model.get_weights()
         print('saving a new model')
     else:

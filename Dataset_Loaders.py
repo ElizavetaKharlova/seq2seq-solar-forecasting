@@ -41,14 +41,14 @@ def get_Lizas_data():
     specs = NetworkData['specs']
     print('Specs:', specs)
 
-    inp, ev_target, ev_teacher, pdf_targets, pdf_teacher = datasets_from_data(data=mvts_array,
+    inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = datasets_from_data(data=mvts_array,
                                       sw_len_samples=specs['sw_steps'],
                                       fc_len_samples=specs['num_steps'],
                                       fc_steps=specs['forecast_steps'],
                                       fc_tiles=specs['num_tiles'],
                                       target_dims=specs['target'],
                                       plot=False,
-                                      steps_to_new_sample=1)
+                                      steps_to_new_sample=15)
 
     # ---------------------------------------------------------------------------
 

@@ -23,7 +23,7 @@ def build_model(E_D_layers, E_D_units,
                 CNN_encoder=False, LSTM_encoder=True,
                 LSTM_decoder=True,
                 use_attention=False,
-                network='TCN'):
+                network='dense'):
 
     keras.backend.clear_session()  # make sure we are working clean
 
@@ -45,8 +45,8 @@ def build_model(E_D_layers, E_D_units,
         network_inputs = [encoder_inputs, decoder_inputs]
         network = seq2seq(layers, units, out_shape=out_shape[1:], use_norm=False)
     elif network=='dense':
-        network_inputs = tf.keras.layers.Input(shape=(in_shape[1], in_shape[2]))
-        network = DenseTCN(Dense_blocks, layers, growth_rate=12, squeeze_factor=4, use_dropout=False, dropout_rate=dropout_rate, use_norm=False, kernel_sizes=[3, 5], strides=1)
+        network_inputs = tf.keras.layers.Input(shape=(in_shape[0], in_shape[1]))
+        network = DenseTCN(Dense_blocks, layers, in_shape, growth_rate=12, squeeze_factor=0.5, use_dropout=False, dropout_rate=dropout_rate, use_norm=False, kernel_sizes=[3, 5])
 
     # Run
     network_outputs = network(network_inputs)
@@ -221,40 +221,40 @@ class LSTM(tf.keras.layers.Layer):
 # outputs the raw network output in size [Batches, Timesteps, Features]
 # requires a MIMO or a recursive wrapper to output predictions
 class DenseTCN(tf.keras.layers.Layer):
-    def __init__(self, num_blocks, num_layers, growth_rate=12, squeeze_factor=4, use_dropout=False, dropout_rate=0.0, use_norm=False, kernel_sizes=[3, 5], strides=1):
+    def __init__(self, num_blocks, num_layers_per_block, in_shape, growth_rate=12, squeeze_factor=0.5, use_dropout=False, dropout_rate=0.0, use_norm=False, kernel_sizes=[3, 5]):
         super(DenseTCN, self).__init__()
+        
         self.num_blocks = num_blocks
-        self.num_layers = num_layers
+        self.num_layers_per_block = num_layers_per_block
+        self.in_shape = in_shape
         self.growth_rate = growth_rate
-        self.squeeze_factor = squeeze_factor*growth_rate
+        # bottleneck features are the 1x1 conv size for each layer
+        self.bottleneck_features = 4*growth_rate
+        # squeeze factor is the percentage of features passed from one block to the next
+        self.squeeze_factor = squeeze_factor
         self.use_dropout = use_dropout
         self.dropout_rate = dropout_rate
         self.kernel_sizes = kernel_sizes
-        self.strides = strides
         self.use_norm = use_norm
-        print('HERE')
+        self.already_built = False
+        
         if self.use_norm:
             self.norm = []
         # create a stack of squeeze layers to be used between blocks (is not used after the last block)
         self.squeeze = []
-        for i in range(self.num_blocks-1):
-            self.squeeze.append(tf.keras.layers.Conv1D(self.squeeze_factor,
-                                                kernel_size=1,
-                                                strides=1,
-                                                padding='causal'))
 
     # initialize one CNN layer with arbitrary parameters
-    def cnn_layer(self, kernel_size, strides, dilation_rate):
-        return tf.keras.layers.Conv1D(self.growth_rate,
-                                                kernel_size=kernel_size,
-                                                strides=strides,
-                                                dilation_rate=dilation_rate,
-                                                padding='causal')
+    def cnn_layer(self, num_features, kernel_size, dilation_rate):
+        return tf.keras.layers.Conv1D(num_features,
+                                        kernel_size=kernel_size,
+                                        dilation_rate=dilation_rate,
+                                        padding='causal')
+                                        
     # build a stack for one layer of the network
     def build_layer(self, num_layer, kernel_size):
         layer = []
-        layer.append(self.cnn_layer(kernel_size=1, strides=1, dilation_rate=1))
-        layer.append(self.cnn_layer(kernel_size, self.strides, dilation_rate=2**num_layer))
+        layer.append(self.cnn_layer(self.bottleneck_features, kernel_size=1, dilation_rate=1))
+        layer.append(self.cnn_layer(self.growth_rate, kernel_size, dilation_rate=2**num_layer))
         if self.use_norm:
             self.norm.append(tf.keras.layers.BatchNormalization())
         return layer
@@ -262,7 +262,7 @@ class DenseTCN(tf.keras.layers.Layer):
     # stack the network layers within a stream 
     def build_stream(self, kernel_size):
         stream = []
-        for num_layer in range(self.num_layers):
+        for num_layer in range(self.num_layers_per_block):
             stream.append(self.build_layer(num_layer, kernel_size))
         return stream
 
@@ -274,6 +274,16 @@ class DenseTCN(tf.keras.layers.Layer):
             for kernel_size in self.kernel_sizes:
                 all_streams.append(self.build_stream(kernel_size))
             self.blocks.append(all_streams)
+            # calculate the number of features in the squeeze layer
+            # shape of input to the block + growth rate for all layers in the block
+            if block == 0:
+                num_features = int(self.squeeze_factor*(self.in_shape[1]+self.num_layers_per_block*self.growth_rate))
+            else: 
+                num_features = int(self.squeeze_factor*(num_features + self.num_layers_per_block*self.growth_rate))
+            # create stack of squeeze layers
+            self.squeeze.append(self.cnn_layer(num_features, kernel_size=1, dilation_rate=1))
+        
+        self.already_built = True
         return None
 
     # run one basic dense network layer
@@ -293,7 +303,7 @@ class DenseTCN(tf.keras.layers.Layer):
     # run output through one stream
     def run_stream(self, block, num_stream, inputs):
         out = inputs
-        for num_layer in range(self.num_layers):
+        for num_layer in range(self.num_layers_per_block):
             out = self.run_layer(block, num_layer, num_stream, out)
         return out
 
@@ -314,7 +324,9 @@ class DenseTCN(tf.keras.layers.Layer):
     def call(self, inputs):
         out = inputs
         # call the initialize function
-        self.build_block()
+        if not self.already_built:
+            self.build_block()
+
         # iterate through blocks
         for block in range(self.num_blocks):
             out = self.run_block(block, out)

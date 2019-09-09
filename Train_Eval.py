@@ -89,33 +89,49 @@ def __split_dataset(inp, target, teacher, training_ratio):
     tf.keras.backend.clear_session()
     return dataset
 
-def __build_model(input_shape, out_shape):
+def __build_model(input_shape, out_shape, model_type='MiMo'):
     tf.keras.backend.clear_session()  # make sure we are working clean
     from Building_Blocks import decoder_LSTM_block, block_LSTM
+    from Benchmarks import DenseTCN
     from Models import encoder_decoder_model, mimo_model
 
-    decoder_model=decoder_LSTM_block(num_layers=3,
-                                      num_units=128,
-                                      use_dropout=True,
-                                      dropout_rate=0.2,
-                                      use_attention=True,
-                                      attention_hidden=False)
-    encoder_block = block_LSTM(num_layers=3,
-                             num_units=128,
-                             use_dropout=True,
-                             dropout_rate=0.2,
-                             use_norm=True,
-                            only_last_layer_output=False)
-    # # ToDo: would it be smarter to have this in the encoder decoder thingie instead of outside?
-    projection_model=tf.keras.layers.Dense(units=out_shape[-1], activation=tf.keras.layers.Softmax(axis=-1))
-
-    model = encoder_decoder_model(encoder_block=encoder_block,
-                                  decoder_block=decoder_model,
-                                  projection_block=projection_model,
-                                  use_teacher=True,
-                                  input_shape=in_shape,
-                                  output_shape=out_shape,
-                                  )
+    if model_type is 'MiMo':
+        dense_block = DenseTCN(num_blocks=4,
+                            num_layers_per_block=4,
+                            in_shape=in_shape,
+                            growth_rate=12,
+                            squeeze_factor=0.5,
+                            use_dropout=False,
+                            dropout_rate=0.0,
+                            use_norm=False,
+                            kernel_sizes=[3, 5])
+                            
+        model = mimo_model(function_block=dense_block,
+                            input_shape=in_shape,
+                            output_shape=out_shape,
+                            mode='project')
+    elif model_type is 'E-D':
+        decoder_model=decoder_LSTM_block(num_layers=1,
+                                          num_units=128,
+                                          use_dropout=True,
+                                          dropout_rate=0.2,
+                                          use_attention=True,
+                                          attention_hidden=False)
+        encoder_block = block_LSTM(num_layers=1,
+                                 num_units=128,
+                                 use_dropout=True,
+                                 dropout_rate=0.2,
+                                 use_norm=True,
+                                only_last_layer_output=False)
+        # # # ToDo: would it be smarter to have this in the encoder decoder thingie instead of outside?
+        projection_model=tf.keras.layers.Dense(units=out_shape[-1], activation=tf.keras.layers.Softmax(axis=-1))
+        model = encoder_decoder_model(encoder_block=encoder_block,
+                                      decoder_block=decoder_model,
+                                      projection_block=projection_model,
+                                      use_teacher=True,
+                                      input_shape=in_shape,
+                                      output_shape=out_shape,
+                                      )
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4) # set optimizers, metrics and loss
 
@@ -130,8 +146,8 @@ def __build_model(input_shape, out_shape):
     return model
 
 from Dataset_Loaders import get_Daniels_data, get_Lizas_data
-inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Daniels_data()
-#inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Lizas_data()
+#inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Daniels_data()
+inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Lizas_data()
 
 out_shape = pdf_targets.shape[1:]
 in_shape = inp.shape[1:]

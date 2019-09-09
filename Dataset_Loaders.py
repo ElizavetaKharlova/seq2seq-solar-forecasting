@@ -53,12 +53,12 @@ def get_Lizas_data():
                                       steps_to_new_sample=15)
 
     # ---------------------------------------------------------------------------
-
+    sample_spacing_in_mins = 999999
     import numpy as np
     ev_targets = np.expand_dims(ev_targets, axis=-1)
     ev_teacher = np.expand_dims(ev_teacher, axis=-1)
 
-    return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher
+    return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins
 
 import numpy as np
 from sklearn.preprocessing import scale, MinMaxScaler

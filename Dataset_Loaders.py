@@ -42,7 +42,8 @@ def get_Lizas_data():
     mvts_array = NetworkData['dataset']
     specs = NetworkData['specs']
     print('Specs:', specs)
-
+    sample_rate_raw_data_mins = 15.0
+    steps_to_new_sample = 12
     inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = datasets_from_data(data=mvts_array,
                                       sw_len_samples=specs['sw_steps'],
                                       fc_len_samples=specs['num_steps'],
@@ -50,10 +51,10 @@ def get_Lizas_data():
                                       fc_tiles=specs['num_tiles'],
                                       target_dims=specs['target'],
                                       plot=False,
-                                      steps_to_new_sample=15)
+                                      steps_to_new_sample=steps_to_new_sample)
 
     # ---------------------------------------------------------------------------
-    sample_spacing_in_mins = 999999
+    sample_spacing_in_mins = sample_rate_raw_data_mins*steps_to_new_sample
     import numpy as np
     ev_targets = np.expand_dims(ev_targets, axis=-1)
     ev_teacher = np.expand_dims(ev_teacher, axis=-1)

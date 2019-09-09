@@ -177,15 +177,15 @@ while decrease < 10:
             else:
                 train_metrics[key] = [train_history.history[key][0]]
 
-    if best_val_metric > val_metrics['val_loss_nRMSE'][-1]:  # if we see no increase in absolute performance, increase the death counter
+    if best_val_metric > val_metrics['val_nRMSE'][-1]:  # if we see no increase in absolute performance, increase the death counter
         decrease = 0  # reset the death counter
-        best_val_metric = val_metrics['val_loss_nRMSE'][-1]
+        best_val_metric = val_metrics['val_nRMSE'][-1]
         best_wts = model.get_weights()
         print('saving a new model')
     else:
         decrease += 1
 
-    if prev_val_loss < train_history.history['val_loss_nRMSE'][0]:  # see if we are having a relative decrease
+    if prev_val_loss < train_history.history['val_nRMSE'][0]:  # see if we are having a relative decrease
         relative_decrease += 1
     else:
         relative_decrease = 0
@@ -199,7 +199,7 @@ while decrease < 10:
         relative_decrease = 0
 
     epoch += 1
-    prev_val_loss = train_history.history['val_loss_nRMSE'][0]
+    prev_val_loss = train_history.history['val_nRMSE'][0]
 
 __plot_training_curves(train_metrics, val_metrics)
 

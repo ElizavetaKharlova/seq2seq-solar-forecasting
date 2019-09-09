@@ -1,12 +1,12 @@
 def get_Daniels_data(target_data='Pv',
-                     input_len_samples=int(3 * 24 * (60 / 5)),
+                     input_len_samples=int(5 * 24 * (60 / 5)),
                      fc_len_samples=int(1 * 24 * (60 / 5)),
                      fc_steps=24,
                      fc_tiles=40):
     # Daniel loads his data / If we want different data we do that here
     # For a encoder decoder model we will need 3 inputs:
     # encoder input, decoder support, blend factor (for how much we want to do teacher forcing)
-    raw_data = load_dataset()
+    raw_data, sample_rate_weather = load_dataset()
 
     if target_data == 'PV' or target_data == 'pv' or target_data == 'Pv':
         target_dims = [0, 1, 2, 3, 4]
@@ -15,6 +15,7 @@ def get_Daniels_data(target_data='Pv',
         print('Not Implemented YET, except funky behavior')
         # ToDo: make sure you can add the load data here!
 
+    steps_to_new_sample = 12
     inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = datasets_from_data(raw_data,
                                                           sw_len_samples=input_len_samples,
                                                           fc_len_samples=fc_len_samples,
@@ -22,12 +23,13 @@ def get_Daniels_data(target_data='Pv',
                                                           fc_tiles=fc_tiles,
                                                           target_dims=target_dims,
                                                           plot=True,
-                                                          steps_to_new_sample=15)
+                                                          steps_to_new_sample=steps_to_new_sample)
+
     import numpy as np
     ev_targets = np.expand_dims(ev_targets, axis=-1)
     ev_teacher = np.expand_dims(ev_teacher, axis=-1)
 
-    return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher
+    return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, steps_to_new_sample*sample_rate_weather
 
 
 def get_Lizas_data():
@@ -79,25 +81,18 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
     # -------------------------------------------------------------------------------------------------------------------
     scaler = MinMaxScaler()
     faults = data[:,-1]
-
     scaler.fit(data)
-    data_to_be_scaled = scaler.transform(data)
-
-
-
     data = scale(data, axis=0, with_mean=True, with_std=True, copy=True) #scale the dataset
-    data[:, -1] = faults
+
+    data = np.delete(data, np.s_[-1], axis=-1)
 
     if plot: #plot if we want to
         __plot_data_array(data[:300,:], label='Scaled Data Set')
 
-    target_variable = data[:, target_dims] #extract target vars
-
-
-    if len(target_dims) > 1: #get min_max
-        target_min_max = __get_min_max(__reconstruct(target_variable)) # reconstruct into one array, get min_max
-    else:
-        target_min_max = __get_min_max(target_variable)
+    targets = data[:, target_dims] #extract target vars
+    target_min = np.amin(targets)
+    targets = targets - target_min
+    target_min_max = [0.0,  np.amax(targets)]
 
     # create the list for the arrays
     pdf_targets = []    # pdf forecast
@@ -106,41 +101,38 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
     ev_supports = []
     sw_inputs = []      # inputs
 
+    output_sample_ratio = int((fc_len_samples/fc_steps))
     for timestep in range(0, data.shape[0] - fc_len_samples - sw_len_samples, steps_to_new_sample):
         sliced_sample = data[timestep:(timestep + fc_len_samples + sw_len_samples), :]
-        sliced_input = sliced_sample[:-fc_len_samples, :]
-        sliced_target = sliced_sample[-fc_len_samples:, target_dims]
-        sliced_support = sliced_sample[-(fc_len_samples+1):1, target_dims]
+        faults_for_slice = faults[timestep:(timestep + fc_len_samples + sw_len_samples)]
+
+        target_timestep = timestep + sw_len_samples
+        one_addl_fc_timestep = int(fc_len_samples/fc_steps)
+        sliced_target = targets[(target_timestep-one_addl_fc_timestep):(target_timestep + fc_len_samples), :]
+
 
         if len(target_dims) > 1:
             sliced_target = __reconstruct(sliced_target)
-            sliced_support = __reconstruct(sliced_support)
 
-        if np.sum(sliced_input[:, -1]) == 0:  # see if we are free of faults
+        if np.sum(faults_for_slice) == 0:  # see if we are free of faults
 
-            sw_inputs.append(
-                sliced_input[:, :-1])  # drop the last dimension, since we do not need the fault indicator anymore
-
-            pdf_target = __convert_to_pdf(sliced_target,
-                                          num_steps=fc_steps, num_tiles=fc_tiles,
+            sw_inputs.append(sliced_sample.tolist())  # drop the last dimension, since we do not need the fault indicator anymore
+            pdf_Support_target = __convert_to_pdf(sliced_target,
+                                          num_steps=fc_steps+1, num_tiles=fc_tiles,
                                         min_max=target_min_max)  # pdf for probability distribution thingie
-            pdf_support = __convert_to_pdf(sliced_support,
-                                          num_steps=fc_steps, num_tiles=fc_tiles,
-                                        min_max=target_min_max)  # pdf for probability distribution thingie
-            tolerance = 1e-7
-            if 1.0-tolerance <= np.mean(np.sum(pdf_target, axis=-1)) >= 1.0 + tolerance:
-                print('ooh, u fucked up boi, ', np.mean(np.sum(pdf_target, axis=-1)))
-            pdf_targets.append(pdf_target)
-            pdf_supports.append(pdf_support)
+            tolerance = 1e-9
+            if 1.0-tolerance <= np.mean(np.sum(pdf_Support_target, axis=-1)) >= 1.0 + tolerance:
+                print('ooh, u fucked up boi, ', np.mean(np.sum(pdf_Support_target, axis=-1)))
+
+            pdf_targets.append(pdf_Support_target[1:,:])
+            pdf_supports.append(pdf_Support_target[:-1,:])
 
             ev_target = __convert_to_mv(sliced_target, num_steps=fc_steps)  # ev for expected value
-            ev_targets.append(ev_target)
-            ev_support = __convert_to_mv(sliced_support, num_steps=fc_steps)  # ev for expected value
-            ev_supports.append(ev_support)
-
+            ev_targets.append(ev_target[1:])
+            ev_supports.append(ev_target[:-1])
 
         if (int(timestep/steps_to_new_sample) % int(int(data.shape[0] / steps_to_new_sample)/10)) == 0:
-            print(int(100*timestep/data.shape[0]), 'percent converted')
+            print(int(100*timestep/data.shape[0]) + 10, 'percent converted')
     sw_inputs = np.array(sw_inputs)
     ev_targets = np.array(ev_targets)
     ev_supports = np.array(ev_supports)
@@ -166,11 +158,9 @@ def __get_min_max(array): #selfexplanatory
 
 def __reconstruct(mvts_array):  # needed to reconstruct the original array
     array = []
-
     for ts in range(mvts_array.shape[0]):
         for dim in range(mvts_array.shape[1]):
             array.append(mvts_array[ts, dim])
-
     return np.array(array)
 
 def __convert_to_pdf(target, num_tiles, num_steps, min_max):  # takes the target timeseries and converts it into a pdf
@@ -180,18 +170,17 @@ def __convert_to_pdf(target, num_tiles, num_steps, min_max):  # takes the target
 
     pdf_target = np.zeros([num_steps, num_tiles])
 
-    target = target - min_max[0]
-    min_max[1] = min_max[1] - min_max[0]  # rescale the maximum with regards to the minimum
+    min_max[1] = min_max[1] + min_max[0]  # rescale the maximum with regards to the minimum
 
     samples_in_step = int(target.shape[0] / num_steps)  # see how many steps we need to bunch into one pdf-step
 
     target = target / min_max[1]  # rescale
-    target = np.where(target == 1, target - 1e-7, target)  # make sure we dont get overflow
+    target = np.where(target == 1, target - 1e-9, target)  # make sure we dont get overflow
     target = np.floor(num_tiles * target)  # convert to indices
 
     for step in range(num_steps):
-        for _ in range(samples_in_step):
-            pdf_target[step, int(target[step * samples_in_step + _])] += 1.0 / samples_in_step
+        for sample in range(samples_in_step):
+            pdf_target[step, int(target[step * samples_in_step + sample])] += 1.0 / samples_in_step
 
     return pdf_target
 
@@ -224,15 +213,13 @@ def load_dataset(weather_data_folder='\_data\Weather_2016', pv_data_path="/_data
     print('fetching NWP...')
 
     weather_mvts, start_end_date =_get_weather_data(weather_data_folder)
-    print('fetched NWP ... now fetching PV Data')
-
+    print('fetching PV Data')
     gen = _get_PV(pv_data_path, start_end_date)
-    print('fetched PV ... now concatenating')
-
-    generation = __stack_ts(gen, int(gen.shape[0] / weather_mvts.shape[0]))
-
+    print('now concatenating')
+    sample_rate_weather = int(gen.shape[0] / weather_mvts.shape[0])
+    generation = __stack_ts(gen, sample_rate_weather)
     full_dataset = np.append(generation, weather_mvts, axis=-1)
-    return full_dataset
+    return full_dataset, sample_rate_weather
 
 def _get_weather_data(weather_data_folder):
     cwd = os.getcwd()
@@ -314,9 +301,6 @@ def _get_weather_data(weather_data_folder):
         weather_mvts = np.append(weather_mvts, buffer[(start_this_sim):, :],
                                             axis=0)
         end_prev_sim = weather_mvts[-1,0]
-
-
-
 
 
     print('replacing the fauly values with the mean of the array')

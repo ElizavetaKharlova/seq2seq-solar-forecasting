@@ -1,34 +1,34 @@
 # will contain losses and metrics used to analyse whatever we wanna train
 import tensorflow as tf
 
-def loss_wrapper(last_output_dimension_size=30, loss_type='nME'):
+def loss_wrapper(last_output_dim_size, loss_type='nME'):
     if loss_type == 'NME' or loss_type == 'nME' or loss_type == 'nme':
-        def loss_nME(target, prediction):
+        def nME(target, prediction):
             target = tf.cast(target, dtype=tf.float32)
             prediction = tf.cast(prediction, dtype=tf.float32)
-            return calculate_E_nME(target, prediction, last_output_dimension_size)
-        return loss_nME
+            return calculate_E_nME(target, prediction, last_output_dim_size)
+        return nME
 
-    elif loss_type == 'NMSE' or loss_type == 'nMSE' or loss_type == 'nmse':
-        def loss_nRMSE(target, prediction):
+    elif loss_type == 'NRMSE' or loss_type == 'nRMSE' or loss_type == 'nrmse':
+        def nRMSE(target, prediction):
             target = tf.cast(target, dtype=tf.float32)
             prediction = tf.cast(prediction, dtype=tf.float32)
-            return calculate_E_nRMSE(target, prediction, last_output_dimension_size)
-        return loss_nRMSE
+            return calculate_E_nRMSE(target, prediction, last_output_dim_size)
+        return nRMSE
 
     elif loss_type == 'KL-D' or loss_type == 'kl-d' or loss_type == 'KL-Divergence':
-        def loss_KLD(target, prediction):
+        def KLD(target, prediction):
             target = tf.cast(target, dtype=tf.float32)
             prediction = tf.cast(prediction, dtype=tf.float32)
-            return calculate_KL_Divergence(target, prediction, last_output_dimension_size)
-        return loss_KLD
+            return calculate_KL_Divergence(target, prediction, last_output_dim_size)
+        return KLD
 
     elif loss_type == 'tile-to-forecast':
-        def loss_designed(target, prediction):
+        def designed(target, prediction):
             target = tf.cast(target, dtype=tf.float32)
             prediction = tf.cast(prediction, dtype=tf.float32)
-            return calculate_tile_to_pdf_loss(target, prediction, last_output_dimension_size)
-        return loss_designed
+            return calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size)
+        return designed
     else:
         print('loss_type ', loss_type, ' not recognized.')
         print('please elect loss from available options: nME, nMSE, KL-Divergence, tile-to-forecast')
@@ -39,7 +39,6 @@ def __calculate_expected_value(signal, last_output_dim_size):
     return tf.reduce_sum(weighted_signal, axis=-1, keepdims=True)
 
 def calculate_E_nRMSE(target, prediction, last_output_dim_size):
-
     # if pdfs, convert to expected values
     if last_output_dim_size > 1:
         target = __calculate_expected_value(target, last_output_dim_size)
@@ -57,7 +56,6 @@ def calculate_E_nRMSE(target, prediction, last_output_dim_size):
         return expected_nMSE
 
 def calculate_E_nME(target, prediction, last_output_dim_size):
-
     # if pdfs, convert to expected values
     if last_output_dim_size > 1:
         target = __calculate_expected_value(target, last_output_dim_size)
@@ -74,38 +72,33 @@ def calculate_E_nME(target, prediction, last_output_dim_size):
         return expected_nME
 
 def calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size):
+
     absolute_probability_errors = tf.abs(tf.subtract(prediction, target))
     inverse_probability_errors = tf.subtract(1.0, absolute_probability_errors)
     inverse_probability_errors_nonzero = tf.math.maximum(inverse_probability_errors, 1e-8)
-    inverse_log_probability_error = - tf.math.log(inverse_probability_errors_nonzero)
+    inverse_log_probability_error = -tf.math.log(inverse_probability_errors_nonzero)
 
     loss = 0.0
-    target_len = target.get_shape().as_list()
     num_entries = 0.0
     for prediction_tile in range(last_output_dim_size):
-        forecast_tile_inverse_log_loss = inverse_log_probability_error[:, :, prediction_tile]
         tile_loss = 0.0
         for target_tile in range(last_output_dim_size):
-            tile_distance = target_tile - prediction_tile
-            tile_distance_sq = tf.square(tile_distance)
-            tile_distance_sq = tf.cast(tile_distance_sq, dtype=tf.float32)
+            tile_distance_sq = tf.cast(target_tile - prediction_tile, dtype=tf.float32)
+            tile_distance_sq = tf.abs(tile_distance_sq)
 
-            target_tile_probability = target[:, :, target_tile]
-            tile_tile_loss = tf.multiply(forecast_tile_inverse_log_loss, target_tile_probability)
-            tile_tile_loss = tf.multiply(tile_tile_loss, tile_distance_sq)
-            num_entries += 1
+            tile_tile_loss = tf.multiply(target[:, :, target_tile],
+                                         inverse_log_probability_error[:, :, prediction_tile])
+            tile_tile_loss = tf.multiply(tile_distance_sq, tile_tile_loss)
+            num_entries += 1.0
             tile_loss += tile_tile_loss
 
         loss += tile_loss
 
-    # loss = tf.sqrt(loss)
     loss = tf.divide(loss, num_entries)
     loss = tf.reduce_sum(loss)
-
     return loss
 
 def calculate_KL_Divergence(target, prediction, last_output_dim_size):
-
     if last_output_dim_size == 1:
         KL_divergence = tf.divide(prediction, target)
         KL_divergence = tf.abs(KL_divergence)
@@ -118,5 +111,17 @@ def calculate_KL_Divergence(target, prediction, last_output_dim_size):
 
     KL_divergence = tf.math.log(KL_divergence)
     KL_divergence = tf.multiply(prediction, KL_divergence)
+    KL_divergence = tf.reduce_sum(KL_divergence, axis=-1)
     KL_divergence = tf.reduce_mean(KL_divergence)
     return KL_divergence
+
+def __calculatate_skillscore_baseline(set_targets, sample_spacing_in_mins):
+
+    persistency_offset = (24*60)/sample_spacing_in_mins
+    persistency_offset = int(persistency_offset)
+
+    targets = set_targets[persistency_offset:,:,:]
+    persistent_forecast = set_targets[:-persistency_offset, :,:]
+    nRMSEs = calculate_E_nRMSE(targets, persistent_forecast, set_targets.shape[-1])
+
+    return tf.reduce_mean(nRMSEs).numpy()

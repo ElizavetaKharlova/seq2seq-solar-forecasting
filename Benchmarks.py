@@ -236,6 +236,7 @@ class DenseTCN(tf.keras.layers.Layer):
         self.dropout_rate = dropout_rate
         self.kernel_sizes = kernel_sizes
         self.use_norm = use_norm
+        # build flag
         self.already_built = False
         
         if self.use_norm:
@@ -282,7 +283,7 @@ class DenseTCN(tf.keras.layers.Layer):
                 num_features = int(self.squeeze_factor*(num_features + self.num_layers_per_block*self.growth_rate))
             # create stack of squeeze layers
             self.squeeze.append(self.cnn_layer(num_features, kernel_size=1, dilation_rate=1))
-        
+        # update build flag
         self.already_built = True
         return None
 
@@ -323,10 +324,9 @@ class DenseTCN(tf.keras.layers.Layer):
 
     def call(self, inputs):
         out = inputs
-        # call the initialize function
+        # call the init function upon first call
         if not self.already_built:
             self.build_block()
-
         # iterate through blocks
         for block in range(self.num_blocks):
             out = self.run_block(block, out)

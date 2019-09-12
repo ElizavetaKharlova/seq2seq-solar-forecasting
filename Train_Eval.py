@@ -4,6 +4,7 @@ import tensorflow as tf
 import numpy as np
 #from Building_Blocks import build_model
 from Benchmarks import build_model
+import copy
 
 def __get_max_min_targets(train_targets, test_targets):
     import numpy as np
@@ -89,7 +90,7 @@ def __split_dataset(inp, target, teacher, training_ratio):
     tf.keras.backend.clear_session()
     return dataset
 
-def __build_model(input_shape, out_shape, model_type='MiMo'):
+def __build_model(input_shape, out_shape, model_type='Encoder-Decoder'):
     tf.keras.backend.clear_session()  # make sure we are working clean
     from Building_Blocks import decoder_LSTM_block, block_LSTM
     from Benchmarks import DenseTCN
@@ -110,19 +111,18 @@ def __build_model(input_shape, out_shape, model_type='MiMo'):
                             input_shape=in_shape,
                             output_shape=out_shape,
                             mode='project')
-    elif model_type is 'E-D':
-        decoder_model=decoder_LSTM_block(num_layers=1,
-                                          num_units=128,
-                                          use_dropout=True,
-                                          dropout_rate=0.2,
-                                          use_attention=True,
-                                          attention_hidden=False)
-        encoder_block = block_LSTM(num_layers=1,
-                                 num_units=128,
-                                 use_dropout=True,
-                                 dropout_rate=0.2,
-                                 use_norm=True,
-                                only_last_layer_output=False)
+    elif model_type == 'Encoder-Decoder':
+        common_specs = {'units': [20,20],
+                        'use_dropout': True,
+                        'dropout_rate': 0.2,
+                        'use_norm': True,
+                        'use_hw': True}
+        encoder_specs = copy.deepcopy(common_specs)
+        encoder_specs['only_last_layer_output'] = False
+        decoder_specs = copy.deepcopy(common_specs)
+        decoder_specs['use_attention'] = True
+        encoder_block = block_LSTM(**encoder_specs)
+        decoder_model=decoder_LSTM_block(**decoder_specs)
         # # # ToDo: would it be smarter to have this in the encoder decoder thingie instead of outside?
         projection_model=tf.keras.layers.Dense(units=out_shape[-1], activation=tf.keras.layers.Softmax(axis=-1))
         model = encoder_decoder_model(encoder_block=encoder_block,
@@ -130,8 +130,7 @@ def __build_model(input_shape, out_shape, model_type='MiMo'):
                                       projection_block=projection_model,
                                       use_teacher=True,
                                       input_shape=in_shape,
-                                      output_shape=out_shape,
-                                      )
+                                      output_shape=out_shape)
 
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4) # set optimizers, metrics and loss
 

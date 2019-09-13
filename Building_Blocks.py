@@ -18,62 +18,6 @@ import tensorflow as tf
 # the model will have one output
 # output [timesteps, dimensions]
 
-
-def build_model(E_D_layers, E_D_units,
-                in_shape, out_shape,
-                dropout_rate=0.2,
-                use_dropout=False,
-                CNN_encoder=False, LSTM_encoder=True,
-                LSTM_decoder=True,
-                use_attention=False):
-
-    tf.keras.backend.clear_session()  # make sure we are working clean
-
-    # ToDo: allow for the uses of 'none' as Encoder setting, just passes data through
-
-    # ToDo: allow for 'none' as initial states for the decoder, do some zero initialization or something?
-
-    # ToDo: change in a way that we can give it an encoder and a decoder and this just builds the model
-
-    # ToDo: write decoder wrapper
-
-    layers = E_D_layers  # remember units and layers
-    units = E_D_units
-    #   Encoder init
-    encoder_inputs = tf.keras.layers.Input(shape=(in_shape[1], in_shape[2]))
-    if CNN_encoder:
-        encoder = encoder_CNN(layers, units, use_dropout=use_dropout, dropout_rate=dropout_rate)
-    if LSTM_encoder:
-        encoder = encoder_LSTM(layers, units, use_dropout=use_dropout, dropout_rate=dropout_rate)
-    # ------------------------------------------------------------------------------------------
-    #   Decoder init
-    decoder_inputs = tf.keras.layers.Input(shape=(out_shape[1], out_shape[2]))
-    blend_factor_input = tf.keras.layers.Input(shape=(1))
-    if LSTM_decoder:
-        decoder = decoder_LSTM(layers, units,
-                               use_dropout=use_dropout, dropout_rate=dropout_rate,
-                               out_shape=out_shape[1:],
-                               use_attention=use_attention)
-    else:
-        print('whoops, no other decoders available atm!!')
-    # ------------------------------------------------------------------------------------------
-    # Run
-    if CNN_encoder:
-        encoder_outputs = encoder(encoder_inputs)
-        encoder_states=None
-    if LSTM_encoder:
-        encoder_outputs, encoder_states = encoder(encoder_inputs)
-
-    if LSTM_decoder:
-        decoder_output = decoder(decoder_inputs, encoder_outputs=encoder_outputs, initial_states=encoder_states,
-                                 blend_factor_input=blend_factor_input)
-
-
-    # Define the model that will turn
-    # `encoder_input_data` & `decoder_input_data` into `decoder_target_data`
-    model = tf.keras.Model([encoder_inputs, decoder_inputs, blend_factor_input], decoder_output)
-    return model
-
 # Application of feed-forward & recurrent dropout on encoder & decoder hidden states.
 class DropoutWrapper(tf.keras.layers.Layer):
     def __init__(self, layer, dropout_prob):
@@ -91,29 +35,20 @@ class DropoutWrapper(tf.keras.layers.Layer):
         # see which inputs to use
 
         def drop_stuff(input_to_drop_from):
+            # inp_shape = tf.shape(input_to_drop_from)
+            # noise_shape = [inp_shape[0], 1, inp_shape[2]]
             return tf.nn.dropout(input_to_drop_from, self.dropout_prob)
 
-        inputs = tf.keras.backend.in_train_phase(x=drop_stuff(inputs), alt=inputs, training=istraining)
+        inputs = tf.keras.backend.in_train_phase(x=drop_stuff(inputs), alt=inputs)
 
         # get the output and hidden states in one layer of the network
         output, state_h, state_c = self._layer(inputs, initial_state)
         # apply dropout to each state of an LSTM layer
         # see which states to use
 
-
-        state_h = tf.keras.backend.in_train_phase(x=drop_stuff(state_h), alt=state_h, training=istraining)
-        state_c = tf.keras.backend.in_train_phase(x=drop_stuff(state_c), alt=state_c, training=istraining)
-
-        # state_h = self.dropout_layer(state_h, istraining)
-        # state_c = self.dropout_layer(state_c, istraining)
-
-        # def drop_state_c():
-        #     return tf.nn.dropout(state_c, self.dropout_prob)
-        #
-        #
-        # ToDo: GRU functionality?
-        # else:  # test/validation time
-        #     output, state_h, state_c = self._layer(inputs, initial_state)
+        state_h = tf.keras.backend.in_train_phase(x=drop_stuff(state_h), alt=state_h)
+        state_c = tf.keras.backend.in_train_phase(x=drop_stuff(state_c), alt=state_c)
+        output = tf.keras.backend.in_train_phase(x=drop_stuff(output), alt=output)
         return output, state_h, state_c
 
 
@@ -189,7 +124,7 @@ class Norm_LSTM_wrapper(tf.keras.layers.Layer):
 # it gives the outputs of all RNN layers (or should it be just one?)
 # and the states at the last step
 class MultiLayer_LSTM(tf.keras.layers.Layer):
-    def __init__(self, units=[20, 20], use_dropout=True, dropout_rate=0.0, use_norm=True, use_hw=True, use_quasi_dense=False):
+    def __init__(self, units=[[20, 20], [20,20]], use_dropout=True, dropout_rate=0.0, use_norm=True, use_hw=True, use_quasi_dense=True):
         super(MultiLayer_LSTM, self).__init__()
 
         self.num_layers = len(units)  # simple, just save all the things we might need
@@ -203,70 +138,67 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
         self.LSTM = []  # Multiple layers work easiest as a list of layers, so here we start
         self.norm = []
         self.Tx = []
-        prev_units_per_layer = self.units[0]
         self.block_transition = []
         self.do_hw = []
-        for layer in range(len(self.units)):
-            if layer == len(self.units):
-                self.block_transition.append(True)
-            elif layer!=0 and self.units[layer-1] != self.units[layer]:
-                self.block_transition.append(True)
-            else:
-                self.block_transition.append(False)
 
-        for layer in range(len(self.units)):
-            # get one LSTM layer per layer we speciefied, with the units we need
+        for block in range(len(self.units)):
+            self.in_block_layers = []
+            for layer in range(len(self.units[block])):
+                # get one LSTM layer per layer we speciefied, with the units we need
 
-            # Do we need to initialize the layer in the loop?
-            one_LSTM_layer = tf.keras.layers.LSTM(self.units[layer],
-                                                  activation=tf.nn.tanh,
-                                                  return_sequences=True,
-                                                  return_state=True,
-                                                  recurrent_initializer='glorot_uniform')
+                # Do we need to initialize the layer in the loop?
+                one_LSTM_layer = tf.keras.layers.LSTM(self.units[block][layer],
+                                                      activation=tf.nn.tanh,
+                                                      return_sequences=True,
+                                                      return_state=True,
+                                                      recurrent_initializer='glorot_uniform')
 
-            # if it is the first layer of we do not want to use dropout, we won't
-            # otherwise add the zoneout wrapper
-            if layer > 0 and self.use_dropout:
-                one_LSTM_layer = DropoutWrapper(one_LSTM_layer, dropout_prob=self.dropout_rate)
+                # if it is the first layer of we do not want to use dropout, we won't
+                if layer > 0 and self.use_dropout:
+                    one_LSTM_layer = DropoutWrapper(one_LSTM_layer, dropout_prob=self.dropout_rate)
 
-            if self.use_norm:
-                one_LSTM_layer = Norm_LSTM_wrapper(one_LSTM_layer, norm_type='Layer norm')
+                # do we wanna norm
+                if self.use_norm:
+                    one_LSTM_layer = Norm_LSTM_wrapper(one_LSTM_layer, norm_type='Layer norm')
 
-            # use highway wrapper
-            if self.use_hw and layer > 0:
-                if self.units[layer] == self.units[layer-1]:
-                    one_LSTM_layer = Highway_LSTM_wrapper(one_LSTM_layer, self.units[layer], -1.5)
+                # do we wanna highway
+                if self.use_hw and layer > 0:
+                    if self.units[block][layer] == self.units[block][layer-1]:
+                        one_LSTM_layer = Highway_LSTM_wrapper(one_LSTM_layer, self.units[block][layer], -1.5)
 
-            self.LSTM.append(one_LSTM_layer)
+                self.in_block_layers.append(one_LSTM_layer) # will be len(layers_in_block)
+            self.LSTM.append(self.in_block_layers)  # will be [blocks][layers_in_block]
 
     def call(self, inputs, initial_states=None):
+
         if initial_states is None:  # ToDo: think about noisy initialization?
             initial_states = []
-
-            for layer in range(len(self.units)):
-                state_h = tf.zeros([tf.shape(inputs)[0], self.units[layer]])
-                state_c = tf.zeros([tf.shape(inputs)[0], self.units[layer]])
-                initial_states.append([state_h, state_c])
-
+            for block in range(len(self.units)):
+                initial_states_block = []
+                for layer in range(len(self.units[block])):
+                    state_h = tf.zeros([tf.shape(inputs)[0], self.units[block][layer]])
+                    state_c = tf.zeros([tf.shape(inputs)[0], self.units[block][layer]])
+                    initial_states_block.append([state_h, state_c])
+                initial_states.append(initial_states_block)
         all_out = []  # again, we are working with lists, so we might just as well do the same for the outputs
-        states = []
+        states_out = []
 
         # just a simple trick to prevent usage of one if_else loop for the first layer
-        outputs_previous_block = inputs
         inputs_next_layer = inputs
-        for layer in range(len(self.units)):
-            layer_out, state_h, state_c = self.LSTM[layer](inputs_next_layer, initial_state=initial_states[layer])
+        for block in range(len(self.units)):
+            inputs_next_block = inputs_next_layer
+            states_block = []
+            for layer in range(len(self.units[block])):
+                layer_out, state_h, state_c = self.LSTM[block][layer](inputs_next_layer, initial_state=initial_states[block][layer])
 
-            # if self.use_quasi_dense and self.block_transition:
-            #     outputs_previous_block = tf.concat([outputs_previous_block, layer_out], axis=-1)
-            #     inputs_next_layer = outputs_previous_block
-            # else:
-            #     inputs_next_layer = layer_out
-            inputs_next_layer = layer_out
-            all_out.append(inputs_next_layer)
-            states.append([state_h, state_c])
-
-        return all_out, states
+                if layer == len(self.units[block]) and self.use_quasi_dense:
+                    inputs_next_layer = tf.concat([inputs_next_block, layer_out], axis=-1)
+                else:
+                    inputs_next_layer = layer_out
+                all_out.append(inputs_next_layer)
+                states_block.append([state_h, state_c])
+            states_out.append(states_block)
+        return all_out, states_out
 
 class Multilayer_CNN(tf.keras.layers.Layer):
     def __init__(self, num_layers, num_units, use_dropout=True, dropout_rate=0.0, kernel_size=3, strides=1):
@@ -360,7 +292,7 @@ class Attention(tf.keras.Model):
 # this will reduce the size of attention needed :-)
 
 class block_LSTM(tf.keras.layers.Layer):
-    def __init__(self, units=[20,20], use_dropout=False, dropout_rate=0.0, use_norm=True, use_hw=True, only_last_layer_output=True):
+    def __init__(self, units=[[20, 20], [20,20]], use_dropout=False, dropout_rate=0.0, use_norm=True, use_hw=True, only_last_layer_output=True):
         super(block_LSTM, self).__init__()
         self.only_last_layer_output = only_last_layer_output
         ml_LSTM_params = {'units': units,
@@ -394,7 +326,8 @@ class encoder_CNN(tf.keras.layers.Layer):
 
 # this builds the decoder LSTM
 class decoder_LSTM_block(tf.keras.layers.Layer):
-    def __init__(self,units=[9,9],
+    def __init__(self,
+                 units=[[20, 20], [20,20]],
                  use_dropout=False,
                  dropout_rate=0.0,
                  use_hw=True,
@@ -406,9 +339,9 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
         self.units = units
         self.use_attention = use_attention
         self.attention_hidden = attention_hidden
-        self.only_last_layer_output = True
+        self.only_last_layer_output = only_last_layer_output
         #TODO: maybe fix attention
-        self.attention = Attention(units[-1], bahdanau=False) # choose the attention style (Bahdanau, Transformer)
+        self.attention = Attention(units[-1][-1], bahdanau=False) # choose the attention style (Bahdanau, Transformer)
         ml_LSTM_params = {'units': units,
                         'use_dropout': use_dropout,
                         'dropout_rate': dropout_rate,

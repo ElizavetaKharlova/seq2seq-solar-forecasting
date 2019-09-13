@@ -112,7 +112,7 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder'):
                             output_shape=out_shape,
                             mode='project')
     elif model_type == 'Encoder-Decoder':
-        common_specs = {'units': [64,64,64,85,85,85],
+        common_specs = {'units': [[32,32], [32,32], [32,32]],
                         'use_dropout': True,
                         'dropout_rate': 0.2,
                         'use_norm': True,

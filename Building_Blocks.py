@@ -149,6 +149,36 @@ class ZoneoutWrapper(tf.keras.layers.Layer):
         state_c = tf.keras.backend.in_train_phase(x=zone_state_c(), alt=no_zone_state_c(), training=istraining)
         return output, state_h, state_c
 
+class Highway_LSTM_wrapper(tf.keras.layers.Layer):
+    def __init__(self, wrapped_layer, units, iniital_bias):
+        super(Highway_LSTM_wrapper, self).__init__()
+
+        self.wrapped_layer = wrapped_layer
+        self.units = units
+        self.initial_bias = iniital_bias
+
+        self.Transform_gate = tf.keras.layers.Dense(units, activation='sigmoid', bias_initializer=tf.initializers.constant(iniital_bias))
+
+    def call(self, input, initial_state):
+
+        H_x, state_h, state_c = self.wrapped_layer(input, initial_state)
+        T_x = self.Transform_gate(input)
+
+        return tf.add(tf.multiply(H_x, T_x), tf.multiply((1.0-T_x), input)), state_h, state_c
+
+class Norm_LSTM_wrapper(tf.keras.layers.Layer):
+    def __init__(self, layer, norm_type='Layer norm'):
+        super(Norm_LSTM_wrapper, self).__init__()
+
+        self.layer = layer
+        if norm_type == 'Layer norm':
+            self.norm = tf.keras.layers.LayerNormalization(axis=-1, center=True, scale=True)
+        else:
+            print('wrong norm type supplied to NormWrapper, supplied', norm_type)
+
+    def call(self, input, initial_state):
+        layer_out, state_h, state_c = self.layer(input, initial_state)
+        return self.norm(layer_out), state_h, state_c
 
 # this builds the wrapper class for the multilayer LSTM
 # in addition to the multiple LSTM layers it adds
@@ -159,7 +189,7 @@ class ZoneoutWrapper(tf.keras.layers.Layer):
 # it gives the outputs of all RNN layers (or should it be just one?)
 # and the states at the last step
 class MultiLayer_LSTM(tf.keras.layers.Layer):
-    def __init__(self, units=[20, 20], use_dropout=True, dropout_rate=0.0, use_norm=True, use_hw=True):
+    def __init__(self, units=[20, 20], use_dropout=True, dropout_rate=0.0, use_norm=True, use_hw=True, use_quasi_dense=False):
         super(MultiLayer_LSTM, self).__init__()
 
         self.num_layers = len(units)  # simple, just save all the things we might need
@@ -168,16 +198,27 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
         self.use_dropout = use_dropout
         self.use_norm = use_norm
         self.use_hw = use_hw
+        self.use_quasi_dense = use_quasi_dense
 
         self.LSTM = []  # Multiple layers work easiest as a list of layers, so here we start
         self.norm = []
         self.Tx = []
         prev_units_per_layer = self.units[0]
-        for units_per_layer in self.units:
+        self.block_transition = []
+        self.do_hw = []
+        for layer in range(len(self.units)):
+            if layer == len(self.units):
+                self.block_transition.append(True)
+            elif layer!=0 and self.units[layer-1] != self.units[layer]:
+                self.block_transition.append(True)
+            else:
+                self.block_transition.append(False)
+
+        for layer in range(len(self.units)):
             # get one LSTM layer per layer we speciefied, with the units we need
 
             # Do we need to initialize the layer in the loop?
-            one_LSTM_layer = tf.keras.layers.LSTM(units_per_layer,
+            one_LSTM_layer = tf.keras.layers.LSTM(self.units[layer],
                                                   activation=tf.nn.tanh,
                                                   return_sequences=True,
                                                   return_state=True,
@@ -185,26 +226,18 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
 
             # if it is the first layer of we do not want to use dropout, we won't
             # otherwise add the zoneout wrapper
-            if len(self.LSTM) == 0 or self.use_dropout == False:
-                self.LSTM.append(one_LSTM_layer)
-            else:
-                print('re doibng dropout')
-                self.LSTM.append(
-                    DropoutWrapper(one_LSTM_layer, dropout_prob=self.dropout_rate)
-                            )
+            if layer > 0 and self.use_dropout:
+                one_LSTM_layer = DropoutWrapper(one_LSTM_layer, dropout_prob=self.dropout_rate)
 
             if self.use_norm:
-                self.norm.append(tf.keras.layers.LayerNormalization(axis=-1,
-                                                                    center=True,
-                                                                    scale=True))
-            if self.use_hw:
-                if len(self.LSTM) == 1 or units_per_layer is not prev_units_per_layer:
-                    self.Tx.append([])
-                else:
-                    self.Tx.append(tf.keras.layers.Dense(units_per_layer,
-                                                        activation='sigmoid',
-                                                        bias_initializer=tf.initializers.constant(-1)))
-                prev_units_per_layer = units_per_layer
+                one_LSTM_layer = Norm_LSTM_wrapper(one_LSTM_layer, norm_type='Layer norm')
+
+            # use highway wrapper
+            if self.use_hw and layer > 0:
+                if self.units[layer] == self.units[layer-1]:
+                    one_LSTM_layer = Highway_LSTM_wrapper(one_LSTM_layer, self.units[layer], -1.5)
+
+            self.LSTM.append(one_LSTM_layer)
 
     def call(self, inputs, initial_states=None):
         if initial_states is None:  # ToDo: think about noisy initialization?
@@ -219,18 +252,18 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
         states = []
 
         # just a simple trick to prevent usage of one if_else loop for the first layer
+        outputs_previous_block = inputs
+        inputs_next_layer = inputs
         for layer in range(len(self.units)):
-            layer_out, state_h, state_c = self.LSTM[layer](inputs, initial_state=initial_states[layer])
-            
-            if self.use_norm:
-                layer_out = self.norm[layer](layer_out)
-                
-            if self.use_hw and self.Tx[layer]:
-                    transform = self.Tx[layer](inputs)
-                    layer_out = tf.add(tf.multiply(transform,layer_out), tf.multiply((1-transform), inputs))
+            layer_out, state_h, state_c = self.LSTM[layer](inputs_next_layer, initial_state=initial_states[layer])
 
-            all_out.append(layer_out)
-            inputs = layer_out
+            # if self.use_quasi_dense and self.block_transition:
+            #     outputs_previous_block = tf.concat([outputs_previous_block, layer_out], axis=-1)
+            #     inputs_next_layer = outputs_previous_block
+            # else:
+            #     inputs_next_layer = layer_out
+            inputs_next_layer = layer_out
+            all_out.append(inputs_next_layer)
             states.append([state_h, state_c])
 
         return all_out, states
@@ -336,15 +369,15 @@ class block_LSTM(tf.keras.layers.Layer):
                         'use_norm': use_norm,
                         'use_hw': use_hw,
                         }
-        self.encoder = MultiLayer_LSTM(**ml_LSTM_params)
+        self.multilayer_LSTMs = MultiLayer_LSTM(**ml_LSTM_params)
 
     def call(self, encoder_inputs, initial_states=None):
-        encoder_outputs, encoder_states = self.encoder(encoder_inputs, initial_states=initial_states)
+        block_output, block_states = self.multilayer_LSTMs(encoder_inputs, initial_states=initial_states)
 
         if self.only_last_layer_output:
-            encoder_outputs =  encoder_outputs[-1]
+            block_output =  block_output[-1]
 
-        return encoder_outputs, encoder_states
+        return block_output, block_states
 
 class encoder_CNN(tf.keras.layers.Layer):
     def __init__(self, num_layers, num_units, use_dropout=True, dropout_rate=0.0):
@@ -360,95 +393,6 @@ class encoder_CNN(tf.keras.layers.Layer):
 
 
 # this builds the decoder LSTM
-# using the MultiLayer_LSTM, all we really need to do is do stepwise unrolling
-# the decoder needs additional inputs compared to the decoder ...
-# ToDO: same thing here, add an isTraining thingie, where the blend factor will be used, and if isTraining is false then the blend_factor will be multiplied by 0
-
-class decoder_LSTM(tf.keras.layers.Layer):
-    def __init__(self, num_layers, num_units,
-                 out_shape=1,
-                 use_dropout=False,
-                 dropout_rate=0.0,
-                 use_attention=False,
-                 attention_hidden=False):
-        super(decoder_LSTM, self).__init__()
-        self.layers = num_layers
-        self.units = num_units
-        self.out_shape = out_shape
-        self.use_attention = use_attention
-        self.attention_hidden = attention_hidden
-
-        self.reshape_to_1ts = tf.keras.layers.Reshape(
-            (1, self.out_shape[1]))  # Keras is finicky with dimensions, this is to make sure the dim is specified
-        self.reshape_to_one = tf.keras.layers.Reshape( (1, 1))
-        self.concat_timestep = tf.keras.layers.Concatenate(axis=1)  # concatenates the timeteps together
-
-        self.attention = Attention(num_units, bahdanau=False) # choose the attention style (Bahdanau, Transformer)
-        self.decoder = MultiLayer_LSTM(num_layers, num_units, use_dropout, dropout_rate)
-
-        self.decoder_wrap = []
-        if self.units > 512:
-            self.decoder_wrap.append(tf.keras.layers.TimeDistributed(
-                                                tf.keras.layers.Dense(units=256, activation='relu')
-                                                                    )
-                                    )
-
-        self.decoder_wrap.append(tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units=self.out_shape[1])))
-
-        if self.out_shape[1] > 1:
-            self.softmax = tf.keras.layers.Softmax(axis=-1)
-
-    def call(self, decoder_inputs, encoder_outputs, initial_states, blend_factor_input):
-
-        istraining = tf.keras.backend.learning_phase()
-
-        dec_states_t = initial_states  # get the initial states for the first timestep
-        output_decoder_LSTM = encoder_outputs  # for the first time step for attention
-
-        for t in range(self.out_shape[0]):  # for loop over all timesteps
-
-            target_support_t = self.reshape_to_1ts(decoder_inputs[:, t, :])  # slice a timestep of the support
-            if t == 0:  # if no previous output we cannot blend
-                dec_in_t = target_support_t
-            else:  # otherwise blend during training and no blend during va
-                if istraining:
-                    blend_factor = self.reshape_to_one(
-                        blend_factor_input)  # because, otherwise keras will be acting wierd as the decoder_output is (1,1) and this would be (1)
-                    dec_in_t = (1.0 - blend_factor) * dec_out_t + blend_factor * target_support_t
-                else:
-                    dec_in_t = dec_out_t
-
-            # add the Attention context vector
-            if self.use_attention:
-                # apply attention either on the hidden layers of encoder/decoder (attention_hidden=True) or the output features of encoder/decoder
-                if self.attention_hidden:
-                    context_vector, attention_weights = self.attention(dec_states_t, initial_states)
-                else:
-                    context_vector, attention_weights = self.attention(output_decoder_LSTM, encoder_outputs)
-                # add attention to the input
-                dec_in_t = tf.concat([tf.expand_dims(context_vector, 1), dec_in_t], axis=-1)
-
-            # use the decodeer_LSTM
-            output_decoder_LSTM, dec_states_t = self.decoder(dec_in_t, initial_states=dec_states_t)
-
-            # do the output projection
-            dec_out_t_not_projected = output_decoder_LSTM[-1]  # get the lat layer output of the decoder
-            for layer in range(len(self.decoder_wrap)):
-                dec_out_t_not_projected = self.decoder_wrap[layer](dec_out_t_not_projected)
-            dec_out_t = self.reshape_to_1ts(dec_out_t_not_projected)
-
-            if self.out_shape[-1] > 1:
-                dec_out_t = self.softmax(dec_out_t)
-
-            # construct the output time-series
-            if t == 0:
-                decoder_output = dec_out_t
-            else:  # else we append
-                decoder_output = self.concat_timestep([decoder_output, dec_out_t])
-
-
-        return decoder_output
-
 class decoder_LSTM_block(tf.keras.layers.Layer):
     def __init__(self,units=[9,9],
                  use_dropout=False,
@@ -456,17 +400,19 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                  use_hw=True,
                  use_norm=True,
                  use_attention=False,
-                 attention_hidden=False):
+                 attention_hidden=False,
+                 only_last_layer_output=True):
         super(decoder_LSTM_block, self).__init__()
         self.units = units
         self.use_attention = use_attention
         self.attention_hidden = attention_hidden
+        self.only_last_layer_output = True
         #TODO: maybe fix attention
         self.attention = Attention(units[-1], bahdanau=False) # choose the attention style (Bahdanau, Transformer)
         ml_LSTM_params = {'units': units,
                         'use_dropout': use_dropout,
                         'dropout_rate': dropout_rate,
-                        'use_norm': True,
+                        'use_norm': use_norm,
                         'use_hw': use_hw,
                         }
         self.decoder = MultiLayer_LSTM(**ml_LSTM_params)
@@ -475,13 +421,13 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
     def call(self, decoder_inputs, decoder_state, attention_value):
         # add the Attention context vector
         if self.use_attention:
-            context_vector, attention_weights = self.attention(decoder_inputs,
-                                                               values=attention_value)
+            context_vector, attention_weights = self.attention(decoder_inputs, values=attention_value)
             # add attention to the input
             decoder_inputs = tf.concat([tf.expand_dims(context_vector, 1), decoder_inputs], axis=-1)
         # use the decodeer_LSTM
-        decoder_out, decoder_state = self.decoder(decoder_inputs,
-                                                  initial_states=decoder_state)
+        decoder_out, decoder_state = self.decoder(decoder_inputs, initial_states=decoder_state)
 
-        return decoder_out[-1], decoder_state
+        if self.only_last_layer_output:
+            decoder_out = decoder_out[-1]
+        return decoder_out, decoder_state
 

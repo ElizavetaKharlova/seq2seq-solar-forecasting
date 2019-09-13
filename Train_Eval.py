@@ -112,23 +112,30 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder'):
                             output_shape=out_shape,
                             mode='project')
     elif model_type == 'Encoder-Decoder':
-        common_specs = {'units': [20,20],
+        common_specs = {'units': [64,64,64,85,85,85],
                         'use_dropout': True,
                         'dropout_rate': 0.2,
                         'use_norm': True,
-                        'use_hw': True}
+                        'use_hw': True,
+                        'only_last_layer_output':True}
         encoder_specs = copy.deepcopy(common_specs)
-        encoder_specs['only_last_layer_output'] = False
         decoder_specs = copy.deepcopy(common_specs)
         decoder_specs['use_attention'] = True
         encoder_block = block_LSTM(**encoder_specs)
         decoder_model=decoder_LSTM_block(**decoder_specs)
         # # # ToDo: would it be smarter to have this in the encoder decoder thingie instead of outside?
         projection_model=tf.keras.layers.Dense(units=out_shape[-1], activation=tf.keras.layers.Softmax(axis=-1))
+
         model = encoder_decoder_model(encoder_block=encoder_block,
+                                      encoder_stateful=True,
+
                                       decoder_block=decoder_model,
-                                      projection_block=projection_model,
                                       use_teacher=True,
+                                      decoder_uses_attention=True,
+                                      decoder_stateful=True,
+
+                                      projection_block=projection_model,
+
                                       input_shape=in_shape,
                                       output_shape=out_shape)
 
@@ -145,8 +152,8 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder'):
     return model
 
 from Dataset_Loaders import get_Daniels_data, get_Lizas_data
-#inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Daniels_data()
-inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Lizas_data()
+inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Daniels_data()
+# inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Lizas_data()
 
 out_shape = pdf_targets.shape[1:]
 in_shape = inp.shape[1:]
@@ -170,11 +177,11 @@ best_val_metric = np.inf
 val_metrics = {}
 train_metrics = {}
 
-model = __build_model(input_shape=in_shape, out_shape=out_shape)
+model = __build_model(input_shape=in_shape, out_shape=out_shape, model_type='Encoder-Decoder')
 
 while decrease < 10:
     train_history = model.fit(x=dataset['train_inputs'], y=dataset['train_targets'],
-                              batch_size=64,
+                              batch_size=32,
                               epochs=1,
                               shuffle=True,
                               verbose=False,
@@ -221,7 +228,7 @@ __plot_training_curves(train_metrics, val_metrics)
 model.set_weights(best_wts)
 test_results = model.evaluate(x=dataset['test_inputs'],
                               y=dataset['test_targets'],
-                              batch_size=64,
+                              batch_size=32,
                               verbose=False)
 print('test results', test_results)
 

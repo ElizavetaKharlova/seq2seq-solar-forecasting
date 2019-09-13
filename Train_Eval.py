@@ -112,7 +112,7 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder'):
                             output_shape=out_shape,
                             mode='project')
     elif model_type == 'Encoder-Decoder':
-        common_specs = {'units': [[32,32], [32,32], [32,32]],
+        common_specs = {'units': [[48,48, 48], [64,64], [96,96]],
                         'use_dropout': True,
                         'dropout_rate': 0.2,
                         'use_norm': True,
@@ -144,7 +144,8 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder'):
     from Losses_and_Metrics import loss_wrapper
     metrics = [loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nME'),
                loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nRMSE'),
-               loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='KL-D')]
+               loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='KL-D'),
+               loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='CRPS')]
     model.compile(optimizer=optimizer,
                   loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='tile-to-forecast'),
                   metrics=metrics) #compile, print summary

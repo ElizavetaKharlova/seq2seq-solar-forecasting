@@ -23,6 +23,13 @@ def loss_wrapper(last_output_dim_size, loss_type='nME'):
             return calculate_KL_Divergence(target, prediction, last_output_dim_size)
         return KLD
 
+    elif loss_type=='CRPS' or loss_type=='Continuous Ranked Probability Score':
+        def CRPS(target, prediction):
+            target = tf.cast(target, dtype=tf.float32)
+            prediction = tf.cast(prediction, dtype=tf.float32)
+            return calculate_CRPS(target, prediction, last_output_dim_size)
+        return CRPS
+
     elif loss_type == 'tile-to-forecast':
         def designed(target, prediction):
             target = tf.cast(target, dtype=tf.float32)
@@ -37,6 +44,19 @@ def __calculate_expected_value(signal, last_output_dim_size):
     indices = tf.range(last_output_dim_size, dtype=tf.float32) # (last_output_dim_size)
     weighted_signal = tf.multiply(signal, indices) # (batches, timesteps, last_output_dim_size)
     return tf.reduce_sum(weighted_signal, axis=-1, keepdims=True)
+
+def __pdf_to_cdf(pdf, last_output_dim_size):
+    for tile in range(last_output_dim_size):
+        if tile == 0:
+            cdf = tf.expand_dims(pdf[:,:, tile], axis=-1)
+        else:
+            cdf = tf.concat([cdf, tf.add(cdf, tf.expand_dims(pdf[:,:, tile], axis=-1))], axis=-1)
+    return cdf
+def calculate_CRPS(target, prediction, last_output_dim_size):
+    CRPS = tf.subtract(__pdf_to_cdf(prediction, last_output_dim_size), __pdf_to_cdf(target, last_output_dim_size))
+    CRPS = tf.square(CRPS)
+    CRPS = tf.reduce_sum(CRPS, axis=-1)
+    return tf.reduce_mean(CRPS)
 
 def calculate_E_nRMSE(target, prediction, last_output_dim_size):
     # if pdfs, convert to expected values

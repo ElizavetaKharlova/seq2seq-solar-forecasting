@@ -191,7 +191,7 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
             for layer in range(len(self.units[block])):
                 layer_out, state_h, state_c = self.LSTM[block][layer](inputs_next_layer, initial_state=initial_states[block][layer])
 
-                if layer == len(self.units[block]) and self.use_quasi_dense:
+                if layer == len(self.units[block])-1 and self.use_quasi_dense:
                     inputs_next_layer = tf.concat([inputs_next_block, layer_out], axis=-1)
                 else:
                     inputs_next_layer = layer_out

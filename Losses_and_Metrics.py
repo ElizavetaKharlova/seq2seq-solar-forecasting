@@ -50,10 +50,12 @@ def __pdf_to_cdf(pdf, last_output_dim_size):
         if tile == 0:
             cdf = tf.expand_dims(pdf[:,:, tile], axis=-1)
         else:
-            cdf = tf.concat([cdf, tf.add(cdf, tf.expand_dims(pdf[:,:, tile], axis=-1))], axis=-1)
+            cdf = tf.concat([cdf, tf.reduce_sum(pdf[:,:, :tile], axis=-1, keepdims=True)], axis=-1)
     return cdf
 def calculate_CRPS(target, prediction, last_output_dim_size):
-    CRPS = tf.subtract(__pdf_to_cdf(prediction, last_output_dim_size), __pdf_to_cdf(target, last_output_dim_size))
+    forecast_cdf = __pdf_to_cdf(prediction, last_output_dim_size)
+    target_cdf = __pdf_to_cdf(target, last_output_dim_size)
+    CRPS = tf.subtract(forecast_cdf, target_cdf)
     CRPS = tf.square(CRPS)
     CRPS = tf.reduce_sum(CRPS, axis=-1)
     return tf.reduce_mean(CRPS)

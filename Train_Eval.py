@@ -72,7 +72,7 @@ def __split_dataset(inp, target, teacher, training_ratio):
     dataset['test_inputs'], dataset['test_targets'], inp, teacher, target = __slice_and_delete(inp, teacher, target, test_len, seed=78)
     dataset['val_inputs'], dataset['val_targets'], inp, teacher, target = __slice_and_delete(inp, teacher, target, val_len, seed=87)
     blend_train = [1] * inp.shape[0]
-    dataset['train_inputs'] = [tf.convert_to_tensor(inp, dtype=tf.float32), tf.convert_to_tensor(teacher, dtype=tf.float32) ,tf.convert_to_tensor(blend_train, dtype=tf.float32)]
+    dataset['train_inputs'] = [tf.convert_to_tensor(inp, dtype=tf.float32), tf.convert_to_tensor(teacher, dtype=tf.float32) , tf.convert_to_tensor(blend_train, dtype=tf.float32)]
     dataset['train_targets'] = tf.convert_to_tensor(target, dtype=tf.float32)
 
     print('Dataset has', dataset['train_targets'].shape[0], 'training samples', dataset['val_targets'].shape[0], 'val samples', dataset['test_targets'].shape[0], 'test samples')
@@ -134,22 +134,20 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder', normaliz
         # decoder_model=decoder_LSTM_block(**decoder_specs)
 
         from Building_Blocks import Transformer_encoder, Transformer_decoder
-        encoder_block = Transformer_encoder(num_layers=3,
-                                            num_units_per_head_per_layer=[[40,40,40], [60,60,60], [80,80,80]],
-                                            num_proj_units_per_layer=[80, 80, 80],
-                                            ts_reduce_by_per_layer=[2,2,1],
-                                            dropout_rate=0.2
-                                            )
-        decoder_block = Transformer_decoder(num_layers=3,
-                                            num_units_per_head_per_layer=[[40,40,40], [60,60,60], [80,80,80]],
-                                            num_proj_units_per_layer=[80, 80, 80],
-                                            ts_reduce_by_per_layer=[1,1,1],
-                                            dropout_rate=0.2
-                                            )
+        num_layers_encoder = 6
+        encoder_block = Transformer_encoder(num_units_per_head_per_layer=[[128, 128, 128]*num_layers_encoder],
+                                            num_proj_units_per_layer=[256]*num_layers_encoder,
+                                            use_dropout=True,
+                                            dropout_rate=0.3)
+
+        decoder_block = Transformer_decoder(num_units_per_head_per_layer=[[128, 128, 128]*num_layers_encoder],
+                                            num_proj_units_per_layer=[256]*num_layers_encoder,
+                                            use_dropout=True,
+                                            dropout_rate=0.3)
         # # # ToDo: would it be smarter to have this in the encoder decoder thingie instead of outside?
-        projection_model=tf.keras.layers.TimeDistributed(
-                                        tf.keras.layers.Dense(units=out_shape[-1],
-                                                            activation=tf.keras.layers.Softmax(axis=-1)))
+        projection_model= tf.keras.layers.Dense(units=out_shape[-1],
+                                                            activation=tf.keras.layers.Softmax(axis=-1))
+        projection_model = tf.keras.layers.TimeDistributed(projection_model)
 
         model = encoder_decoder_model(encoder_block=encoder_block,
                                       encoder_stateful=False,
@@ -165,7 +163,7 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder', normaliz
                                       output_shape=out_shape)
 
     from Losses_and_Metrics import loss_wrapper
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.5*1e-3),
+    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1*1e-4),
                   loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='tile-to-forecast'),
                   metrics=[loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nME', normalizer_value=normalizer_value),
                loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nRMSE', normalizer_value=normalizer_value),
@@ -185,7 +183,7 @@ def __train_model(model):
 
     while decrease < 20:
         train_history = model.fit(x=dataset['train_inputs'], y=dataset['train_targets'],
-                                  batch_size=32,
+                                  batch_size=64,
                                   epochs=1,
                                   shuffle=True,
                                   verbose=False,
@@ -213,7 +211,7 @@ def __train_model(model):
             decrease += 1
             relative_decrease += 1
 
-        if relative_decrease > 3:
+        if relative_decrease > 4:
             # if we have no relative increase in quality towards the previous iteration
             # then decrease the blend factor
             dataset['train_inputs'][2] = dataset['train_inputs'][2] - 0.05
@@ -228,7 +226,7 @@ def __train_model(model):
     model.set_weights(best_wts)
     test_results = model.evaluate(x=dataset['test_inputs'],
                                   y=dataset['test_targets'],
-                                  batch_size=32,
+                                  batch_size=64,
                                   verbose=False)
     print('test results', test_results)
 

@@ -1,20 +1,27 @@
 # will contain losses and metrics used to analyse whatever we wanna train
 import tensorflow as tf
 
-def loss_wrapper(last_output_dim_size, loss_type='nME'):
+def loss_wrapper(last_output_dim_size, loss_type='nME', normalizer_value=1.0):
     if loss_type == 'NME' or loss_type == 'nME' or loss_type == 'nme':
         def nME(target, prediction):
             target = tf.cast(target, dtype=tf.float32)
             prediction = tf.cast(prediction, dtype=tf.float32)
-            return calculate_E_nME(target, prediction, last_output_dim_size)
+            return calculate_E_nME(target, prediction, last_output_dim_size, normalizer_value)
         return nME
 
     elif loss_type == 'NRMSE' or loss_type == 'nRMSE' or loss_type == 'nrmse':
         def nRMSE(target, prediction):
             target = tf.cast(target, dtype=tf.float32)
             prediction = tf.cast(prediction, dtype=tf.float32)
-            return calculate_E_nRMSE(target, prediction, last_output_dim_size)
+            return calculate_E_nRMSE(target, prediction, last_output_dim_size, normalizer_value)
         return nRMSE
+
+    elif loss_type == 'MSE' or loss_type == 'mse':
+        def MSE(target, prediction):
+            target = tf.cast(target, dtype=tf.float32)
+            prediction = tf.cast(prediction, dtype=tf.float32)
+            return calculate_E_MSE(target, prediction, last_output_dim_size)
+        return MSE
 
     elif loss_type == 'KL-D' or loss_type == 'kl-d' or loss_type == 'KL-Divergence':
         def KLD(target, prediction):
@@ -52,6 +59,18 @@ def __pdf_to_cdf(pdf, last_output_dim_size):
         else:
             cdf = tf.concat([cdf, tf.reduce_sum(pdf[:,:, :tile], axis=-1, keepdims=True)], axis=-1)
     return cdf
+
+def calculate_E_MSE(target, prediction, last_output_dim_size):
+    if last_output_dim_size > 1:
+        target = __calculate_expected_value(target, last_output_dim_size)
+        prediction = __calculate_expected_value(prediction, last_output_dim_size)
+    expected_nMSE = tf.subtract(target, prediction)
+    expected_nMSE = tf.square(expected_nMSE)
+
+    return tf.reduce_mean(expected_nMSE)
+
+
+
 def calculate_CRPS(target, prediction, last_output_dim_size):
     forecast_cdf = __pdf_to_cdf(prediction, last_output_dim_size)
     target_cdf = __pdf_to_cdf(target, last_output_dim_size)
@@ -60,38 +79,32 @@ def calculate_CRPS(target, prediction, last_output_dim_size):
     CRPS = tf.reduce_sum(CRPS, axis=-1)
     return tf.reduce_mean(CRPS)
 
-def calculate_E_nRMSE(target, prediction, last_output_dim_size):
+def calculate_E_nRMSE(target, prediction, last_output_dim_size, normalizer_value):
     # if pdfs, convert to expected values
     if last_output_dim_size > 1:
         target = __calculate_expected_value(target, last_output_dim_size)
         prediction = __calculate_expected_value(prediction, last_output_dim_size)
+        normalizer_value = last_output_dim_size
 
     expected_nMSE = tf.subtract(target, prediction)
     expected_nMSE = tf.square(expected_nMSE)
     expected_nMSE = tf.reduce_mean(expected_nMSE)
     expected_nRMSE = tf.sqrt(expected_nMSE)
 
-    if last_output_dim_size > 1:
-        normalizer = last_output_dim_size
-        return tf.divide(expected_nRMSE, tf.cast(normalizer, dtype=tf.float32))
-    else:
-        return expected_nMSE
+    return tf.divide(expected_nRMSE, tf.cast(normalizer_value, dtype=tf.float32))
 
-def calculate_E_nME(target, prediction, last_output_dim_size):
+def calculate_E_nME(target, prediction, last_output_dim_size, normalizer_value):
     # if pdfs, convert to expected values
     if last_output_dim_size > 1:
         target = __calculate_expected_value(target, last_output_dim_size)
         prediction = __calculate_expected_value(prediction, last_output_dim_size)
+        normalizer_value = last_output_dim_size
 
     expected_nME = tf.subtract(target, prediction)
     expected_nME = tf.abs(expected_nME)
     expected_nME = tf.reduce_mean(expected_nME)
 
-    if last_output_dim_size > 1:
-        normalizer = last_output_dim_size
-        return tf.divide(expected_nME, tf.cast(normalizer, dtype=tf.float32))
-    else:
-        return expected_nME
+    return tf.divide(expected_nME, tf.cast(normalizer_value, dtype=tf.float32))
 
 def calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size):
 
@@ -137,13 +150,19 @@ def calculate_KL_Divergence(target, prediction, last_output_dim_size):
     KL_divergence = tf.reduce_mean(KL_divergence)
     return KL_divergence
 
-def __calculatate_skillscore_baseline(set_targets, sample_spacing_in_mins):
+def __calculatate_skillscore_baseline(set_targets, sample_spacing_in_mins, normalizer_value):
 
     persistency_offset = (24*60)/sample_spacing_in_mins
     persistency_offset = int(persistency_offset)
 
     targets = set_targets[persistency_offset:,:,:]
     persistent_forecast = set_targets[:-persistency_offset, :,:]
-    nRMSEs = calculate_E_nRMSE(targets, persistent_forecast, set_targets.shape[-1])
 
-    return tf.reduce_mean(nRMSEs).numpy()
+    nRMSEs = calculate_E_nRMSE(targets, persistent_forecast, set_targets.shape[-1], normalizer_value)
+    nMEs = calculate_E_nME(targets, persistent_forecast, set_targets.shape[-1], normalizer_value)
+    CRPS = calculate_CRPS(targets, persistent_forecast, set_targets.shape[-1])
+
+    return {'nRMSE': tf.reduce_mean(nRMSEs).numpy(),
+            'nME': tf.reduce_mean(nMEs).numpy(),
+            'CRPS': tf.reduce_mean(CRPS).numpy(),
+            }

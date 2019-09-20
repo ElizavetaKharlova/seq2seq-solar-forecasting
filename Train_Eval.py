@@ -137,12 +137,14 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder', normaliz
         encoder_block = Transformer_encoder(num_layers=3,
                                             num_units_per_head_per_layer=[[40,40,40], [60,60,60], [80,80,80]],
                                             num_proj_units_per_layer=[80, 80, 80],
-                                            ts_reduce_by_per_layer=[1,1,2],
+                                            ts_reduce_by_per_layer=[2,2,1],
+                                            dropout_rate=0.2
                                             )
         decoder_block = Transformer_decoder(num_layers=3,
                                             num_units_per_head_per_layer=[[40,40,40], [60,60,60], [80,80,80]],
                                             num_proj_units_per_layer=[80, 80, 80],
                                             ts_reduce_by_per_layer=[1,1,1],
+                                            dropout_rate=0.2
                                             )
         # # # ToDo: would it be smarter to have this in the encoder decoder thingie instead of outside?
         projection_model=tf.keras.layers.TimeDistributed(
@@ -183,7 +185,7 @@ def __train_model(model):
 
     while decrease < 20:
         train_history = model.fit(x=dataset['train_inputs'], y=dataset['train_targets'],
-                                  batch_size=128,
+                                  batch_size=32,
                                   epochs=1,
                                   shuffle=True,
                                   verbose=False,
@@ -226,7 +228,7 @@ def __train_model(model):
     model.set_weights(best_wts)
     test_results = model.evaluate(x=dataset['test_inputs'],
                                   y=dataset['test_targets'],
-                                  batch_size=128,
+                                  batch_size=32,
                                   verbose=False)
     print('test results', test_results)
 

@@ -189,16 +189,33 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
         return all_out, states_list_o_lists
 
 class Attention(tf.keras.Model):
-    def __init__(self, units, mode='Transformer', only_context=True, context_mode='timeseries-like'):
+    def __init__(self, units, mode='Transformer',
+                 only_context=True, context_mode='timeseries-like',
+                 use_norm=True, use_dropout=True, dropout_rate=0.15):
         super(Attention, self).__init__()
-        self.W1 = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units))
-        self.W2 = tf.keras.layers.Dense(units)
+        self.W1 = tf.keras.layers.TimeDistributed(tf.keras.layers.Dense(units, activation='relu',
+                                                                        kernel_initializer='glorot_uniform',
+                                                                        bias_initializer=tf.zeros_initializer())
+                                                  )
+        self.W2 = tf.keras.layers.Dense(units, activation='relu',kernel_initializer='glorot_uniform',
+                                                                        bias_initializer=tf.zeros_initializer())
+        if use_norm:
+            self.W1 = Norm_wrapper(self.W1)
+            self.W2 = Norm_wrapper(self.W2)
+        if use_dropout:
+            self.W1 = Dropout_wrapper(self.W1, dropout_rate=dropout_rate)
+            self.W2 = Dropout_wrapper(self.W2, dropout_rate=dropout_rate)
         self.context_mode = context_mode
         self.mode = mode
         if self.mode == 'Bahdanau':
             self.V = tf.keras.layers.Dense(1)
         elif self.mode == 'Transformer':
-            self.W3 = tf.keras.layers.Dense(units)
+            self.W3 = tf.keras.layers.Dense(units, activation='relu',kernel_initializer='glorot_uniform',
+                                                                        bias_initializer=tf.zeros_initializer())
+            if use_norm:
+                self.W3 = Norm_wrapper(self.W3)
+            if use_dropout:
+                self.W3 = Dropout_wrapper(self.W3, dropout_rate=dropout_rate)
 
         self.only_context = only_context
     
@@ -230,7 +247,7 @@ class Attention(tf.keras.Model):
             # scale score
             score = score / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
 
-            context_vector = tf.matmul(tf.nn.softmax(score, axis=1), value)
+            context_vector = tf.matmul(score, value)
 
         # context_vector shape after sum == (batch_size, hidden_size)
         if self.context_mode == 'force singular step':
@@ -372,7 +389,7 @@ class encoder_CNN(tf.keras.layers.Layer):
         return encoder_outputs
 
 class Norm_wrapper(tf.keras.layers.Wrapper):
-    def __init__(self, layer, norm):
+    def __init__(self, layer, norm='layer'):
         super(Norm_wrapper, self).__init__(layer)
 
         if norm == 'layer':
@@ -393,6 +410,13 @@ class Dropout_wrapper(tf.keras.layers.Wrapper):
     def call(self, inputs):
         return self.dropout(self.layer(inputs), training=tf.keras.backend.learning_phase())
 
+class Multihead_dropout_wrapper(tf.keras.layers.Wrapper):
+    def __init__(self, layer, dropout_rate):
+        super(Multihead_dropout_wrapper, self).__init__(layer)
+        self.dropout = tf.keras.layers.Dropout(rate=dropout_rate)
+
+    def call(self, query, value):
+        return(self.dropout(self.layer(query, value)))
 
 class multihead_attentive_layer(tf.keras.layers.Layer):
     def __init__(self, num_heads, num_units_per_head=[80],
@@ -412,7 +436,7 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
 
         self.num_heads = num_heads
         if reduce_ts_len_by > 1:
-            self.pool = tf.keras.layers.AveragePooling1D(pool_size=2*reduce_ts_len_by,
+            self.pool = tf.keras.layers.AveragePooling1D(pool_size=reduce_ts_len_by,
                                                               strides=reduce_ts_len_by)
         else:
             self.pool = None
@@ -432,7 +456,12 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         for head in range(self.num_heads):
             attention = Attention(num_units_per_head[head],
                                   mode='Transformer',
-                                  only_context=True)
+                                  only_context=True,
+                                  use_norm=use_norm,
+                                  use_dropout=use_dropout,
+                                  dropout_rate=dropout_rate)
+            # if use_dropout:
+            #     attention = Multihead_dropout_wrapper(attention, dropout_rate=dropout_rate)
 
             #ToDo: add attention dropout wrapper
             multihead_attention.append(attention)

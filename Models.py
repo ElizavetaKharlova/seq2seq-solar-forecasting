@@ -53,19 +53,18 @@ def encoder_decoder_model(encoder_block, decoder_block, projection_block,
         for forecast_timestep in range(out_tsteps): # we do decoding in recurring fashion
             if forecast_timestep == 0:
                 # just grab the right eacher timestep
-                decoder_input_forecast_timestep = zeroth_step_input
+                decoder_input_forecast = zeroth_step_input
             # for every other than the zeroth timestep, this means there is a forecast for the previous timestep available
             elif use_teacher:
-                def __get_teacher_support():
+                decoder_input_forecast = tf.concat([zeroth_step_input, forecast], axis=1)
+                def __get_teacher_support(decoder_input_forecast):
                  # we might wanna use a teacher while were training
-                    teacher_forecast_timestep = tf.expand_dims(
-                                                    tf.multiply(blend_factor_teacher_forcing,
-                                                                teacher_inputs[:, forecast_timestep, :]),
-                                                    axis=1)
-                    return tf.add(teacher_forecast_timestep, tf.multiply(tf.subtract(1.0, blend_factor_teacher_forcing),decoder_forecast_timestep))
-                decoder_input_forecast_timestep = tf.keras.backend.in_train_phase(x=__get_teacher_support(), alt=decoder_forecast_timestep)
-            else: #or, maybe we don't
-                decoder_input_forecast_timestep = projection_block(decoder_forecast_timestep)
+                    teacher_signal = tf.multiply(blend_factor_teacher_forcing, teacher_inputs[:, :(forecast_timestep+1), :])
+                    decoder_input_forecast = tf.multiply((1.0-blend_factor_teacher_forcing), decoder_input_forecast)
+                    return teacher_signal + decoder_input_forecast
+                decoder_input_forecast = tf.keras.backend.in_train_phase(x=__get_teacher_support(decoder_input_forecast), alt=decoder_input_forecast)
+            else:
+                decoder_input_forecast = tf.concat([zeroth_step_input, forecast], axis=1)
 
             if decoder_stateful: #then we wanna find out the state of the decoder and then call it to get a state back
                 # This implicitly assumes that we made sure that the encoder states have the right shapes!!
@@ -74,30 +73,15 @@ def encoder_decoder_model(encoder_block, decoder_block, projection_block,
                 else:
                     # since decoder_state_forecast_timestep is now actually decoder state previous timestep
                     decoder_kwargs['decoder_state'] = decoder_state_forecast_timestep
-            if decoder_uses_attention:
-                if forecast_timestep == 0:
-                    decoder_kwargs['attention_query'] = zeroth_step_input
-                else:
-                    decoder_kwargs['attention_query'] = tf.concat([zeroth_step_input, forecast], axis=1)
 
             if decoder_stateful:
-                decoder_forecast_timestep, decoder_state_forecast_timestep = decoder_block(decoder_input_forecast_timestep, **decoder_kwargs)
+                decoder_forecast, decoder_state_forecast_timestep = decoder_block(decoder_input_forecast, **decoder_kwargs)
             else: #just call it to get the output
-                decoder_forecast_timestep = decoder_block(decoder_input_forecast_timestep, **decoder_kwargs)
+                decoder_forecast = decoder_block(decoder_input_forecast, **decoder_kwargs)
 
             if projection_block:
                 # if the decoder is a list, implying several layers of outputs
-                decoder_forecast_timestep = projection_block(decoder_forecast_timestep)
-
-            # append the forecast
-            if forecast_timestep == 0:
-                forecast = decoder_forecast_timestep
-            else:
-                forecast = tf.concat([forecast, decoder_forecast_timestep], axis=1)
-
-
-
-
+                forecast = projection_block(decoder_forecast)
 
     if use_teacher:
         return tf.keras.Model([encoder_inputs, teacher_inputs, blend_factor_teacher_forcing], forecast)

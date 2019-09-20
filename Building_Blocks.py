@@ -190,14 +190,13 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
 
 class Attention(tf.keras.Model):
     def __init__(self, units, mode='Transformer',
-                 only_context=True, context_mode='timeseries-like',
-                 use_norm=True, use_dropout=True, dropout_rate=0.15):
+                 only_context=True, context_mode='timeseries-like'):
         super(Attention, self).__init__()
-        self.W1 = tf.keras.layers.Dense(units, activation=None, kernel_initializer='glorot_uniform', use_bias=False)
-        self.W1 = tf.keras.layers.TimeDistributed(self.W1)
+        self.W1 = tf.keras.layers.Dense(units, kernel_initializer='glorot_uniform', use_bias=False)
+        #self.W1 = tf.keras.layers.TimeDistributed(self.W1)
 
-        self.W2 = tf.keras.layers.Dense(units, activation=None, kernel_initializer='glorot_uniform', use_bias=False)
-        self.W2 = tf.keras.layers.TimeDistributed(self.W2)
+        self.W2 = tf.keras.layers.Dense(units, kernel_initializer='glorot_uniform', use_bias=False)
+        #self.W2 = tf.keras.layers.TimeDistributed(self.W2)
 
         # if use_norm:
         #     self.W1 = Norm_wrapper(self.W1)
@@ -211,8 +210,8 @@ class Attention(tf.keras.Model):
         if self.mode == 'Bahdanau':
             self.V = tf.keras.layers.Dense(1)
         elif self.mode == 'Transformer':
-            self.W3 = tf.keras.layers.Dense(units, activation=None,kernel_initializer='glorot_uniform', use_bias=False)
-            self.W3 = tf.keras.layers.TimeDistributed(self.W3)
+            self.W3 = tf.keras.layers.Dense(units,kernel_initializer='glorot_uniform', use_bias=False)
+            #self.W3 = tf.keras.layers.TimeDistributed(self.W3)
 
             # if use_norm:
             #     self.W3 = Norm_wrapper(self.W3)
@@ -416,29 +415,12 @@ class Dropout_wrapper(tf.keras.layers.Wrapper):
 
 class multihead_attentive_layer(tf.keras.layers.Layer):
     def __init__(self, num_heads, num_units_per_head=[80],
-                 num_units_projection=[120],
-                 residual_mode=True,
-                 reduce_ts_len_by=[2],
-                 use_dropout=True, dropout_rate=0.0,
-                 use_norm='layer'):
+                 num_units_projection=[120]):
         super(multihead_attentive_layer, self).__init__()
         # units is a list of lists, containing the numbers of units in the attention head
-        self.residual_mode = residual_mode
-
         self.num_heads = num_heads
-        if reduce_ts_len_by > 1:
-            self.pool = tf.keras.layers.AveragePooling1D(pool_size=reduce_ts_len_by,
-                                                              strides=reduce_ts_len_by)
-        else:
-            self.pool = None
         self.project = tf.keras.layers.Dense(units=num_units_projection,
                               activation=None,
-                              kernel_initializer='glorot_uniform',
-                              bias_initializer='zeros',
-                              )
-
-        self.transform = tf.keras.layers.Dense(units=num_units_projection,
-                              activation='relu',
                               kernel_initializer='glorot_uniform',
                               bias_initializer='zeros',
                               )
@@ -446,114 +428,196 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         for head in range(self.num_heads):
             attention = Attention(num_units_per_head[head],
                                   mode='Transformer',
-                                  only_context=True,
-                                  use_norm=use_norm,
-                                  use_dropout=use_dropout,
-                                  dropout_rate=dropout_rate)
-
-            #ToDo: add attention dropout wrapper
+                                  only_context=True)
             self.multihead_attention.append(attention)
 
-        self.use_dropout = use_dropout
-        if self.use_dropout:
-            self.projection_dropout = tf.keras.layers.Dropout(dropout_rate)
-            self.transform_dropout = tf.keras.layers.Dropout(dropout_rate)
-        self.use_norm = use_norm
-        if self.use_norm:
-            self.projection_norm = tf.keras.layers.LayerNormalization(axis=-1,
-                                                           center=True,
-                                                           scale=True,)
-            self.transform_norm = tf.keras.layers.LayerNormalization(axis=-1,
-                                                           center=True,
-                                                           scale=True,)
-
     def call(self,query, value):
-        multihead_out = []
-        for head in range(self.num_heads):
-            head_output = self.multihead_attention[head](query, value)
-            multihead_out.append(head_output)
+
+        multihead_out = [head(query, value) for head in self.multihead_attention]
         multihead_out = tf.concat(multihead_out, axis=-1)
-        projected_multihead_out = self.project(multihead_out)
-        if self.use_dropout:
-            projected_multihead_out = self.projection_dropout(projected_multihead_out, training=tf.keras.backend.learning_phase())
-        if self.residual_mode and (projected_multihead_out.shape[1:] == query.shape[1:]):
-            projected_multihead_out = projected_multihead_out + query
-        if self.use_norm:
-            projected_multihead_out = self.projection_norm(projected_multihead_out)
-
-
-        transformed_output = self.transform(projected_multihead_out)
-        if self.use_dropout:
-            transformed_output = self.transform_dropout(transformed_output, training=tf.keras.backend.learning_phase())
-        if self.residual_mode and (transformed_output.shape[1:] == projected_multihead_out.shape[1:]):
-            transformed_output = transformed_output + projected_multihead_out
-        if self.use_norm:
-            transformed_output = self.transform_norm(transformed_output)
-
-        # if self.pool is not None:
-        #     transformed_output = self.pool(transformed_output)
-
-        return transformed_output
+        return self.project(multihead_out)
 
 class Transformer_encoder(tf.keras.layers.Layer):
     def __init__(self,
-                num_units_per_head_per_layer, num_proj_units_per_layer, ts_reduce_by_per_layer,
-                 residual_mode=True,
+                num_units_per_head_per_layer, num_proj_units_per_layer,
                  use_dropout=True,
                  dropout_rate=0.15,
                  norm='layer'):
         super(Transformer_encoder, self).__init__()
+        self.use_dropout = use_dropout
+        if norm == 'layer':
+            self.use_norm = True
+        else:
+            self.use_norm = False
+
         self.num_layers = len(num_units_per_head_per_layer)
         self.self_attention = []
+        self.input_projection = []
+        self.transition_layer = []
+        if self.use_dropout:
+            self.self_attn_dropout = []
+            self.transition_dropout = []
+        if self.use_norm:
+            self.self_attn_norm = []
+            self.transition_norm = []
+
         for layer in range(self.num_layers):
             num_units = num_units_per_head_per_layer[layer]
-            recue_ts_len = ts_reduce_by_per_layer[layer]
+            channel_depth = num_proj_units_per_layer[layer]
+
+            in_projection = tf.keras.layers.Dense(units=channel_depth,
+                              activation='relu',
+                              kernel_initializer='glorot_uniform',
+                              bias_initializer='zeros',
+                              )
+            in_projection = Norm_wrapper(in_projection, norm='layer')
+            self.input_projection.append(in_projection)
+
+
             self.self_attention.append(multihead_attentive_layer(num_heads=len(num_units_per_head_per_layer),
                                                               num_units_per_head=num_units,
-                                                              reduce_ts_len_by=recue_ts_len,
-                                                              num_units_projection=num_proj_units_per_layer[layer],
-                                                              use_dropout=use_dropout,
-                                                              residual_mode=residual_mode,
-                                                              dropout_rate=dropout_rate,
-                                                              use_norm=norm,
-                                                              )
-                                    )
+                                                              num_units_projection=channel_depth))
+            if self.use_dropout:
+                self.self_attn_dropout.append(tf.keras.layers.Dropout(dropout_rate))
+                self.transition_dropout.append(tf.keras.layers.Dropout(dropout_rate))
 
-    def call(self, next_input):
+            if norm=='layer':
+                self.self_attn_norm.append(tf.keras.layers.LayerNormalization(axis=-1,
+                                                           center=True,
+                                                           scale=True))
+                self.transition_norm.append(tf.keras.layers.LayerNormalization(axis=-1,
+                                                           center=True,
+                                                           scale=True))
+
+            transition_layer = tf.keras.layers.Dense(units=channel_depth,
+                              activation='relu',
+                              kernel_initializer='glorot_uniform',
+                              bias_initializer='zeros',
+                              )
+            self.transition_layer.append(transition_layer)
+
+    def call(self, layer_input):
+        is_training = tf.keras.backend.learning_phase()
         for layer in range(self.num_layers):
-            next_input = self.self_attention[layer](next_input, value=next_input)
-        return next_input
+            projected_input = self.input_projection[layer](layer_input)
+            self_attention = self.self_attention[layer](projected_input, value=projected_input)
+            if self.use_dropout:
+                self_attention = self.self_attn_dropout[layer](self_attention, training=is_training)
+            # do residuals
+            self_attention = self_attention + projected_input
+            if self.use_norm:
+                self_attention = self.self_attn_norm[layer](self_attention)
+
+            transition = self.transition_layer[layer](self_attention)
+            if self.use_dropout:
+                transition = self.transition_dropout[layer](transition, training=is_training)
+            # do residuals
+            transition = transition + self_attention
+            if self.use_norm:
+                transition = self.transition_norm[layer](transition)
+
+            layer_input = transition
+        return layer_input
 
 
 class Transformer_decoder(tf.keras.layers.Layer):
     def __init__(self,
-                 num_layers, num_units_per_head_per_layer, num_proj_units_per_layer, ts_reduce_by_per_layer,
+                 num_units_per_head_per_layer, num_proj_units_per_layer,
                  use_dropout=True,
-                 residual_mode=True,
                  dropout_rate=0.15,
                  norm='layer'):
         super(Transformer_decoder, self).__init__()
-        self.num_layers = num_layers
-        self.transformer = []
-        for layer in range(num_layers):
-            self.transformer.append(multihead_attentive_layer(num_heads=len(num_units_per_head_per_layer[layer]),
-                                                              num_units_per_head=num_units_per_head_per_layer[layer],
-                                                              reduce_ts_len_by=ts_reduce_by_per_layer[layer],
-                                                              num_units_projection=num_proj_units_per_layer[layer],
-                                                              use_dropout=use_dropout,
-                                                              residual_mode=residual_mode,
-                                                              dropout_rate=dropout_rate,
-                                                              use_norm=norm,
-                                                              )
-                                    )
+        self.use_dropout = use_dropout
+        if norm == 'layer':
+            self.use_norm = True
+        else:
+            self.use_norm = False
+
+        self.num_layers = len(num_units_per_head_per_layer)
+        self.self_attention = []
+        self.encoder_attnetion = []
+        self.input_projection = []
+        self.transition_layer = []
+        if self.use_dropout:
+            self.self_attn_dropout = []
+            self.attn_dropout = []
+            self.transition_dropout = []
+        if self.use_norm:
+            self.self_attn_norm = []
+            self.attn_norm = []
+            self.transition_norm = []
+
+        for layer in range(self.num_layers):
+            num_units = num_units_per_head_per_layer[layer]
+            channel_depth = num_proj_units_per_layer[layer]
+
+            in_projection = tf.keras.layers.Dense(units=channel_depth,
+                                                  activation='relu',
+                                                  kernel_initializer='glorot_uniform',
+                                                  bias_initializer='zeros',
+                                                  )
+            in_projection = Norm_wrapper(in_projection, norm='layer')
+            self.input_projection.append(in_projection)
+
+            self.self_attention.append(multihead_attentive_layer(num_heads=len(num_units_per_head_per_layer),
+                                                                 num_units_per_head=num_units,
+                                                                 num_units_projection=channel_depth))
+            self.encoder_attnetion.append(multihead_attentive_layer(num_heads=len(num_units_per_head_per_layer),
+                                                                 num_units_per_head=num_units,
+                                                                 num_units_projection=channel_depth))
+            if self.use_dropout:
+                self.self_attn_dropout.append(tf.keras.layers.Dropout(dropout_rate))
+                self.attn_dropout.append(tf.keras.layers.Dropout(dropout_rate))
+                self.transition_dropout.append(tf.keras.layers.Dropout(dropout_rate))
+
+            if norm == 'layer':
+                self.self_attn_norm.append(tf.keras.layers.LayerNormalization(axis=-1,
+                                                                         center=True,
+                                                                         scale=True))
+                self.attn_norm.append(tf.keras.layers.LayerNormalization(axis=-1,
+                                                                         center=True,
+                                                                         scale=True))
+                self.transition_norm.append(tf.keras.layers.LayerNormalization(axis=-1,
+                                                                               center=True,
+                                                                               scale=True))
+
+            transition_layer = tf.keras.layers.Dense(units=channel_depth,
+                                                     activation='relu',
+                                                     kernel_initializer='glorot_uniform',
+                                                     bias_initializer='zeros',
+                                                     )
+            self.transition_layer.append(transition_layer)
 
     def call(self, decoder_inputs, attention_value):
-        next_input = decoder_inputs
+        is_training = tf.keras.backend.learning_phase()
+        layer_input = decoder_inputs
         for layer in range(self.num_layers):
+            projected_input = self.input_projection[layer](layer_input)
+            self_attention = self.self_attention[layer](projected_input, value=projected_input)
+            if self.use_dropout:
+                self_attention = self.self_attn_dropout[layer](self_attention, training=is_training)
+            # do residuals
+            self_attention = self_attention + projected_input
+            if self.use_norm:
+                self_attention = self.self_attn_norm[layer](self_attention)
 
-            if layer == 0:
-                next_input = self.transformer[layer](decoder_inputs, value=decoder_inputs)
-            else:
-                next_input = self.transformer[layer](next_input, value=attention_value)
+            encoder_attention = self.encoder_attnetion[layer](self_attention, value=attention_value)
+            if self.use_dropout:
+                encoder_attention = self.attn_dropout[layer](encoder_attention, training=is_training)
+            # do residuals
+            encoder_attention = encoder_attention + self_attention
+            if self.use_norm:
+                encoder_attention = self.attn_norm[layer](encoder_attention)
+
+            transition = self.transition_layer[layer](encoder_attention)
+            if self.use_dropout:
+                transition = self.transition_dropout[layer](transition, training=is_training)
+            # do residuals
+            transition = transition + encoder_attention
+            if self.use_norm:
+                transition = self.transition_norm[layer](transition)
+
+            layer_input = transition
+        return layer_input
 
         return next_input

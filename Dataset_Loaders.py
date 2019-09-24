@@ -1,8 +1,8 @@
 def get_Daniels_data(target_data='Pv',
-                     input_len_samples=int(5 * 24 * (60 / 5)),
+                     input_len_samples=int(3 * 24 * (60 / 5)),
                      fc_len_samples=int(1 * 24 * (60 / 5)),
                      fc_steps=24,
-                     fc_tiles=40):
+                     fc_tiles=50):
     # Daniel loads his data / If we want different data we do that here
     # For a encoder decoder model we will need 3 inputs:
     # encoder input, decoder support, blend factor (for how much we want to do teacher forcing)
@@ -22,14 +22,14 @@ def get_Daniels_data(target_data='Pv',
                                                           fc_steps=fc_steps,
                                                           fc_tiles=fc_tiles,
                                                           target_dims=target_dims,
-                                                          plot=True,
+                                                          plot=False,
                                                           steps_to_new_sample=steps_to_new_sample)
 
     import numpy as np
     ev_targets = np.expand_dims(ev_targets, axis=-1)
     ev_teacher = np.expand_dims(ev_teacher, axis=-1)
 
-    return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, steps_to_new_sample*sample_rate_weather
+    return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, steps_to_new_sample*sample_rate_weather, target_dims
 
 
 def get_Lizas_data():
@@ -62,7 +62,7 @@ def get_Lizas_data():
     return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins
 
 import numpy as np
-from sklearn.preprocessing import scale, MinMaxScaler
+from sklearn.preprocessing import scale, MinMaxScaler, StandardScaler
 import matplotlib.pyplot as plt
 
 
@@ -80,12 +80,19 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
         # target_dims, int      - dimensions of the target dimensions
         # the code will assume that the target dimensions are the same variable, just downsampled and will restructure it.
     # -------------------------------------------------------------------------------------------------------------------
-    scaler = MinMaxScaler()
+
     faults = data[:,-1]
+    data = data[:,:-1]
+    for axis in range(data.shape[-1]):
+        min = np.amin(data[:,axis])
+        data[:, axis] = (data[:, axis] - min)
+        max = np.amax(data[:,axis])
+        if max != 0:
+            data[:,axis] = data[:, axis]/max
+    scaler = StandardScaler()
     scaler.fit(data)
     data = scale(data, axis=0, with_mean=True, with_std=True, copy=True) #scale the dataset
 
-    data = np.delete(data, np.s_[-1], axis=-1)
 
     if plot: #plot if we want to
         __plot_data_array(data[:300,:], label='Scaled Data Set')
@@ -102,23 +109,22 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
     ev_supports = []
     sw_inputs = []      # inputs
 
-    output_sample_ratio = int((fc_len_samples/fc_steps))
     for timestep in range(0, data.shape[0] - fc_len_samples - sw_len_samples, steps_to_new_sample):
-        sliced_sample = data[timestep:(timestep + fc_len_samples + sw_len_samples), :]
+        sliced_input_sample = data[timestep:(timestep + sw_len_samples), :]
         faults_for_slice = faults[timestep:(timestep + fc_len_samples + sw_len_samples)]
 
         target_timestep = timestep + sw_len_samples
         one_addl_fc_timestep = int(fc_len_samples/fc_steps)
-        sliced_target = targets[(target_timestep-one_addl_fc_timestep):(target_timestep + fc_len_samples), :]
+        sliced_target_sample = targets[(target_timestep-one_addl_fc_timestep):(target_timestep + fc_len_samples), :]
 
 
         if len(target_dims) > 1:
-            sliced_target = __reconstruct(sliced_target)
+            sliced_target_sample = __reconstruct(sliced_target_sample)
 
         if np.sum(faults_for_slice) == 0:  # see if we are free of faults
 
-            sw_inputs.append(sliced_sample.tolist())  # drop the last dimension, since we do not need the fault indicator anymore
-            pdf_Support_target = __convert_to_pdf(sliced_target,
+            sw_inputs.append(sliced_input_sample.tolist())  # drop the last dimension, since we do not need the fault indicator anymore
+            pdf_Support_target = __convert_to_pdf(sliced_target_sample,
                                           num_steps=fc_steps+1, num_tiles=fc_tiles,
                                         min_max=target_min_max)  # pdf for probability distribution thingie
             tolerance = 1e-9
@@ -128,15 +134,14 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
             pdf_targets.append(pdf_Support_target[1:,:])
             pdf_supports.append(pdf_Support_target[:-1,:])
 
-            ev_target = __convert_to_mv(sliced_target, num_steps=fc_steps)  # ev for expected value
+            ev_target = __convert_to_mv(sliced_target_sample, num_steps=fc_steps+1)  # ev for expected value
             ev_targets.append(ev_target[1:])
             ev_supports.append(ev_target[:-1])
 
         if (int(timestep/steps_to_new_sample) % int(int(data.shape[0] / steps_to_new_sample)/10)) == 0:
             print(int(100*timestep/data.shape[0]) + 10, 'percent converted')
     sw_inputs = np.array(sw_inputs)
-    ev_targets = np.array(ev_targets)
-    ev_supports = np.array(ev_supports)
+
     pdf_targets = np.array(pdf_targets)
     pdf_supports = np.array(pdf_supports)
     return sw_inputs, ev_targets, ev_supports, pdf_targets, pdf_supports
@@ -196,11 +201,6 @@ def __convert_to_mv(target, num_steps):  # creates expected value targets
             mv_target[step] += target[step * samples_in_step + _] / samples_in_step
 
     return mv_target
-
-
-
-
-
 
 # Help functions for Daniel to load his Data
 

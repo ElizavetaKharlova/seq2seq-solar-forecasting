@@ -5,7 +5,8 @@ def encoder_decoder_model(encoder_block, decoder_block, projection_block,
                           use_teacher=True,
                           encoder_stateful=True,
                           decoder_stateful=True,
-                          decoder_uses_attention=True):
+                          self_recurrent_decoder=True,
+                          decoder_uses_attention_on=None):
     # output shape is a list with at least two numbers, output_shape = [...., timesteps_forecast, output_size]
     # same as input_shape = [...., timesteps_input, input_size]
     # encoder model is a block of layers for the encoder, it gives out the encoder output that might be used for attention
@@ -46,42 +47,67 @@ def encoder_decoder_model(encoder_block, decoder_block, projection_block,
         print('no decoder provided, this is gonna go real bad. expect an error soon')
     else:
         decoder_kwargs = {}
-        if decoder_uses_attention:
+        if decoder_uses_attention_on is None:
+            pass
+        elif decoder_uses_attention_on == 'hidden' or decoder_uses_attention_on =='output' or decoder_uses_attention_on==True:
             decoder_kwargs['attention_value'] = encoder_outputs
-        zeroth_step_input = teacher_inputs[:, 0, :]
-        zeroth_step_input = tf.expand_dims(zeroth_step_input, axis=1)
+
+
         for forecast_timestep in range(out_tsteps): # we do decoding in recurring fashion
             if forecast_timestep == 0:
                 # just grab the right eacher timestep
-                decoder_input_forecast = zeroth_step_input
+                teacher_support = tf.expand_dims(teacher_inputs[:, 0, :], axis=1)
+                decoder_input_forecast = teacher_support
+                decoder_timestep_input = decoder_input_forecast
             # for every other than the zeroth timestep, this means there is a forecast for the previous timestep available
             elif use_teacher:
-                decoder_input_forecast = tf.concat([zeroth_step_input, forecast], axis=1)
-                def __get_teacher_support(decoder_input_forecast):
-                 # we might wanna use a teacher while were training
-                    teacher_signal = tf.multiply(blend_factor_teacher_forcing, teacher_inputs[:, :(forecast_timestep+1), :])
-                    decoder_input_forecast = tf.multiply((1.0-blend_factor_teacher_forcing), decoder_input_forecast)
-                    return teacher_signal + decoder_input_forecast
-                decoder_input_forecast = tf.keras.backend.in_train_phase(x=__get_teacher_support(decoder_input_forecast), alt=decoder_input_forecast)
+                if self_recurrent_decoder:
+                    zero = tf.expand_dims(teacher_inputs[:, 0, :], axis=1)
+                    decoder_timestep_input = tf.concat([zero, forecast_step], axis=1)
+                else:
+                    decoder_timestep_input = forecast_step
+
+                if self_recurrent_decoder:
+                    next_teacher_addon = tf.expand_dims(teacher_inputs[:, forecast_timestep, :], axis=1)
+                    teacher_support = tf.concat([teacher_support, next_teacher_addon], axis=1)
+                else:
+                    teacher_support = tf.expand_dims(teacher_inputs[:, forecast_timestep, :], axis=1)
+
+                def blend_shit(decoder_timestep_input, teacher_support):
+                    teacher_support = tf.multiply(teacher_support, blend_factor_teacher_forcing)
+                    decoder_timestep_input = tf.multiply((1.0-blend_factor_teacher_forcing), decoder_timestep_input)
+                    return teacher_support + decoder_timestep_input
+
+                decoder_timestep_input = tf.keras.backend.in_train_phase(x=blend_shit(decoder_timestep_input, teacher_support), alt=decoder_timestep_input)
             else:
-                decoder_input_forecast = tf.concat([zeroth_step_input, forecast], axis=1)
+                decoder_input_forecast = forecast_step
 
             if decoder_stateful: #then we wanna find out the state of the decoder and then call it to get a state back
                 # This implicitly assumes that we made sure that the encoder states have the right shapes!!
                 if forecast_timestep == 0:
-                    decoder_kwargs['decoder_state'] = encoder_end_state
+                    decoder_kwargs['decoder_init_state'] = encoder_end_state
                 else:
                     # since decoder_state_forecast_timestep is now actually decoder state previous timestep
-                    decoder_kwargs['decoder_state'] = decoder_state_forecast_timestep
+                    decoder_kwargs['decoder_init_state'] = decoder_state_forecast_timestep
+
+            if decoder_uses_attention_on == 'hidden' or decoder_uses_attention_on =='output' or decoder_uses_attention_on==True:
+                decoder_kwargs['attention_query'] = decoder_timestep_input
 
             if decoder_stateful:
-                decoder_forecast, decoder_state_forecast_timestep = decoder_block(decoder_input_forecast, **decoder_kwargs)
+                decoder_timestep_forecast, decoder_state_forecast_timestep = decoder_block(decoder_timestep_input, **decoder_kwargs)
             else: #just call it to get the output
-                decoder_forecast = decoder_block(decoder_input_forecast, **decoder_kwargs)
+                decoder_timestep_forecast = decoder_block(decoder_input_forecast, **decoder_kwargs)
 
             if projection_block:
                 # if the decoder is a list, implying several layers of outputs
-                forecast = projection_block(decoder_forecast)
+                forecast_step = projection_block(decoder_timestep_forecast)
+
+            if forecast_timestep == 0:
+                forecast = forecast_step
+            elif not self_recurrent_decoder:
+                forecast = tf.concat([forecast, forecast_step], axis=1)
+            elif self_recurrent_decoder:
+                forecast = forecast_step
 
     if use_teacher:
         return tf.keras.Model([encoder_inputs, teacher_inputs, blend_factor_teacher_forcing], forecast)

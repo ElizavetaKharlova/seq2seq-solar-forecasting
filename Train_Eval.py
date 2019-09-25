@@ -35,37 +35,59 @@ def __plot_training_curves(train_dict, val_dict):
                 plt.legend()
                 plt.show()
 
-def __slice_and_delete(inp, teacher, target, len_slice, seed, sample_spacing_in_mins):
+def __slice_and_delete(inp, teacher, target, len_slice, seed, sample_spacing_in_mins, input_rate_in_1_per_min=5):
     np.random.seed(seed)
     inp_sw_shape = inp.shape
-    one_week_in_samples = (inp_sw_shape[1]*5)/sample_spacing_in_mins
-    one_week_in_samples = int(one_week_in_samples)
+    one_sw_in_samples = (inp_sw_shape[1]*input_rate_in_1_per_min)/sample_spacing_in_mins
+    one_sw_in_samples = int(one_sw_in_samples)
 
     leftover_samples = int(len_slice)
+
+    day_offset_in_samples = int((24*60)/sample_spacing_in_mins)
 
     inp_separated = None
     teacher_separated = None
     teacher_blend_separated = None
     target_separated = None
+    persistency_forecast = None
 
+    index_start = []
+    index_end = []
     while leftover_samples > 0:
-        one_week_in_samples = min(one_week_in_samples, leftover_samples)
+        one_week_in_samples = min(one_sw_in_samples, leftover_samples)
 
-        index_start = np.random.uniform(low=0, high=inp.shape[0] - 2*one_week_in_samples, size=None)
-        index_start = int(np.floor(index_start))
-        index_end = index_start + one_week_in_samples
+        index_start_slice = np.random.uniform(low=day_offset_in_samples, high=inp.shape[0] - 2*one_sw_in_samples, size=None)
+        index_start_slice = int(np.floor(index_start_slice))
+        index_end_slice = index_start_slice + one_sw_in_samples
 
-        inp_slice = inp[index_start:index_end,:,:]
+        start_falls_within = False
+        end_falls_within = False
+        for entry in range(len(index_start)):
+            start_falls_within = start_falls_within or ((index_start_slice >= index_start[entry]) & (index_start_slice <=index_end[entry]))
+            end_falls_within = end_falls_within or ((index_end_slice >= index_start[entry]) & (index_end_slice <=index_end[entry]))
+
+        if not start_falls_within and not end_falls_within:
+            index_start.append(index_start_slice)
+            index_end.append(index_end_slice)
+            leftover_samples -= one_week_in_samples
+
+    index_start.sort(reverse=True)
+    index_end.sort(reverse=True)
+
+    for entry in range(len(index_start)):
+        index_start_slice = index_start[entry]
+        index_end_slice = index_end[entry]
+
+        inp_slice = inp[index_start_slice:index_end_slice,:,:]
         inp_slice = tf.convert_to_tensor(inp_slice, dtype=tf.float32)
-        inp = np.delete(inp, np.s_[index_start:index_end], axis=0)
         if inp_separated is None:
             inp_separated = inp_slice
         else:
             inp_separated = tf.concat([inp_separated, inp_slice], axis=0)
 
-        teacher_slice = teacher[index_start:index_end,:,:]
+        teacher_slice = teacher[index_start_slice:index_end_slice,:,:]
         teacher_slice = tf.convert_to_tensor(teacher_slice, dtype=tf.float32)
-        teacher = np.delete(teacher, np.s_[index_start:index_end], axis=0)
+
         if teacher_separated is None:
             teacher_separated = teacher_slice
         else:
@@ -78,20 +100,37 @@ def __slice_and_delete(inp, teacher, target, len_slice, seed, sample_spacing_in_
         else:
             teacher_blend_separated = tf.concat([teacher_blend_separated, teacher_blend], axis=0)
 
-        target_slice = target[index_start:index_end,:,:]
-        target = np.delete(target, np.s_[index_start:index_end], axis=0)
+        persistency_forecast_slice = target[(index_start_slice-day_offset_in_samples):(index_end_slice-day_offset_in_samples),:,:]
+        persistency_forecast_slice = tf.convert_to_tensor(persistency_forecast_slice, dtype=tf.float32)
+        if persistency_forecast is None:
+            persistency_forecast = persistency_forecast_slice
+        else:
+            persistency_forecast = tf.concat([persistency_forecast, persistency_forecast_slice], axis=0)
+
+        target_slice = target[index_start_slice:index_end_slice, :, :]
+
         target_slice = tf.convert_to_tensor(target_slice, dtype=tf.float32)
         if target_separated is None:
             target_separated = target_slice
         else:
             target_separated = tf.concat([target_separated, target_slice], axis=0)
 
-        leftover_samples -= one_week_in_samples
+        if persistency_forecast.shape[0] != target_separated.shape[0]:
+            print('WTF, seems theres a mismatch', persistency_forecast.shape, 'vs', target_separated.shape)
+            print('slice persistency from',(index_start_slice-day_offset_in_samples), 'to',  (index_end_slice-day_offset_in_samples), '= ', ((index_end_slice-day_offset_in_samples)-(index_start_slice-day_offset_in_samples)))
+            print('slice persistency from', (index_start_slice), 'to', (index_end_slice ), '= ', ((index_end_slice) - (index_start_slice)))
+
+    for entry in range(len(index_start)):
+        index_start_slice = index_start[entry]
+        index_end_slice = index_end[entry]
+        inp = np.delete(inp, np.s_[index_start_slice:index_end_slice], axis=0)
+        teacher = np.delete(teacher, np.s_[index_start_slice:index_end_slice], axis=0)
+        target = np.delete(target, np.s_[index_start_slice:index_end_slice], axis=0)
 
     slice_inputs = [inp_separated , teacher_separated, teacher_blend_separated]
-    return slice_inputs, target_separated, inp , teacher , target
+    return slice_inputs, target_separated, persistency_forecast, inp , teacher , target
 
-def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins, normalizer_value):
+def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins, normalizer_value, input_rate_in_1_per_min):
     if training_ratio > 1:
         print('... seems like you want more than a full training set, the training ratio needs to be smaller than 1!')
 
@@ -99,16 +138,22 @@ def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins
     test_len = (remainder_for_test_val/2.0) * inp.shape[0]
     val_len = (remainder_for_test_val/2.0) * inp.shape[0]
 
-    #ToDO: fix persistency baseline
     from Losses_and_Metrics import __calculatate_skillscore_baseline
     persistency_baseline = __calculatate_skillscore_baseline(target,
                                                            sample_spacing_in_mins=sample_spacing_in_mins,
                                                            normalizer_value=normalizer_value)
-    print('Persistency baseline for whole Dataset, becuase I need to reimplement some of this ... ', persistency_baseline)
-
+    print('Persistency baseline for whole Dataset', persistency_baseline)
     dataset = {}
-    dataset['test_inputs'], dataset['test_targets'], inp, teacher, target = __slice_and_delete(inp, teacher, target, test_len, seed=99, sample_spacing_in_mins=sample_spacing_in_mins)
-    dataset['val_inputs'], dataset['val_targets'], inp, teacher, target = __slice_and_delete(inp, teacher, target, val_len, seed=420, sample_spacing_in_mins=sample_spacing_in_mins)
+    dataset['test_inputs'], dataset['test_targets'], persistent_forecast,  inp, teacher, target = __slice_and_delete(inp, teacher, target, test_len, seed=99, sample_spacing_in_mins=sample_spacing_in_mins, input_rate_in_1_per_min=input_rate_in_1_per_min)
+    val_baseline = __calculatate_skillscore_baseline(dataset['test_targets'], persistent_forecast=persistent_forecast,
+                                                           sample_spacing_in_mins=sample_spacing_in_mins,
+                                                           normalizer_value=normalizer_value)
+    print('test baseline values:', val_baseline)
+    dataset['val_inputs'], dataset['val_targets'], persistent_forecast, inp, teacher, target = __slice_and_delete(inp, teacher, target, val_len, seed=420, sample_spacing_in_mins=sample_spacing_in_mins, input_rate_in_1_per_min=input_rate_in_1_per_min)
+    val_baseline = __calculatate_skillscore_baseline(dataset['val_targets'], persistent_forecast=persistent_forecast,
+                                                           sample_spacing_in_mins=sample_spacing_in_mins,
+                                                           normalizer_value=normalizer_value)
+    print('val baseline values:', val_baseline)
     blend_train = [1] * inp.shape[0]
     dataset['train_inputs'] = [tf.convert_to_tensor(inp, dtype=tf.float32), tf.convert_to_tensor(teacher, dtype=tf.float32) , tf.convert_to_tensor(blend_train, dtype=tf.float32)]
     dataset['train_targets'] = tf.convert_to_tensor(target, dtype=tf.float32)
@@ -119,7 +164,6 @@ def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins
 
 def __augment_dataset(dataset):
     if 'val_inputs' in dataset:
-        print('adjusting val inputs', dataset['val_inputs'][0].shape)
         dataset['val_inputs'][0] = dataset['val_inputs'][0].numpy()
 
         corrected_shape = dataset['val_inputs'][0].shape
@@ -133,10 +177,8 @@ def __augment_dataset(dataset):
             new_values[sample,:,1:] = rest_sample
 
         dataset['val_inputs'][0] = tf.convert_to_tensor(new_values, dtype=tf.float32)
-        print('val inputs are now: ', dataset['val_inputs'][0].shape)
 
     if 'test_inputs' in dataset:
-        print('adjusting test_inputs', dataset['test_inputs'][0].shape)
         dataset['test_inputs'][0] = dataset['test_inputs'][0].numpy()
 
         corrected_shape = dataset['test_inputs'][0].shape
@@ -150,7 +192,6 @@ def __augment_dataset(dataset):
             new_values[sample,:,1:] = rest_sample
 
         dataset['test_inputs'][0] = tf.convert_to_tensor(new_values, dtype=tf.float32)
-        print('test_inputs are now: ', dataset['test_inputs'][0].shape)
 
     if 'train_inputs' in dataset:
         print('adjusting train_inputs', dataset['train_inputs'][0].shape)
@@ -209,11 +250,11 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder', normaliz
     from Benchmarks import DenseTCN
     from Models import encoder_decoder_model, mimo_model
 
-    if model_type is 'MiMo':
+    if model_type == 'MiMo-LSTM-downsample':
         encoder_specs = {'units': [[96, 96, 96]],
-                        'use_dropout': True,
+                        'use_dropout': False,
                         'dropout_rate': 0.15,
-                        'use_norm': True,
+                        'use_norm': False,
                         'use_hw': False,
                         'return_state': False,
                         'use_quasi_dense': False,
@@ -226,19 +267,36 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder', normaliz
                            downsampling_rate=(60/5),
                             mode='snip')
 
+    elif model_type == 'MiMo-LSTM-nodownsample':
+        encoder_specs = {'units': [[96, 96, 96]],
+                         'use_dropout': True,
+                         'dropout_rate': 0.15,
+                         'use_norm': True,
+                         'use_hw': False,
+                         'return_state': False,
+                         'use_quasi_dense': False,
+                         'only_last_layer_output': True}
+
+        model = mimo_model(function_block=block_LSTM(**encoder_specs),
+                           input_shape=input_shape,
+                           output_shape=out_shape,
+                           downsample_input=False,
+                           downsampling_rate=(60 / 5),
+                           mode='snip')
+
     elif model_type == 'Encoder-Decoder':
         common_specs = {'units': [[96, 96, 96]],
                         'use_dropout': True,
                         'dropout_rate': 0.2,
                         'use_norm': True,
-                        'use_hw': True,
+                        'use_hw': False,
                         'use_quasi_dense': False,
                         'only_last_layer_output': True}
 
         encoder_specs = copy.deepcopy(common_specs)
         decoder_specs = copy.deepcopy(common_specs)
-        decoder_specs['use_attention'] = True
-        decoder_specs['self_recurrent'] = True
+        decoder_specs['use_attention'] = False
+        decoder_specs['self_recurrent'] = False
         encoder_block = block_LSTM(**encoder_specs)
         decoder_block = decoder_LSTM_block(**decoder_specs)
 
@@ -267,7 +325,7 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder', normaliz
     model.summary()
     return model
 
-def __train_model(model, batch_size):
+def __train_model(model, batch_size, dataset):
     relative_decrease = 0
     decrease = 0
 
@@ -325,22 +383,38 @@ def __train_model(model, batch_size):
                                   verbose=False)
     print('test results', test_results)
 
-from Dataset_Loaders import get_Daniels_data, get_Lizas_data
-inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Daniels_data()
-# inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Lizas_data()
-normalizer_value = np.amax(ev_targets) - np.amin(ev_targets)
-# print('Ev normalizer value', normalizer_value)
+def train_on_Daniel_data(model_name):
 
-dataset = __split_dataset(inp=inp, target=pdf_targets, teacher=pdf_teacher, training_ratio=0.6, sample_spacing_in_mins=sample_spacing_in_mins, normalizer_value=normalizer_value)
-del inp, pdf_teacher, pdf_targets, ev_teacher, ev_targets
-# Only Daniel
-# dataset = __augment_dataset(dataset)
+    from Dataset_Loaders import get_Daniels_data, get_Lizas_data
+    inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Daniels_data()
+    # inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Lizas_data()
+    normalizer_value = np.amax(ev_targets) - np.amin(ev_targets)
+    # print('Ev normalizer value', normalizer_value)
 
-model = __build_model(input_shape=dataset['train_inputs'][0].shape[1:],
-                      out_shape=dataset['train_targets'].shape[1:],
-                      model_type='Encoder-Decoder',
-                      normalizer_value=normalizer_value)
-__train_model(model, batch_size=64)
+    dataset = __split_dataset(inp=inp, target=pdf_targets, teacher=pdf_teacher, training_ratio=0.6, sample_spacing_in_mins=sample_spacing_in_mins, normalizer_value=normalizer_value, input_rate_in_1_per_min=5)
+    del inp, pdf_teacher, pdf_targets, ev_teacher, ev_targets
+    dataset = __augment_dataset(dataset)
+
+    model = __build_model(input_shape=dataset['train_inputs'][0].shape[1:],
+                          out_shape=dataset['train_targets'].shape[1:],
+                          model_type=model_name,
+                          normalizer_value=normalizer_value)
+    __train_model(model, batch_size=512, dataset=dataset)
+
+def train_on_Lisas_data(model_name):
+    from Dataset_Loaders import get_Lizas_data
+    inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Lizas_data()
+    normalizer_value = np.amax(ev_targets) - np.amin(ev_targets)
+    # print('Ev normalizer value', normalizer_value)
+
+    dataset = __split_dataset(inp=inp, target=pdf_targets, teacher=pdf_teacher, training_ratio=0.6, sample_spacing_in_mins=sample_spacing_in_mins, normalizer_value=normalizer_value, input_rate_in_1_per_min=15)
+    del inp, pdf_teacher, pdf_targets, ev_teacher, ev_targets
+
+    model = __build_model(input_shape=dataset['train_inputs'][0].shape[1:],
+                          out_shape=dataset['train_targets'].shape[1:],
+                          model_type=model_name,
+                          normalizer_value=normalizer_value)
+    __train_model(model, batch_size=64, dataset=dataset)
 
 
 

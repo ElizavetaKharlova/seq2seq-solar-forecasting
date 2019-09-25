@@ -150,13 +150,16 @@ def calculate_KL_Divergence(target, prediction, last_output_dim_size):
     KL_divergence = tf.reduce_mean(KL_divergence)
     return KL_divergence
 
-def __calculatate_skillscore_baseline(set_targets, sample_spacing_in_mins, normalizer_value):
+def __calculatate_skillscore_baseline(set_targets, sample_spacing_in_mins, normalizer_value, persistent_forecast=None):
 
     persistency_offset = (24*60)/sample_spacing_in_mins
     persistency_offset = int(persistency_offset)
 
-    targets = set_targets[persistency_offset:,:,:]
-    persistent_forecast = set_targets[:-persistency_offset, :,:]
+    if persistent_forecast is None:
+        targets = set_targets[persistency_offset:, :, :]
+        persistent_forecast = set_targets[:-persistency_offset, :,:]
+    else:
+        targets = set_targets
 
     nRMSEs = calculate_E_nRMSE(targets, persistent_forecast, set_targets.shape[-1], normalizer_value)
     nMEs = calculate_E_nME(targets, persistent_forecast, set_targets.shape[-1], normalizer_value)

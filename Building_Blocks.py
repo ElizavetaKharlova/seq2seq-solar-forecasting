@@ -348,7 +348,14 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
 
         if self.use_attention:
             if self.attention_hidden:
-                print('whoopsie, we didnt implement that yet')
+                # ToDo: implement luong attention call method:
+                self.c_attention = []
+                self.h_attention = []
+                for block in range(len(self.units)):
+                    for layer in range(len(self.units[block])):
+                        self.c_attention.append(Attention(self.units[block][layer], mode='Transformer'))
+                        self.h_attention.append(Attention(self.units[block][layer], mode='Transformer'))
+
             else:
                 self.attention = Attention(self.units[-1][-1], mode='Transformer') # choose the attention style (Bahdanau, Transformer)
             if self.self_recurrent:
@@ -361,13 +368,9 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
         # add the Attention context vector
         # decoder inputs is the whole forecast!!
         # decoder_inputs_step = tf.expand_dims(decoder_inputs[:,-1,:], axis=1)
-        if self.self_recurrent:
-            first_input = decoder_inputs[:,0,:]
 
         if self.use_attention and attention_value is not None:
-            if self.attention_hidden:
-                print('whoopsie, not implemented yet')
-            else:
+            if not self.attention_hidden:
                 if self.self_recurrent:
                     self_attn = self.self_attention(attention_query, value=attention_query)
                     # does this make sense??
@@ -377,6 +380,24 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                 decoder_inputs = tf.concat([context_vector, decoder_inputs], axis=-1)
 
         decoder_out, decoder_state = self.decoder(decoder_inputs, initial_states=decoder_init_state)
+
+        #ToDo: impelment luong attention call method here, this is a mockup:
+        #ToDo
+        if self.attention_hidden:
+            augmented_state_h = []
+            augmented_state_c = []
+            for block in range(len(self.units)):
+                for layer in range(len(self.units[block])):
+                    state_h = decoder_state[block][layer][0]
+                    state_c = decoder_state[block][layer][1]
+
+                    context_h = self.attention(decoder_state, value=attention_value)
+                    decoder_attn_augmented_state = tf.concat([context_vector, decoder_state], axis=-1)
+                    decoder_out, decoder_state = self.decoder(decoder_inputs,
+                                                              initial_states=decoder_attn_augmented_state)
+            # ToDo: may have to concat this or figure out how to separate the states or sth ...
+
+
 
         if self.self_recurrent:
             decoder_state = decoder_init_state

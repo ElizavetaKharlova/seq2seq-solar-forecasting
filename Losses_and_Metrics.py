@@ -161,6 +161,8 @@ def __calculatate_skillscore_baseline(set_targets, sample_spacing_in_mins, norma
     else:
         targets = set_targets
 
+    targets = tf.cast(targets, dtype=tf.float32)
+    persistent_forecast = tf.cast(persistent_forecast, dtype=tf.float32)
     nRMSEs = calculate_E_nRMSE(targets, persistent_forecast, set_targets.shape[-1], normalizer_value)
     nMEs = calculate_E_nME(targets, persistent_forecast, set_targets.shape[-1], normalizer_value)
     CRPS = calculate_CRPS(targets, persistent_forecast, set_targets.shape[-1])

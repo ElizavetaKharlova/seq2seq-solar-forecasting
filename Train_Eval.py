@@ -136,8 +136,9 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder', normaliz
 
         encoder_specs = copy.deepcopy(common_specs)
         decoder_specs = copy.deepcopy(common_specs)
-        decoder_specs['use_attention'] = False
+        decoder_specs['use_attention'] = True
         decoder_specs['self_recurrent'] = False
+        decoder_specs['attention_hidden'] = True
         encoder_block = block_LSTM(**encoder_specs)
         decoder_block = decoder_LSTM_block(**decoder_specs)
 

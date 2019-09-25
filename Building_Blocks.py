@@ -250,6 +250,7 @@ class Attention(tf.keras.Model):
         # hidden shape == (batch_size, hidden size)
         # hidden_with_time_axis shape == (batch_size, 1, hidden size)
         # we are doing this to perform addition to calculate the score
+
         if key is None:
             key = value
         key = self.W2(key)
@@ -269,14 +270,15 @@ class Attention(tf.keras.Model):
 
             # Trasformer style attention: score=Q*K/sqrt(dk)
             # in this case keys = values
-            score = tf.matmul(query, key, transpose_b=True)  # (..., seq_len_q, seq_len_k)
-
+            if len(query.shape) < len(key.shape):
+                query = tf.expand_dims(query,1)
+            score = tf.matmul(query, key, transpose_b=True)
             # scale score
             score = score / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
             score = tf.nn.softmax(score, axis=1)
 
             context_vector = tf.matmul(score, value)
-
+     
         # context_vector shape after sum == (batch_size, hidden_size)
         if self.context_mode == 'force singular step':
             context_vector = tf.reduce_sum(context_vector, axis=1)
@@ -349,12 +351,24 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
         if self.use_attention:
             if self.attention_hidden:
                 # ToDo: implement luong attention call method:
-                self.c_attention = []
                 self.h_attention = []
+                self.c_attention = []
+                self.h_attn_list = []
+                self.c_attn_list = []
+                self.augment_h = []
+                self.augment_c = []
+                self.w_h = []
+                self.w_c = []
                 for block in range(len(self.units)):
                     for layer in range(len(self.units[block])):
-                        self.c_attention.append(Attention(self.units[block][layer], mode='Transformer'))
-                        self.h_attention.append(Attention(self.units[block][layer], mode='Transformer'))
+                        self.h_attn_list.append(Attention(self.units[block][layer], mode='Transformer', context_mode='force singular step'))
+                        self.c_attn_list.append(Attention(self.units[block][layer], mode='Transformer', context_mode='force singular step'))
+                        self.w_h.append(tf.keras.layers.Dense(units[block][layer], kernel_initializer='glorot_uniform', use_bias=False))
+                        self.w_c.append(tf.keras.layers.Dense(units[block][layer], kernel_initializer='glorot_uniform', use_bias=False))
+                    self.augment_h.append(self.w_h)
+                    self.augment_c.append(self.w_c)
+                    self.h_attention.append(self.h_attn_list)
+                    self.c_attention.append(self.c_attn_list)
 
             else:
                 self.attention = Attention(self.units[-1][-1], mode='Transformer') # choose the attention style (Bahdanau, Transformer)
@@ -381,24 +395,34 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
 
         decoder_out, decoder_state = self.decoder(decoder_inputs, initial_states=decoder_init_state)
 
-        #ToDo: impelment luong attention call method here, this is a mockup:
-        #ToDo
+        # Luong attention to find an augmented state based on current hidden state and encoder outputs
         if self.attention_hidden:
-            augmented_state_h = []
-            augmented_state_c = []
+            decoder_attn_augmented_state = decoder_state #TODO: don't do overwrite, fix this to append
             for block in range(len(self.units)):
                 for layer in range(len(self.units[block])):
                     state_h = decoder_state[block][layer][0]
                     state_c = decoder_state[block][layer][1]
+                    # calculate attention on hidden state and encoder outputs
+                    context_h = self.h_attention[block][layer](state_h, value=attention_value)
+                    context_c = self.c_attention[block][layer](state_c, value=attention_value)
+                    # concat context vector and hidden state
+                    context_h = tf.concat([context_h, state_h], axis=-1)
+                    context_c = tf.concat([context_c, state_c], axis=-1)
+                    # calculate new state
+                    context_h = self.augment_h[block][layer](context_h)
+                    context_c = self.augment_c[block][layer](context_c)
+                    augmented_state_h = tf.nn.tanh(context_h)
+                    augmented_state_c = tf.nn.tanh(context_c)
+                    # save the attention augmented states
+                    decoder_attn_augmented_state[block][layer] = [augmented_state_h, augmented_state_c]
 
-                    context_h = self.attention(decoder_state, value=attention_value)
-                    decoder_attn_augmented_state = tf.concat([context_vector, decoder_state], axis=-1)
-                    decoder_out, decoder_state = self.decoder(decoder_inputs,
-                                                              initial_states=decoder_attn_augmented_state)
+            # get new output with augmented states
+            decoder_out, decoder_state = self.decoder(decoder_inputs,
+                                                        initial_states=decoder_attn_augmented_state)
             # ToDo: may have to concat this or figure out how to separate the states or sth ...
 
 
-
+        #TODO: why repeat?
         if self.self_recurrent:
             decoder_state = decoder_init_state
 

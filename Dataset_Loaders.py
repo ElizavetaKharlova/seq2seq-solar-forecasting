@@ -1,5 +1,13 @@
+from sklearn.preprocessing import scale, StandardScaler
+import matplotlib.pyplot as plt
+import os, datetime, re
+import pandas as pd
+import numpy as np
+import tensorflow as tf
+import pickle
+
 def get_Daniels_data(target_data='Pv',
-                     input_len_samples=int(3 * 24 * (60 / 5)),
+                     input_len_samples=int(5 * 24 * (60 / 5)),
                      fc_len_samples=int(1 * 24 * (60 / 5)),
                      fc_steps=24,
                      fc_tiles=50):
@@ -15,7 +23,7 @@ def get_Daniels_data(target_data='Pv',
         print('Not Implemented YET, except funky behavior')
         # ToDo: make sure you can add the load data here!
 
-    steps_to_new_sample = 12
+    steps_to_new_sample = 96
     inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = datasets_from_data(raw_data,
                                                           sw_len_samples=input_len_samples,
                                                           fc_len_samples=fc_len_samples,
@@ -29,7 +37,7 @@ def get_Daniels_data(target_data='Pv',
     ev_targets = np.expand_dims(ev_targets, axis=-1)
     ev_teacher = np.expand_dims(ev_teacher, axis=-1)
 
-    return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, steps_to_new_sample*sample_rate_weather, target_dims
+    return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, steps_to_new_sample*sample_rate_weather
 
 
 def get_Lizas_data():
@@ -60,10 +68,6 @@ def get_Lizas_data():
     ev_teacher = np.expand_dims(ev_teacher, axis=-1)
 
     return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins
-
-import numpy as np
-from sklearn.preprocessing import scale, MinMaxScaler, StandardScaler
-import matplotlib.pyplot as plt
 
 
 def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles, target_dims, plot=False, steps_to_new_sample=1):
@@ -204,9 +208,6 @@ def __convert_to_mv(target, num_steps):  # creates expected value targets
 
 # Help functions for Daniel to load his Data
 
-import os, datetime, re
-import pandas as pd
-import numpy as np
 
 
 def load_dataset(weather_data_folder='\_data\Weather_2016', pv_data_path="/_data/"):
@@ -384,7 +385,6 @@ def __stack_ts(timeseries, downsampling_factor):
             stacked_ts[i,row] = timeseries[downsampling_factor*i+row]
     return stacked_ts
 
-
 def import_zp(filename):
     import gzip, pickle
     f = gzip.open(filename + '.zp', 'rb')
@@ -419,3 +419,259 @@ def __import_profile(pickle_path_name, time_start=None, time_end=None):
         offline_profile['gen']['profile'] = offline_profile['gen']['profile'][time_start_index:time_end_index]
 
     return offline_profile
+
+def __slice_and_delete(inp, teacher, target, len_slice, seed, sample_spacing_in_mins, input_rate_in_1_per_min=5):
+    np.random.seed(seed)
+    inp_sw_shape = inp.shape
+    one_sw_in_samples = (inp_sw_shape[1]*input_rate_in_1_per_min)/sample_spacing_in_mins
+    one_sw_in_samples = int(one_sw_in_samples)
+
+    leftover_samples = int(len_slice)
+
+    day_offset_in_samples = int((24*60)/sample_spacing_in_mins)
+
+    inp_separated = None
+    teacher_separated = None
+    teacher_blend_separated = None
+    target_separated = None
+    persistency_forecast = None
+
+    index_start = []
+    index_end = []
+    while leftover_samples > 0:
+        one_week_in_samples = min(one_sw_in_samples, leftover_samples)
+
+        index_start_slice = np.random.uniform(low=day_offset_in_samples, high=inp.shape[0] - 2*one_sw_in_samples, size=None)
+        index_start_slice = int(np.floor(index_start_slice))
+        index_end_slice = index_start_slice + one_sw_in_samples
+
+        start_falls_within = False
+        end_falls_within = False
+        for entry in range(len(index_start)):
+            start_falls_within = start_falls_within or ((index_start_slice >= index_start[entry]) & (index_start_slice <=index_end[entry]))
+            end_falls_within = end_falls_within or ((index_end_slice >= index_start[entry]) & (index_end_slice <=index_end[entry]))
+
+        if not start_falls_within and not end_falls_within:
+            index_start.append(index_start_slice)
+            index_end.append(index_end_slice)
+            leftover_samples -= one_week_in_samples
+
+    index_start.sort(reverse=True)
+    index_end.sort(reverse=True)
+
+    for entry in range(len(index_start)):
+        index_start_slice = index_start[entry]
+        index_end_slice = index_end[entry]
+
+        inp_slice = inp[index_start_slice:index_end_slice,:,:]
+        if inp_separated is None:
+            inp_separated = inp_slice
+        else:
+            inp_separated = tf.concat([inp_separated, inp_slice], axis=0)
+
+        teacher_slice = teacher[index_start_slice:index_end_slice,:,:]
+
+        if teacher_separated is None:
+            teacher_separated = teacher_slice
+        else:
+            teacher_separated = tf.concat([teacher_separated, teacher_slice], axis=0)
+
+        teacher_blend = [0] * teacher_slice.shape[0]
+        if teacher_blend_separated is None:
+            teacher_blend_separated = teacher_blend
+        else:
+            teacher_blend_separated = tf.concat([teacher_blend_separated, teacher_blend], axis=0)
+
+        persistency_forecast_slice = target[(index_start_slice-day_offset_in_samples):(index_end_slice-day_offset_in_samples),:,:]
+        if persistency_forecast is None:
+            persistency_forecast = persistency_forecast_slice
+        else:
+            persistency_forecast = tf.concat([persistency_forecast, persistency_forecast_slice], axis=0)
+
+        target_slice = target[index_start_slice:index_end_slice, :, :]
+
+        target_slice = tf.convert_to_tensor(target_slice, dtype=tf.float32)
+        if target_separated is None:
+            target_separated = target_slice
+        else:
+            target_separated = tf.concat([target_separated, target_slice], axis=0)
+
+        if persistency_forecast.shape[0] != target_separated.shape[0]:
+            print('WTF, seems theres a mismatch', persistency_forecast.shape, 'vs', target_separated.shape)
+            print('slice persistency from',(index_start_slice-day_offset_in_samples), 'to',  (index_end_slice-day_offset_in_samples), '= ', ((index_end_slice-day_offset_in_samples)-(index_start_slice-day_offset_in_samples)))
+            print('slice persistency from', (index_start_slice), 'to', (index_end_slice ), '= ', ((index_end_slice) - (index_start_slice)))
+
+    for entry in range(len(index_start)):
+        index_start_slice = index_start[entry]
+        index_end_slice = index_end[entry]
+        inp = np.delete(inp, np.s_[index_start_slice:index_end_slice], axis=0)
+        teacher = np.delete(teacher, np.s_[index_start_slice:index_end_slice], axis=0)
+        target = np.delete(target, np.s_[index_start_slice:index_end_slice], axis=0)
+
+    sliced_dataset = [inp_separated.numpy(), teacher_separated.numpy(), teacher_blend_separated.numpy()]
+    return sliced_dataset, target_separated.numpy(), persistency_forecast.numpy(), inp, teacher, target
+
+def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins, normalizer_value, input_rate_in_1_per_min, split_seeds=[24,42]):
+    if training_ratio > 1:
+        print('... seems like you want more than a full training set, the training ratio needs to be smaller than 1!')
+
+    remainder_for_test_val = 1.0-training_ratio
+    test_len = (remainder_for_test_val/2.0) * inp.shape[0]
+    val_len = (remainder_for_test_val/2.0) * inp.shape[0]
+
+    from Losses_and_Metrics import __calculatate_skillscore_baseline
+    persistency_baseline = __calculatate_skillscore_baseline(target,
+                                                           sample_spacing_in_mins=sample_spacing_in_mins,
+                                                           normalizer_value=normalizer_value)
+    print('Persistency baseline for whole Dataset', persistency_baseline)
+    dataset = {}
+    [dataset['test_inputs'], dataset['test_teacher'], dataset['test_blend']], dataset['test_targets'], test_persistent_forecast,  inp, teacher, target = __slice_and_delete(inp,
+                                                                                                                                                                            teacher,
+                                                                                                                                                                            target,
+                                                                                                                                                                            test_len,
+                                                                                                                                                                            seed=split_seeds[0],
+                                                                                                                                                                            sample_spacing_in_mins=sample_spacing_in_mins,
+                                                                                                                                                                            input_rate_in_1_per_min=input_rate_in_1_per_min)
+    dataset['test_persistency_baseline'] = __calculatate_skillscore_baseline(dataset['test_targets'],
+                                                                             persistent_forecast=test_persistent_forecast,
+                                                                           sample_spacing_in_mins=sample_spacing_in_mins,
+                                                                           normalizer_value=normalizer_value)
+    print('test baseline values:', dataset['test_persistency_baseline'])
+    [dataset['val_inputs'], dataset['val_teacher'], dataset['val_blend']], dataset['val_targets'], val_persistent_forecast, inp, teacher, target = __slice_and_delete(inp,
+                                                                                                                                                                      teacher,
+                                                                                                                                                                      target,
+                                                                                                                                                                      val_len,
+                                                                                                                                                                      seed=split_seeds[1],
+                                                                                                                                                                      sample_spacing_in_mins=sample_spacing_in_mins,
+                                                                                                                                                                      input_rate_in_1_per_min=input_rate_in_1_per_min)
+    dataset['val_persistency_baseline'] = __calculatate_skillscore_baseline(dataset['val_targets'],
+                                                                            persistent_forecast=val_persistent_forecast,
+                                                                           sample_spacing_in_mins=sample_spacing_in_mins,
+                                                                           normalizer_value=normalizer_value)
+
+    print('val baseline values:', dataset['val_persistency_baseline'])
+    blend_train = [1] * inp.shape[0]
+    dataset['train_inputs'] = np.asarray(inp)
+    dataset['train_teacher'] = np.asarray(teacher)
+    dataset['train_blend'] = np.asarray(blend_train)
+    dataset['train_targets'] = np.asarray(target)
+
+    print('Dataset has', dataset['train_targets'].shape[0], 'training samples', dataset['val_targets'].shape[0], 'val samples', dataset['test_targets'].shape[0], 'test samples')
+    tf.keras.backend.clear_session()
+    return dataset
+
+def __augment_Daniels_dataset(dataset):
+    if 'val_inputs' in dataset:
+
+        corrected_shape = dataset['val_inputs'].shape
+        new_values = np.zeros(shape=[corrected_shape[0], corrected_shape[1], corrected_shape[-1] - 5 + 1])
+        for sample in range(len(dataset['val_inputs'])):
+            sample_inputs = dataset['val_inputs'][sample]
+            pv_sample = sample_inputs[:, 0:5]
+            rest_sample = sample_inputs[:, (pv_sample.shape[-1]):]
+            pv_sample = tf.reduce_mean(pv_sample, axis=-1)
+            new_values[sample,:,0] = pv_sample.numpy()
+            new_values[sample,:,1:] = rest_sample
+
+        dataset['val_inputs'] = np.asarray(new_values)
+
+    if 'test_inputs' in dataset:
+        print('adjusting test set')
+        corrected_shape = dataset['test_inputs'].shape
+        new_values = np.zeros(shape=[corrected_shape[0], corrected_shape[1], corrected_shape[-1] - 5 + 1])
+        for sample in range(len(dataset['test_inputs'])):
+            sample_inputs = dataset['test_inputs'][sample]
+            pv_sample = sample_inputs[:, 0:5]
+            rest_sample = sample_inputs[:, (pv_sample.shape[-1]):]
+            pv_sample = tf.reduce_mean(pv_sample, axis=-1)
+            new_values[sample,:,0] = pv_sample.numpy()
+            new_values[sample,:,1:] = rest_sample
+
+        dataset['test_inputs'] = np.asarray(new_values)
+
+    if 'train_inputs' in dataset:
+        print('adjusting train_inputs', dataset['train_inputs'].shape)
+
+        original_teacher = dataset['train_teacher']
+        original_blend = dataset['train_blend']
+        original_targets = dataset['train_targets']
+        original_inputs_shape = dataset['train_inputs'].shape
+
+        new_values = np.zeros(shape=[original_inputs_shape[0]*5, original_inputs_shape[1], original_inputs_shape[-1] - 5 + 1])
+        new_teacher = np.zeros(shape=[original_teacher.shape[0]*5, original_teacher.shape[1], original_teacher.shape[2]])
+        new_blend = np.zeros(
+            shape=[original_blend.shape[0] * 5])
+        new_targets = np.zeros(
+            shape=[original_targets.shape[0] * 5, original_targets.shape[1], original_targets.shape[2]])
+
+        sample_inputs = dataset['train_inputs']
+        pv = sample_inputs[:,:, 0:5]
+        rest = sample_inputs[:,:, pv.shape[-1]:]
+        num_sets = pv.shape[-1]
+        num_original_samples = original_inputs_shape[0]
+        for pv_set in range(num_sets):
+            pv_sample = pv[:,:,pv_set]
+            augmented_features = rest
+            feature_deltas = np.subtract(augmented_features[:,1:,:], augmented_features[:,:-1,:])
+
+            for sample in range(num_original_samples):
+                offset_bias = np.random.randint(low=1, high=num_sets)
+                for feature in range(augmented_features.shape[-1]):
+                    offsets = feature_deltas[sample, :, feature]
+                    offset_noise = np.random.uniform(low=0.0, high=1.0, size=offsets.shape)
+                    offset_noise = np.multiply(offsets/(num_sets+1), offset_noise)
+                    offsets = np.add(offsets*offset_bias/(num_sets+1), offset_noise)
+                    augmented_features[sample,:-1,feature] = np.add(augmented_features[sample,:-1,feature], offsets)
+
+                    new_values[num_original_samples*pv_set + sample,:,0] = pv_sample[sample,:]
+                    new_values[num_original_samples*pv_set + sample,:,1:] = augmented_features[sample,:,:]
+                    new_teacher[num_original_samples*pv_set + sample,:,:] = original_teacher[sample,:,:]
+                    new_blend[num_original_samples * pv_set + sample] = original_blend[sample]
+                    new_targets[num_original_samples * pv_set + sample, :, :] = original_targets[sample, :, :]
+
+        dataset['train_inputs'] = np.asarray(new_values)
+        dataset['train_teacher'] = np.asarray(new_teacher)
+        dataset['train_blend'] = np.asarray(new_blend)
+        dataset['train_targets'] = np.asarray(new_targets)
+        print('train_inputs are now: ', dataset['train_inputs'].shape)
+
+    return dataset
+
+def __create_and_save_3_fold_CrossValidation():
+    inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Daniels_data()
+    normalizer_value = np.amax(ev_targets) - np.amin(ev_targets)
+    dataset_splitter_kwargs = {'inp':inp,
+                              'target':pdf_targets,
+                              'teacher':pdf_teacher,
+                              'training_ratio':0.6,
+                              'sample_spacing_in_mins':sample_spacing_in_mins,
+                              'normalizer_value':normalizer_value,
+                              'input_rate_in_1_per_min':5}
+
+    dataset_splitter_kwargs['split_seeds'] = [42, 23]
+    dataset = __split_dataset(**dataset_splitter_kwargs)
+    dataset = __augment_Daniels_dataset(dataset)
+    dataset['normalizer_value'] = normalizer_value
+    with open('Daniels_dataset_1.pickle', 'wb') as handle:
+        pickle.dump(dataset, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    del dataset
+
+    dataset_splitter_kwargs['split_seeds'] = [23, 42]
+    dataset = __split_dataset(**dataset_splitter_kwargs)
+    dataset = __augment_Daniels_dataset(dataset)
+    dataset['normalizer_value'] = normalizer_value
+    with open('Daniels_dataset_2.pickle', 'wb') as handle:
+        pickle.dump(dataset, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    del dataset
+
+    dataset_splitter_kwargs['split_seeds'] = [69, 96]
+    dataset = __split_dataset(**dataset_splitter_kwargs)
+    dataset = __augment_Daniels_dataset(dataset)
+    dataset['normalizer_value'] = normalizer_value
+    with open('Daniels_dataset_3.pickle', 'wb') as handle:
+        pickle.dump(dataset, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    del dataset
+
+    del inp, pdf_teacher, pdf_targets, ev_teacher, ev_targets
+
+

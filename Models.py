@@ -124,23 +124,56 @@ def mimo_model(function_block, input_shape, output_shape, mode='project', downsa
     out_dims = output_shape[-1]
 
     inputs = tf.keras.layers.Input(shape=(in_tsteps, in_dims))
-    print('inputs', inputs)
+
     if downsample_input:
         if downsample_mode =='mean':
-            function_block_out = function_block(__downsample_signal_via_mean(inputs, downsampling_rate))
+            downsampling_rate = int(downsampling_rate)
+
+            signal_shape = inputs.shape
+            steps_to_aggregate = signal_shape[1] / downsampling_rate
+            for downsampled_step in range(int(steps_to_aggregate)):
+                start = downsampled_step * downsampling_rate
+                end = start + downsampling_rate
+                step = tf.reduce_mean(inputs[:, start:end, :], axis=1, keepdims=True)
+                if downsampled_step == 0:
+                    downsampeld_signal = step
+                else:
+                    downsampeld_signal = tf.concat([downsampeld_signal, step], axis=1)
+
+            function_block_out = function_block(downsampeld_signal)
         else:
-            function_block_out = function_block(__downsample_signal_via_sample(inputs, downsampling_rate))
-        print('downsampled inputs', inputs)
+
+            downsampling_rate = int(downsampling_rate)
+            signal_shape = inputs.shape
+            steps_to_aggregate = signal_shape[1] / downsampling_rate
+            for downsampled_step in range(int(steps_to_aggregate)):
+                start = downsampled_step * downsampling_rate
+                sample = tf.expand_dims(inputs[:, start, :], axis=1)
+                if downsampled_step == 0:
+                    downsampeld_signal = sample
+                else:
+                    downsampeld_signal = tf.concat([downsampeld_signal, sample], axis=1)
+
+            function_block_out = function_block(downsampeld_signal)
     else:
         function_block_out = function_block(inputs)
 
-    print('block out', print(function_block_out))
     if mode=='project':
-        mimo_output = __adjust_temporal_and_feature_dims(function_block_out, out_tsteps, out_dims)
+        squeeze_time = tf.keras.layers.Dense(out_tsteps)
+        if out_dims > 1:
+            squeeze_features = tf.keras.layers.Dense(units=out_dims, activation=tf.keras.layers.Softmax(axis=-1))
+        else:
+            squeeze_features = tf.keras.layers.Dense(out_dims)
 
+        function_block_out = tf.transpose(function_block_out, perm=[0, 2, 1])
+        function_block_out = squeeze_time(function_block_out)
+        function_block_out = tf.transpose(function_block_out, perm=[0, 2, 1])
+
+        function_block_out = squeeze_features(function_block_out)
+
+        mimo_output = function_block_out
     elif mode=='snip':
         function_block_out_snip = function_block_out[:,-out_tsteps:,:]
-        print('block out after snip', function_block_out_snip)
 
         # If we have the wrong output dimensionality, we do a temporally disttributed transform
         if function_block_out_snip.shape[-1] != out_dims:
@@ -160,56 +193,4 @@ def mimo_model(function_block, input_shape, output_shape, mode='project', downsa
 
     return tf.keras.Model(inputs, mimo_output)
 
-def __adjust_temporal_and_feature_dims(signal, out_tsteps, out_dims):
-    squeeze_time = tf.keras.layers.Dense(out_tsteps)
-    if out_dims > 1:
-        squeeze_features = tf.keras.layers.Dense(units=out_dims, activation=tf.keras.layers.Softmax(axis=-1))
-    else:
-        squeeze_features = tf.keras.layers.Dense(out_dims)
-
-    signal = tf.transpose(signal, perm=[0, 2, 1])
-    signal = squeeze_time(signal)
-    signal = tf.transpose(signal, perm=[0, 2, 1])
-
-    signal = squeeze_features(signal)
-
-    return signal
-
-def __downsample_signal_via_mean(signal, factor):
-    if int(factor) != factor:
-        print('cannot downsample by a non integer')
-    factor = int(factor)
-
-    signal_shape = signal.shape
-    steps_to_aggregate = signal_shape[1]/factor
-    for downsampled_step in range(int(steps_to_aggregate)):
-        start = downsampled_step*factor
-        end = start + factor
-
-        if downsampled_step == 0:
-            downsampeld_signal = tf.reduce_mean(signal[:,start:end,:], axis=1, keepdims=True)
-        else:
-            downsampeld_signal = tf.concat([downsampeld_signal, tf.reduce_mean(signal[:,start:end,:], axis=1, keepdims=True)],
-                                   axis=1)
-
-    return downsampeld_signal
-
-def __downsample_signal_via_sample(signal, factor):
-    if int(factor) != factor:
-        print('cannot downsample by a non integer')
-    factor = int(factor)
-
-    signal_shape = signal.shape
-    steps_to_aggregate = signal_shape[1]/factor
-    for downsampled_step in range(int(steps_to_aggregate)):
-        start = downsampled_step*factor
-        end = start + factor
-
-        if downsampled_step == 0:
-            downsampeld_signal = tf.expand_dims(signal[:,start,:], axis=1)
-        else:
-            downsampeld_signal = tf.concat([downsampeld_signal, tf.expand_dims(signal[:,start,:], axis=1)],
-                                   axis=1)
-
-    return downsampeld_signal
 

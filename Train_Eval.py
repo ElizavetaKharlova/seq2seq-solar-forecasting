@@ -22,227 +22,68 @@ def __get_max_min_targets(train_targets, test_targets):
     return max_value, min_value
 
 import matplotlib.pyplot as plt
-def __plot_training_curves(train_dict, val_dict):
 
-    for key in train_dict.keys():
-        for val_key in val_dict.keys():
-            if str(key) in str(val_key):
-                plt.plot(train_dict[key], label=str(key))
-                plt.plot(val_dict[val_key], label=str(val_key))
-                plt.ylabel(str(key))
-                plt.xlabel('number of Epochs')
-                plt.title('Loss and Metrics Curves')
-                plt.legend()
-                plt.show()
+def __plot_training_curves(metrics, experiment_name):
+    val_metrics = {}
+    test_metrics = {}
+    train_metrics = {}
 
-def __slice_and_delete(inp, teacher, target, len_slice, seed, sample_spacing_in_mins, input_rate_in_1_per_min=5):
-    np.random.seed(seed)
-    inp_sw_shape = inp.shape
-    one_sw_in_samples = (inp_sw_shape[1]*input_rate_in_1_per_min)/sample_spacing_in_mins
-    one_sw_in_samples = int(one_sw_in_samples)
-
-    leftover_samples = int(len_slice)
-
-    day_offset_in_samples = int((24*60)/sample_spacing_in_mins)
-
-    inp_separated = None
-    teacher_separated = None
-    teacher_blend_separated = None
-    target_separated = None
-    persistency_forecast = None
-
-    index_start = []
-    index_end = []
-    while leftover_samples > 0:
-        one_week_in_samples = min(one_sw_in_samples, leftover_samples)
-
-        index_start_slice = np.random.uniform(low=day_offset_in_samples, high=inp.shape[0] - 2*one_sw_in_samples, size=None)
-        index_start_slice = int(np.floor(index_start_slice))
-        index_end_slice = index_start_slice + one_sw_in_samples
-
-        start_falls_within = False
-        end_falls_within = False
-        for entry in range(len(index_start)):
-            start_falls_within = start_falls_within or ((index_start_slice >= index_start[entry]) & (index_start_slice <=index_end[entry]))
-            end_falls_within = end_falls_within or ((index_end_slice >= index_start[entry]) & (index_end_slice <=index_end[entry]))
-
-        if not start_falls_within and not end_falls_within:
-            index_start.append(index_start_slice)
-            index_end.append(index_end_slice)
-            leftover_samples -= one_week_in_samples
-
-    index_start.sort(reverse=True)
-    index_end.sort(reverse=True)
-
-    for entry in range(len(index_start)):
-        index_start_slice = index_start[entry]
-        index_end_slice = index_end[entry]
-
-        inp_slice = inp[index_start_slice:index_end_slice,:,:]
-        inp_slice = tf.convert_to_tensor(inp_slice, dtype=tf.float32)
-        if inp_separated is None:
-            inp_separated = inp_slice
+    metrics_dict = metrics[0]
+    k_fold_mode = True
+    for key in metrics_dict[0].keys():
+        print(metrics)
+        if 'val' in str(key):
+            val_metrics[key] = [metrics[index][key] for index in range(len(metrics))]
+        if 'test' in str(key):
+            test_metrics[key] = [metrics[index][key] for index in range(len(metrics))]
         else:
-            inp_separated = tf.concat([inp_separated, inp_slice], axis=0)
+            train_metrics[key] = [metrics[index][key] for index in range(len(metrics))]
 
-        teacher_slice = teacher[index_start_slice:index_end_slice,:,:]
-        teacher_slice = tf.convert_to_tensor(teacher_slice, dtype=tf.float32)
+    val_color = [255, 165, 0]
+    test_color = 'g'
+    train_color = 'b'
 
-        if teacher_separated is None:
-            teacher_separated = teacher_slice
-        else:
-            teacher_separated = tf.concat([teacher_separated, teacher_slice], axis=0)
 
-        teacher_blend = [0] * teacher_slice.shape[0]
-        teacher_blend = tf.convert_to_tensor(teacher_blend, dtype=tf.float32)
-        if teacher_blend_separated is None:
-            teacher_blend_separated = teacher_blend
-        else:
-            teacher_blend_separated = tf.concat([teacher_blend_separated, teacher_blend], axis=0)
+    for train_key in train_metrics.keys():
+        if k_fold_mode:
+            for set in range(len(train_metrics[train_key])):
+                plt.plot(train_metrics[set][key],
+                         label=str(train_key),
+                         color=train_color)
 
-        persistency_forecast_slice = target[(index_start_slice-day_offset_in_samples):(index_end_slice-day_offset_in_samples),:,:]
-        persistency_forecast_slice = tf.convert_to_tensor(persistency_forecast_slice, dtype=tf.float32)
-        if persistency_forecast is None:
-            persistency_forecast = persistency_forecast_slice
-        else:
-            persistency_forecast = tf.concat([persistency_forecast, persistency_forecast_slice], axis=0)
+                saved_val_index = np.amax(val_metrics[set]['val_nRMSE'])
+                for val_key in val_metrics.keys():
+                    if str(train_key) in str(val_key):
+                        plt.plot(val_metrics[set][val_key],
+                                 label=str(val_key) + str(set),
+                                 color=val_color)
+                        plt.plot(x=saved_val_index, y=val_metrics[set][val_key][saved_val_index],
+                                 label='chosen' + str(val_key) + 'set' + str(set),
+                                 color=val_color,
+                                 marker='o', markersize=2)
 
-        target_slice = target[index_start_slice:index_end_slice, :, :]
+                        if np.argmax(val_metrics[set][val_key]) != saved_val_index:
+                            best_val_index = np.argmax(val_metrics[set][val_key])
+                            best_val = np.amax(val_metrics[set][val_key])
+                            plt.plot(x=best_val_index, y=best_val,
+                                     label='bext' + str(val_key) + 'set' + str(set),
+                                     color=val_color,
+                                     marker='*', markersize=2)
 
-        target_slice = tf.convert_to_tensor(target_slice, dtype=tf.float32)
-        if target_separated is None:
-            target_separated = target_slice
-        else:
-            target_separated = tf.concat([target_separated, target_slice], axis=0)
+                for test_key in test_metrics.keys():
+                    if str(train_key) in str(test_key):
+                        plt.plot(x=saved_val_index, y=test_metrics[set][test_key],
+                                 label=str(test_key), marker='o', markersize=2,
+                                 color=test_color)
 
-        if persistency_forecast.shape[0] != target_separated.shape[0]:
-            print('WTF, seems theres a mismatch', persistency_forecast.shape, 'vs', target_separated.shape)
-            print('slice persistency from',(index_start_slice-day_offset_in_samples), 'to',  (index_end_slice-day_offset_in_samples), '= ', ((index_end_slice-day_offset_in_samples)-(index_start_slice-day_offset_in_samples)))
-            print('slice persistency from', (index_start_slice), 'to', (index_end_slice ), '= ', ((index_end_slice) - (index_start_slice)))
+        plt.ylabel(str(key))
+        plt.xlabel('number of Epochs')
+        plt.grid()
+        plt.legend()
 
-    for entry in range(len(index_start)):
-        index_start_slice = index_start[entry]
-        index_end_slice = index_end[entry]
-        inp = np.delete(inp, np.s_[index_start_slice:index_end_slice], axis=0)
-        teacher = np.delete(teacher, np.s_[index_start_slice:index_end_slice], axis=0)
-        target = np.delete(target, np.s_[index_start_slice:index_end_slice], axis=0)
+        plt.savefig(experiment_name, dpi=500, format='pdf')
 
-    slice_inputs = [inp_separated , teacher_separated, teacher_blend_separated]
-    return slice_inputs, target_separated, persistency_forecast, inp , teacher , target
-
-def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins, normalizer_value, input_rate_in_1_per_min):
-    if training_ratio > 1:
-        print('... seems like you want more than a full training set, the training ratio needs to be smaller than 1!')
-
-    remainder_for_test_val = 1.0-training_ratio
-    test_len = (remainder_for_test_val/2.0) * inp.shape[0]
-    val_len = (remainder_for_test_val/2.0) * inp.shape[0]
-
-    from Losses_and_Metrics import __calculatate_skillscore_baseline
-    persistency_baseline = __calculatate_skillscore_baseline(target,
-                                                           sample_spacing_in_mins=sample_spacing_in_mins,
-                                                           normalizer_value=normalizer_value)
-    print('Persistency baseline for whole Dataset', persistency_baseline)
-    dataset = {}
-    dataset['test_inputs'], dataset['test_targets'], persistent_forecast,  inp, teacher, target = __slice_and_delete(inp, teacher, target, test_len, seed=99, sample_spacing_in_mins=sample_spacing_in_mins, input_rate_in_1_per_min=input_rate_in_1_per_min)
-    val_baseline = __calculatate_skillscore_baseline(dataset['test_targets'], persistent_forecast=persistent_forecast,
-                                                           sample_spacing_in_mins=sample_spacing_in_mins,
-                                                           normalizer_value=normalizer_value)
-    print('test baseline values:', val_baseline)
-    dataset['val_inputs'], dataset['val_targets'], persistent_forecast, inp, teacher, target = __slice_and_delete(inp, teacher, target, val_len, seed=420, sample_spacing_in_mins=sample_spacing_in_mins, input_rate_in_1_per_min=input_rate_in_1_per_min)
-    val_baseline = __calculatate_skillscore_baseline(dataset['val_targets'], persistent_forecast=persistent_forecast,
-                                                           sample_spacing_in_mins=sample_spacing_in_mins,
-                                                           normalizer_value=normalizer_value)
-    print('val baseline values:', val_baseline)
-    blend_train = [1] * inp.shape[0]
-    dataset['train_inputs'] = [tf.convert_to_tensor(inp, dtype=tf.float32), tf.convert_to_tensor(teacher, dtype=tf.float32) , tf.convert_to_tensor(blend_train, dtype=tf.float32)]
-    dataset['train_targets'] = tf.convert_to_tensor(target, dtype=tf.float32)
-
-    print('Dataset has', dataset['train_targets'].shape[0], 'training samples', dataset['val_targets'].shape[0], 'val samples', dataset['test_targets'].shape[0], 'test samples')
-    tf.keras.backend.clear_session()
-    return dataset
-
-def __augment_dataset(dataset):
-    if 'val_inputs' in dataset:
-        dataset['val_inputs'][0] = dataset['val_inputs'][0].numpy()
-
-        corrected_shape = dataset['val_inputs'][0].shape
-        new_values = np.zeros(shape=[corrected_shape[0], corrected_shape[1], corrected_shape[-1] - 5 + 1])
-        for sample in range(len(dataset['val_inputs'][0])):
-            sample_inputs = dataset['val_inputs'][0][sample]
-            pv_sample = sample_inputs[:, 0:5]
-            rest_sample = sample_inputs[:, (pv_sample.shape[-1]):]
-            pv_sample = tf.reduce_mean(pv_sample, axis=-1)
-            new_values[sample,:,0] = pv_sample.numpy()
-            new_values[sample,:,1:] = rest_sample
-
-        dataset['val_inputs'][0] = tf.convert_to_tensor(new_values, dtype=tf.float32)
-
-    if 'test_inputs' in dataset:
-        dataset['test_inputs'][0] = dataset['test_inputs'][0].numpy()
-
-        corrected_shape = dataset['test_inputs'][0].shape
-        new_values = np.zeros(shape=[corrected_shape[0], corrected_shape[1], corrected_shape[-1] - 5 + 1])
-        for sample in range(len(dataset['test_inputs'][0])):
-            sample_inputs = dataset['test_inputs'][0][sample]
-            pv_sample = sample_inputs[:, 0:5]
-            rest_sample = sample_inputs[:, (pv_sample.shape[-1]):]
-            pv_sample = tf.reduce_mean(pv_sample, axis=-1)
-            new_values[sample,:,0] = pv_sample.numpy()
-            new_values[sample,:,1:] = rest_sample
-
-        dataset['test_inputs'][0] = tf.convert_to_tensor(new_values, dtype=tf.float32)
-
-    if 'train_inputs' in dataset:
-        print('adjusting train_inputs', dataset['train_inputs'][0].shape)
-
-        dataset['train_inputs'][0] = dataset['train_inputs'][0].numpy()
-
-        original_teacher = dataset['train_inputs'][1].numpy()
-        original_blend = dataset['train_inputs'][2].numpy()
-        original_targets = dataset['train_targets'].numpy()
-
-        original_inputs = dataset['train_inputs'][0].shape
-        new_values = np.zeros(shape=[original_inputs[0]*5, original_inputs[1], original_inputs[-1] - 5 + 1])
-        new_teacher = np.zeros(shape=[original_teacher.shape[0]*5, original_teacher.shape[1], original_teacher.shape[2]])
-        new_blend = np.zeros(
-            shape=[original_blend.shape[0] * 5])
-        new_targets = np.zeros(
-            shape=[original_targets.shape[0] * 5, original_targets.shape[1], original_targets.shape[2]])
-
-        sample_inputs = dataset['train_inputs'][0]
-        pv = sample_inputs[:,:, 0:5]
-        rest = sample_inputs[:,:, pv.shape[-1]:]
-        num_sets = pv.shape[-1]
-        num_original_samples = dataset['train_inputs'][0].shape[0]
-        for pv_set in range(num_sets):
-            pv_sample = pv[:,:,pv_set]
-            augmented_features = rest
-            feature_deltas = np.subtract(augmented_features[:,1:,:], augmented_features[:,:-1,:])
-
-            for sample in range(num_original_samples):
-                offset_bias = np.random.randint(low=1, high=num_sets)
-                for feature in range(augmented_features.shape[-1]):
-                    offsets = feature_deltas[sample, :, feature]
-                    # offset_noise = np.random.uniform(low=0.0, high=1.0, size=offsets.shape)
-                    offset_noise = 0.0
-                    offset_noise = np.multiply(offsets/(num_sets+1), offset_noise)
-                    offsets = np.add(offsets*offset_bias/(num_sets+1), offset_noise)
-                    augmented_features[sample,:-1,feature] = np.add(augmented_features[sample,:-1,feature], offsets)
-
-                    new_values[num_original_samples*pv_set + sample,:,0] = pv_sample[sample,:]
-                    new_values[num_original_samples*pv_set + sample,:,1:] = augmented_features[sample,:,:]
-                    new_teacher[num_original_samples*pv_set + sample,:,:] = original_teacher[sample,:,:]
-                    new_blend[num_original_samples * pv_set + sample] = original_blend[sample]
-                    new_targets[num_original_samples * pv_set + sample, :, :] = original_targets[sample, :, :]
-
-        dataset['train_inputs'][0] = tf.convert_to_tensor(new_values, dtype=tf.float32)
-        dataset['train_inputs'][1] = tf.convert_to_tensor(new_teacher, dtype=tf.float32)
-        dataset['train_inputs'][2] = tf.convert_to_tensor(new_blend, dtype=tf.float32)
-        dataset['train_targets'] = tf.convert_to_tensor(new_targets, dtype=tf.float32)
-        print('train_inputs are now: ', dataset['train_inputs'][0].shape)
-
-    return dataset
+        plt.show()
 
 def __build_model(input_shape, out_shape, model_type='Encoder-Decoder', normalizer_value=1.0):
     tf.keras.backend.clear_session()  # make sure we are working clean
@@ -328,93 +169,69 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder', normaliz
 def __train_model(model, batch_size, dataset):
     relative_decrease = 0
     decrease = 0
-
     best_val_metric = np.inf
+    prev_val_metric = np.inf
 
-    val_metrics = {}
-    train_metrics = {}
-
+    metrics = {}
     while decrease < 20:
-        train_history = model.fit(x=dataset['train_inputs'], y=dataset['train_targets'],
+        train_history = model.fit(x=[dataset['train_inputs'], dataset['train_teacher'], dataset['train_blend']],
+                                  y=dataset['train_targets'],
                                   batch_size=batch_size,
                                   epochs=1,
                                   shuffle=True,
                                   verbose=False,
-                                  validation_data=(dataset['val_inputs'], dataset['val_targets']))
+                                  validation_data=([dataset['val_inputs'], dataset['val_teacher'], dataset['val_blend']],
+                                                   dataset['val_targets']))
         print(train_history.history)
         for key in train_history.history.keys():
             if 'val' in str(key):
-                if key in val_metrics:
-                    val_metrics[key].append(train_history.history[key][0])
+                if key in metrics:
+                    metrics[key].append(train_history.history[key][0])
                 else:
-                    val_metrics[key] = [train_history.history[key][0]]
+                    metrics[key] = [train_history.history[key][0]]
             else:
-                if key in train_metrics:
-                    train_metrics[key].append(train_history.history[key][0])
+                if key in metrics:
+                    metrics[key].append(train_history.history[key][0])
                 else:
-                    train_metrics[key] = [train_history.history[key][0]]
+                    metrics[key] = [train_history.history[key][0]]
 
-        if best_val_metric > val_metrics['val_nRMSE'][
+        if best_val_metric > metrics['val_nRMSE'][
             -1]:  # if we see no increase in absolute performance, increase the death counter
             decrease = 0  # reset the death counter
-            best_val_metric = val_metrics['val_nRMSE'][-1]
+            best_val_metric = metrics['val_nRMSE'][-1]
             best_wts = model.get_weights()
             print('saving a new model')
         else:
             decrease += 1
+
+        if prev_val_metric < metrics['val_nRMSE'][-1]:
             relative_decrease += 1
 
-        if relative_decrease > 4:
+        if relative_decrease > 2:
             # if we have no relative increase in quality towards the previous iteration
             # then decrease the blend factor
-            dataset['train_inputs'][2] = dataset['train_inputs'][2] - 0.05
-            dataset['train_inputs'][2] = tf.maximum(0.0, dataset['train_inputs'][2])
+            dataset['train_blend'] = dataset['train_blend'] - 0.05
+            dataset['train_blend'] = tf.maximum(0.0, dataset['train_blend'])
             print('lowering blend factor')
             relative_decrease = 0
 
-        prev_val_loss = train_history.history['val_nRMSE'][0]
-
-    __plot_training_curves(train_metrics, val_metrics)
+        prev_val_metric = train_history.history['val_nRMSE'][0]
 
     model.set_weights(best_wts)
-    test_results = model.evaluate(x=dataset['val_inputs'],
-                                  y=dataset['val_targets'],
+    test_results = model.evaluate(x=[dataset['test_inputs'], dataset['test_teacher'], dataset['test_blend']],
+                                  y=dataset['test_targets'],
                                   batch_size=batch_size,
                                   verbose=False)
-    print('test results', test_results)
+    metrics['test_loss'] = test_results[0]
+    metrics['test_nME'] = test_results[1]
+    metrics['test_nRMSE'] = test_results[2]
+    metrics['test_CRPS'] = test_results[3]
 
-def train_on_Daniel_data(model_name):
+    return metrics
 
-    from Dataset_Loaders import get_Daniels_data, get_Lizas_data
-    inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Daniels_data()
-    # inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Lizas_data()
-    normalizer_value = np.amax(ev_targets) - np.amin(ev_targets)
-    # print('Ev normalizer value', normalizer_value)
 
-    dataset = __split_dataset(inp=inp, target=pdf_targets, teacher=pdf_teacher, training_ratio=0.6, sample_spacing_in_mins=sample_spacing_in_mins, normalizer_value=normalizer_value, input_rate_in_1_per_min=5)
-    del inp, pdf_teacher, pdf_targets, ev_teacher, ev_targets
-    dataset = __augment_dataset(dataset)
 
-    model = __build_model(input_shape=dataset['train_inputs'][0].shape[1:],
-                          out_shape=dataset['train_targets'].shape[1:],
-                          model_type=model_name,
-                          normalizer_value=normalizer_value)
-    __train_model(model, batch_size=512, dataset=dataset)
 
-def train_on_Lisas_data(model_name):
-    from Dataset_Loaders import get_Lizas_data
-    inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Lizas_data()
-    normalizer_value = np.amax(ev_targets) - np.amin(ev_targets)
-    # print('Ev normalizer value', normalizer_value)
-
-    dataset = __split_dataset(inp=inp, target=pdf_targets, teacher=pdf_teacher, training_ratio=0.6, sample_spacing_in_mins=sample_spacing_in_mins, normalizer_value=normalizer_value, input_rate_in_1_per_min=15)
-    del inp, pdf_teacher, pdf_targets, ev_teacher, ev_targets
-
-    model = __build_model(input_shape=dataset['train_inputs'][0].shape[1:],
-                          out_shape=dataset['train_targets'].shape[1:],
-                          model_type=model_name,
-                          normalizer_value=normalizer_value)
-    __train_model(model, batch_size=64, dataset=dataset)
 
 
 

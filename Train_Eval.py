@@ -87,8 +87,7 @@ def __plot_training_curves(metrics, experiment_name):
 
 def __build_model(input_shape, out_shape, model_type='Encoder-Decoder', normalizer_value=1.0):
     tf.keras.backend.clear_session()  # make sure we are working clean
-    from Building_Blocks import decoder_LSTM_block, block_LSTM
-    from Benchmarks import DenseTCN
+    from Building_Blocks import decoder_LSTM_block, block_LSTM, DenseTCN, attentive_TCN
     from Models import encoder_decoder_model, mimo_model
 
     if model_type == 'MiMo-LSTM-downsample':
@@ -119,6 +118,34 @@ def __build_model(input_shape, out_shape, model_type='Encoder-Decoder', normaliz
                          'only_last_layer_output': True}
 
         model = mimo_model(function_block=block_LSTM(**encoder_specs),
+                           input_shape=input_shape,
+                           output_shape=out_shape,
+                           downsample_input=False,
+                           downsampling_rate=(60 / 5),
+                           mode='snip')
+    elif model_type == 'DenseTCN':
+        encoder_specs = {'num_blocks': 1,
+                        'num_layers_per_block': 1,
+                        'growth_rate':12, 
+                        'squeeze_factor':0.5, 
+                        'kernel_sizes':[3],
+                         'use_dropout': True,
+                         'dropout_rate': 0.15,
+                         'use_norm': False}
+
+        model = mimo_model(function_block=DenseTCN(**encoder_specs),
+                           input_shape=input_shape,
+                           output_shape=out_shape,
+                           downsample_input=False,
+                           downsampling_rate=(60 / 5),
+                           mode='snip')
+    elif model_type == 'attentive_TCN':
+        encoder_specs = {'units': [[32,32],[48,48]],
+                         'use_dropout': True,
+                         'dropout_rate': 0.15,
+                         'use_norm': False}
+
+        model = mimo_model(function_block=attentive_TCN(**encoder_specs),
                            input_shape=input_shape,
                            output_shape=out_shape,
                            downsample_input=False,

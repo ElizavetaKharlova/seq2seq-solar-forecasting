@@ -246,11 +246,12 @@ class Attention(tf.keras.Model):
 
         self.only_context = only_context
     
-    def call(self, query, value, key=None):
+    def call(self, query, value=None, key=None):
         # hidden shape == (batch_size, hidden size)
         # hidden_with_time_axis shape == (batch_size, 1, hidden size)
         # we are doing this to perform addition to calculate the score
-
+        if value is None:
+            value = query
         if key is None:
             key = value
         key = self.W2(key)
@@ -419,7 +420,6 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
             # get new output with augmented states
             decoder_out, decoder_state = self.decoder(decoder_inputs,
                                                         initial_states=decoder_attn_augmented_state)
-            # ToDo: may have to concat this or figure out how to separate the states or sth ...
 
 
         #TODO: why repeat?
@@ -470,6 +470,182 @@ class Multilayer_CNN(tf.keras.layers.Layer):
                 out = tf.nn.dropout(out, self.dropout_rate)
             all_out.append(out)
         return all_out
+
+
+class DenseTCN(tf.keras.layers.Layer):
+    """
+    Dense temporal convolutional network
+    requires number of block and layers within a block to initialize
+    can change growth rate, squeeze factor, kernel sizes, strides, dropout and norm parameters
+    requires inputs to run
+    can have an arbitrary number of streams determined by the size of the kernel array
+    outputs the raw network output in size [Batches, Timesteps, Features]
+    requires a MIMO or a recursive wrapper to output predictions
+    """
+    def __init__(self, num_blocks, num_layers_per_block,
+                growth_rate=12, 
+                squeeze_factor=0.5, 
+                use_dropout=False, 
+                dropout_rate=0.0, 
+                use_norm=False, 
+                kernel_sizes=[3, 5]):
+        super(DenseTCN, self).__init__()
+        
+        self.num_blocks = num_blocks
+        self.num_layers_per_block = num_layers_per_block
+        self.growth_rate = growth_rate
+        # bottleneck features are the 1x1 conv size for each layer
+        self.bottleneck_features = 4*growth_rate
+        # squeeze factor is the percentage of features passed from one block to the next
+        self.squeeze_factor = squeeze_factor
+        self.use_dropout = use_dropout
+        self.dropout_rate = dropout_rate
+        self.kernel_sizes = kernel_sizes
+        self.use_norm = use_norm
+        # build flag
+        self.already_built = False
+        
+        if self.use_norm:
+            self.norm = []
+        # create a stack of squeeze layers to be used between blocks (is not used after the last block)
+        self.squeeze = []
+
+    # initialize one CNN layer with arbitrary parameters
+    def cnn_layer(self, num_features, kernel_size, dilation_rate):
+        return tf.keras.layers.Conv1D(num_features,
+                                        kernel_size=kernel_size,
+                                        dilation_rate=dilation_rate,
+                                        padding='causal')
+                                        
+    # build a stack for one layer of the network
+    def build_layer(self, num_layer, kernel_size):
+        layer = []
+        layer.append(self.cnn_layer(self.bottleneck_features, kernel_size=1, dilation_rate=1))
+        layer.append(self.cnn_layer(self.growth_rate, kernel_size, dilation_rate=2**num_layer))
+        if self.use_norm:
+            self.norm.append(tf.keras.layers.BatchNormalization())
+        return layer
+
+    # stack the network layers within a stream 
+    def build_stream(self, kernel_size):
+        stream = []
+        for num_layer in range(self.num_layers_per_block):
+            stream.append(self.build_layer(num_layer, kernel_size))
+        return stream
+
+    # build a stack of blocks which includes several streams with different kernel sizes
+    def build_block(self, in_shape):
+        self.blocks = []
+        for block in range(self.num_blocks):
+            all_streams = []
+            for kernel_size in self.kernel_sizes:
+                all_streams.append(self.build_stream(kernel_size))
+            self.blocks.append(all_streams)
+            # calculate the number of features in the squeeze layer
+            # shape of input to the block + growth rate for all layers in the block
+            if block == 0:
+                num_features = int(self.squeeze_factor*(in_shape+self.num_layers_per_block*self.growth_rate))
+            else: 
+                num_features = int(self.squeeze_factor*(num_features + self.num_layers_per_block*self.growth_rate))
+            # create stack of squeeze layers
+            self.squeeze.append(self.cnn_layer(num_features, kernel_size=1, dilation_rate=1))
+        # update build flag
+        self.already_built = True
+        return None
+
+    # run one basic dense network layer
+    # return output concatednated with input
+    def run_layer(self, block, num_layer, num_stream, inputs):
+        out = inputs
+        out = self.blocks[block][num_stream][num_layer][0](out)
+        out = self.blocks[block][num_stream][num_layer][1](out)
+        if self.use_norm:
+            out = self.norm[num_layer]
+        if self.use_dropout:
+            out = tf.nn.dropout(out,rate=self.dropout_rate)
+        #TODO: not sure which activation to use
+        out = tf.keras.activations.relu(out)
+        return tf.concat([out, inputs], 2)
+    
+    # run output through one stream
+    def run_stream(self, block, num_stream, inputs):
+        out = inputs
+        for num_layer in range(self.num_layers_per_block):
+            out = self.run_layer(block, num_layer, num_stream, out)
+        return out
+
+    # run the output through blocks
+    # within the block run through several streams according to size of the kernel array
+    def run_block(self, block, inputs):
+        out = []
+        for num_stream in range(len(self.blocks[block])):
+            # concatenate the outputs of several streams
+            if num_stream == 0:
+                out = self.run_stream(block, num_stream, inputs)
+            else:
+                out = tf.concat([out, self.run_stream(block, num_stream, inputs)], 2)
+        # return output concatednated with input
+        return out
+
+
+    def call(self, inputs):
+        out = inputs
+        # call the init function upon first call
+        if not self.already_built:
+            self.build_block(inputs.shape[1])
+        # iterate through blocks
+        for block in range(self.num_blocks):
+            out = self.run_block(block, out)
+            # apply squeeze after each block except last
+            if block < (self.num_blocks-1):
+                out = self.squeeze[block](out)
+        return out
+
+########################################################################################################################
+class attentive_TCN(tf.keras.layers.Layer):
+    '''
+    Encoder consisting of alternating self-attention and Desne TCN blocks
+    requires units in shape of [[attention block units], [dense tcn units] ... ]
+    the first block is always self-attention in order to get the most information from the input
+    outputs after each block (dense tcn and self-attention) are concatenated
+    '''
+    def __init__(self, units, use_dropout=False, dropout_rate=0.15, use_norm=False):
+        super(attentive_TCN, self).__init__()
+
+        self.units = units
+        self.encoder = []
+        for block in range(len(self.units)):
+            # first block is always attention
+            if block%2 == 0:
+                # can accommodate several self-attention layers
+                encoder_block = []
+                for layer in range(len(self.units[block])):
+                    encoder_block.append(Attention(self.units[block][layer], mode='Transformer'))
+                self.encoder.append(encoder_block)
+            else:
+                self.encoder.append(DenseTCN(num_blocks=1, 
+                                            num_layers_per_block=len(self.units[block]), 
+                                            growth_rate=12, 
+                                            squeeze_factor=0.5, 
+                                            use_dropout = use_dropout,
+                                            dropout_rate=dropout_rate,
+                                            use_norm=use_norm,
+                                            kernel_sizes=[3]))
+
+
+    def call(self, encoder_inputs):
+        for block in range(len(self.encoder)):
+            # for the first and later attention layers, concatenate the outputs
+            if block%2 == 0:
+                for layer in range(len(self.encoder[block])):
+                    out = self.encoder[block][layer](encoder_inputs)
+                    out = tf.concat([out,encoder_inputs],-1)
+                    encoder_inputs = out
+            else:
+                # dense tcn block concatenates the outputs automatically
+                out = self.encoder[block](out)
+        return out
+
 
 class encoder_CNN(tf.keras.layers.Layer):
     def __init__(self, num_layers, num_units, use_dropout=True, dropout_rate=0.0):
@@ -916,3 +1092,4 @@ class WeightNormalization(tf.keras.layers.Wrapper):
         config = {'data_init': self.data_init}
         base_config = super(WeightNormalization, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
+

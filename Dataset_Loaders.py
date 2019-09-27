@@ -7,7 +7,7 @@ import tensorflow as tf
 import pickle
 
 def get_Daniels_data(target_data='Pv',
-                     input_len_samples=int(5 * 24 * (60 / 5)),
+                     input_len_samples=int(3 * 24 * (60 / 5)),
                      fc_len_samples=int(1 * 24 * (60 / 5)),
                      fc_steps=24,
                      fc_tiles=50):
@@ -23,7 +23,7 @@ def get_Daniels_data(target_data='Pv',
         print('Not Implemented YET, except funky behavior')
         # ToDo: make sure you can add the load data here!
 
-    steps_to_new_sample = 4
+    steps_to_new_sample = 3
     inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = datasets_from_data(raw_data,
                                                           sw_len_samples=input_len_samples,
                                                           fc_len_samples=fc_len_samples,
@@ -32,10 +32,6 @@ def get_Daniels_data(target_data='Pv',
                                                           target_dims=target_dims,
                                                           plot=False,
                                                           steps_to_new_sample=steps_to_new_sample)
-
-    import numpy as np
-    ev_targets = np.expand_dims(ev_targets, axis=-1)
-    ev_teacher = np.expand_dims(ev_teacher, axis=-1)
 
     return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, steps_to_new_sample*sample_rate_weather
 
@@ -63,9 +59,6 @@ def get_Lizas_data():
 
     # ---------------------------------------------------------------------------
     sample_spacing_in_mins = sample_rate_raw_data_mins*steps_to_new_sample
-    import numpy as np
-    ev_targets = np.expand_dims(ev_targets, axis=-1)
-    ev_teacher = np.expand_dims(ev_teacher, axis=-1)
 
     return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins
 
@@ -107,13 +100,20 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
     target_min_max = [0.0,  np.amax(targets)]
 
     # create the list for the arrays
-    pdf_targets = []    # pdf forecast
-    pdf_supports = []
-    ev_targets = []     # expected value forecast
-    ev_supports = []
-    sw_inputs = []      # inputs
+    fc_len_samples = int(fc_len_samples)
+    fc_steps = int(fc_steps)
+    sw_len_samples = int(sw_len_samples)
+    fc_tiles = int(fc_tiles)
+    num_samples = int((data.shape[0] - fc_len_samples - sw_len_samples)/steps_to_new_sample)
 
-    for timestep in range(0, data.shape[0] - fc_len_samples - sw_len_samples, steps_to_new_sample):
+    pdf_targets = np.zeros([num_samples, fc_steps,fc_tiles])    # pdf forecast
+    pdf_supports = np.zeros([num_samples, fc_steps,fc_tiles])
+    ev_targets = np.zeros([num_samples, fc_steps,1])     # expected value forecast
+    ev_supports = np.zeros([num_samples, fc_steps,1])
+    sw_inputs = np.zeros([num_samples, sw_len_samples, data.shape[-1]])      # inputs
+
+    for sample in range(num_samples):
+        timestep = sample*steps_to_new_sample
         sliced_input_sample = data[timestep:(timestep + sw_len_samples), :]
         faults_for_slice = faults[timestep:(timestep + fc_len_samples + sw_len_samples)]
 
@@ -121,13 +121,12 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
         one_addl_fc_timestep = int(fc_len_samples/fc_steps)
         sliced_target_sample = targets[(target_timestep-one_addl_fc_timestep):(target_timestep + fc_len_samples), :]
 
-
         if len(target_dims) > 1:
             sliced_target_sample = __reconstruct(sliced_target_sample)
 
         if np.sum(faults_for_slice) == 0:  # see if we are free of faults
+            sw_inputs[sample, :,:] = sliced_input_sample  # drop the last dimension, since we do not need the fault indicator anymore
 
-            sw_inputs.append(sliced_input_sample.tolist())  # drop the last dimension, since we do not need the fault indicator anymore
             pdf_Support_target = __convert_to_pdf(sliced_target_sample,
                                           num_steps=fc_steps+1, num_tiles=fc_tiles,
                                         min_max=target_min_max)  # pdf for probability distribution thingie
@@ -135,19 +134,18 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
             if 1.0-tolerance <= np.mean(np.sum(pdf_Support_target, axis=-1)) >= 1.0 + tolerance:
                 print('ooh, u fucked up boi, ', np.mean(np.sum(pdf_Support_target, axis=-1)))
 
-            pdf_targets.append(pdf_Support_target[1:,:])
-            pdf_supports.append(pdf_Support_target[:-1,:])
+            pdf_targets[sample, :,:] = pdf_Support_target[1:,:]
+            pdf_supports[sample, :,:] = pdf_Support_target[:-1,:]
 
             ev_target = __convert_to_mv(sliced_target_sample, num_steps=fc_steps+1)  # ev for expected value
-            ev_targets.append(ev_target[1:])
-            ev_supports.append(ev_target[:-1])
+            ev_targets[sample, :, 0] = ev_target[1:]
+            ev_supports[sample, :, 0] = ev_target[:-1]
 
         if (int(timestep/steps_to_new_sample) % int(int(data.shape[0] / steps_to_new_sample)/10)) == 0:
             print(int(100*timestep/data.shape[0]) + 10, 'percent converted')
-    sw_inputs = np.array(sw_inputs)
 
-    pdf_targets = np.array(pdf_targets)
-    pdf_supports = np.array(pdf_supports)
+        sample += 1
+
     return sw_inputs, ev_targets, ev_supports, pdf_targets, pdf_supports
 
 def __plot_data_array(data_arrays, label): # plots any provided 2D data arrat
@@ -179,36 +177,26 @@ def __convert_to_pdf(target, num_tiles, num_steps, min_max):  # takes the target
     # num_steps is the target dowsample rate
 
     pdf_target = np.zeros([num_steps, num_tiles])
-
     min_max[1] = min_max[1] + min_max[0]  # rescale the maximum with regards to the minimum
-
     samples_in_step = int(target.shape[0] / num_steps)  # see how many steps we need to bunch into one pdf-step
-
     target = target / min_max[1]  # rescale
     target = np.where(target == 1, target - 1e-9, target)  # make sure we dont get overflow
     target = np.floor(num_tiles * target)  # convert to indices
-
     for step in range(num_steps):
         for sample in range(samples_in_step):
             pdf_target[step, int(target[step * samples_in_step + sample])] += 1.0 / samples_in_step
-
     return pdf_target
 
 def __convert_to_mv(target, num_steps):  # creates expected value targets
 
     mv_target = np.zeros([num_steps])
-
     samples_in_step = int(target.shape[0] / num_steps)
-
     for step in range(num_steps):
         for _ in range(samples_in_step):
             mv_target[step] += target[step * samples_in_step + _] / samples_in_step
-
     return mv_target
 
 # Help functions for Daniel to load his Data
-
-
 
 def load_dataset(weather_data_folder='\_data\Weather_2016', pv_data_path="/_data/"):
 
@@ -430,11 +418,11 @@ def __slice_and_delete(inp, teacher, target, len_slice, seed, sample_spacing_in_
 
     day_offset_in_samples = int((24*60)/sample_spacing_in_mins)
 
-    inp_separated = None
-    teacher_separated = None
-    teacher_blend_separated = None
-    target_separated = None
-    persistency_forecast = None
+    inp_separated = np.zeros([leftover_samples, inp.shape[1], inp.shape[2]])
+    teacher_separated = np.zeros([leftover_samples, teacher.shape[1], teacher.shape[2]])
+    teacher_blend_separated = np.zeros([leftover_samples])
+    target_separated = np.zeros([leftover_samples, target.shape[1], target.shape[2]])
+    persistency_forecast = np.zeros([leftover_samples, target.shape[1], target.shape[2]])
 
     index_start = []
     index_end = []
@@ -462,54 +450,29 @@ def __slice_and_delete(inp, teacher, target, len_slice, seed, sample_spacing_in_
     for entry in range(len(index_start)):
         index_start_slice = index_start[entry]
         index_end_slice = index_end[entry]
+        num_samples = int(index_end_slice - index_start_slice)
 
-        inp_slice = inp[index_start_slice:index_end_slice,:,:]
-        if inp_separated is None:
-            inp_separated = inp_slice
-        else:
-            inp_separated = tf.concat([inp_separated, inp_slice], axis=0)
+        inp_separated[entry:(entry + num_samples), :, :] = inp[index_start_slice:index_end_slice,:,:]
+        inp = np.delete(inp, np.s_[index_start_slice:index_end_slice], axis=0)
 
-        teacher_slice = teacher[index_start_slice:index_end_slice,:,:]
+        teacher_separated[entry:(entry + num_samples), :, :] = teacher[index_start_slice:index_end_slice,:,:]
+        teacher = np.delete(teacher, np.s_[index_start_slice:index_end_slice], axis=0)
 
-        if teacher_separated is None:
-            teacher_separated = teacher_slice
-        else:
-            teacher_separated = tf.concat([teacher_separated, teacher_slice], axis=0)
+        persistency_forecast[entry:(entry + num_samples), :, :] = target[(index_start_slice - day_offset_in_samples):(
+                    index_end_slice - day_offset_in_samples), :, :]
+        target_separated[entry:(entry + num_samples), :, :] = target[index_start_slice:index_end_slice, :, :]
+        target = np.delete(target, np.s_[index_start_slice:index_end_slice], axis=0)
 
-        teacher_blend = [0] * teacher_slice.shape[0]
-        if teacher_blend_separated is None:
-            teacher_blend_separated = teacher_blend
-        else:
-            teacher_blend_separated = tf.concat([teacher_blend_separated, teacher_blend], axis=0)
-
-        persistency_forecast_slice = target[(index_start_slice-day_offset_in_samples):(index_end_slice-day_offset_in_samples),:,:]
-        if persistency_forecast is None:
-            persistency_forecast = persistency_forecast_slice
-        else:
-            persistency_forecast = tf.concat([persistency_forecast, persistency_forecast_slice], axis=0)
-
-        target_slice = target[index_start_slice:index_end_slice, :, :]
-
-        target_slice = tf.convert_to_tensor(target_slice, dtype=tf.float32)
-        if target_separated is None:
-            target_separated = target_slice
-        else:
-            target_separated = tf.concat([target_separated, target_slice], axis=0)
 
         if persistency_forecast.shape[0] != target_separated.shape[0]:
             print('WTF, seems theres a mismatch', persistency_forecast.shape, 'vs', target_separated.shape)
             print('slice persistency from',(index_start_slice-day_offset_in_samples), 'to',  (index_end_slice-day_offset_in_samples), '= ', ((index_end_slice-day_offset_in_samples)-(index_start_slice-day_offset_in_samples)))
             print('slice persistency from', (index_start_slice), 'to', (index_end_slice ), '= ', ((index_end_slice) - (index_start_slice)))
 
-    for entry in range(len(index_start)):
-        index_start_slice = index_start[entry]
-        index_end_slice = index_end[entry]
-        inp = np.delete(inp, np.s_[index_start_slice:index_end_slice], axis=0)
-        teacher = np.delete(teacher, np.s_[index_start_slice:index_end_slice], axis=0)
-        target = np.delete(target, np.s_[index_start_slice:index_end_slice], axis=0)
 
-    sliced_dataset = [inp_separated.numpy(), teacher_separated.numpy(), teacher_blend_separated.numpy()]
-    return sliced_dataset, target_separated.numpy(), persistency_forecast.numpy(), inp, teacher, target
+
+    sliced_dataset = [inp_separated, teacher_separated, teacher_blend_separated]
+    return sliced_dataset, target_separated, persistency_forecast, inp, teacher, target
 
 def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins, normalizer_value, input_rate_in_1_per_min, split_seeds=[24,42]):
     if training_ratio > 1:
@@ -523,6 +486,7 @@ def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins
     persistency_baseline = __calculatate_skillscore_baseline(target,
                                                            sample_spacing_in_mins=sample_spacing_in_mins,
                                                            normalizer_value=normalizer_value)
+    tf.keras.backend.clear_session()
     print('Persistency baseline for whole Dataset', persistency_baseline)
     dataset = {}
     [dataset['test_inputs'], dataset['test_teacher'], dataset['test_blend']], dataset['test_targets'], test_persistent_forecast,  inp, teacher, target = __slice_and_delete(inp,
@@ -536,6 +500,7 @@ def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins
                                                                              persistent_forecast=test_persistent_forecast,
                                                                            sample_spacing_in_mins=sample_spacing_in_mins,
                                                                            normalizer_value=normalizer_value)
+    tf.keras.backend.clear_session()
     print('test baseline values:', dataset['test_persistency_baseline'])
     [dataset['val_inputs'], dataset['val_teacher'], dataset['val_blend']], dataset['val_targets'], val_persistent_forecast, inp, teacher, target = __slice_and_delete(inp,
                                                                                                                                                                       teacher,
@@ -548,6 +513,7 @@ def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins
                                                                             persistent_forecast=val_persistent_forecast,
                                                                            sample_spacing_in_mins=sample_spacing_in_mins,
                                                                            normalizer_value=normalizer_value)
+    tf.keras.backend.clear_session()
 
     print('val baseline values:', dataset['val_persistency_baseline'])
     blend_train = [1] * inp.shape[0]
@@ -557,7 +523,6 @@ def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins
     dataset['train_targets'] = np.asarray(target)
 
     print('Dataset has', dataset['train_targets'].shape[0], 'training samples', dataset['val_targets'].shape[0], 'val samples', dataset['test_targets'].shape[0], 'test samples')
-    tf.keras.backend.clear_session()
     return dataset
 
 def __augment_Daniels_dataset(dataset):
@@ -569,7 +534,7 @@ def __augment_Daniels_dataset(dataset):
             sample_inputs = dataset['val_inputs'][sample]
             pv_sample = sample_inputs[:, 0:5]
             rest_sample = sample_inputs[:, (pv_sample.shape[-1]):]
-            pv_sample = tf.reduce_mean(pv_sample, axis=-1)
+            pv_sample = np.mean(pv_sample, axis=-1)
             new_values[sample,:,0] = pv_sample.numpy()
             new_values[sample,:,1:] = rest_sample
 
@@ -583,7 +548,7 @@ def __augment_Daniels_dataset(dataset):
             sample_inputs = dataset['test_inputs'][sample]
             pv_sample = sample_inputs[:, 0:5]
             rest_sample = sample_inputs[:, (pv_sample.shape[-1]):]
-            pv_sample = tf.reduce_mean(pv_sample, axis=-1)
+            pv_sample = np.mean(pv_sample, axis=-1)
             new_values[sample,:,0] = pv_sample.numpy()
             new_values[sample,:,1:] = rest_sample
 

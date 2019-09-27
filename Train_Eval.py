@@ -6,6 +6,183 @@ import numpy as np
 from Benchmarks import build_model
 import copy
 
+
+class Model_Container():
+    def __init__(self,
+                 dataset,
+                 model_kwargs, #see __build_model
+                 train_kwargs, #currently only batch size
+                 ):
+        self.dataset = dataset
+
+        model_kwargs['input_shape'] = dataset['train_inputs'].shape[1:]
+        model_kwargs['out_shape'] = dataset['train_targets'].shape[1:]
+        model_kwargs['normalizer_value'] = dataset['normalizer_value']
+
+        self.model_kwargs = model_kwargs
+        self.train_kwargs = train_kwargs
+
+    def get_results(self):
+        tf.keras.backend.clear_session()  # make sure we are working clean
+        self.__build_model(**self.model_kwargs)
+        del self.model_kwargs
+
+        self.__train_model(**self.train_kwargs)
+        del self.train_kwargs
+        del self.model
+
+        self.__skill_metrics()
+        del self.dataset
+
+        tf.keras.backend.clear_session()
+        return self.metrics
+
+
+    def __build_model(self,
+                      input_shape, out_shape, normalizer_value,
+                      model_type='MiMo-sth',
+                      model_size='small',
+                      use_dropout=False, dropout_rate=0.0, use_hw=False, use_norm=False, use_quasi_dense=False, #general architecture stuff
+                      use_attention=False, self_recurrent=False, # E-D stuff
+                      downsample=True, mode='snip', #MiMo stuff
+                      ):
+
+        # MiMo LSTMS, downsampled
+        if model_size == 'small':
+            units = [[32, 32, 32]]
+        elif model_size =='medium' or model_size == 'med':
+            units = [[64, 64, 64]]
+        elif model_size == 'big':
+            units = [[128, 128, 128]]
+        elif model_size == 'large':
+            units = [[256, 256, 256]]
+
+        if model_type == 'MiMo-LSTM':
+            print('building a', model_size, model_type)
+            from Building_Blocks import block_LSTM
+            encoder_specs = {'units': units,
+                             'use_dropout': use_dropout,
+                             'dropout_rate': dropout_rate,
+                             'use_norm': use_norm,
+                             'use_hw': use_hw,
+                             'return_state': False,
+                             'use_quasi_dense': use_quasi_dense,
+                             'only_last_layer_output': True}
+
+            from Models import mimo_model
+            self.model = mimo_model(function_block=block_LSTM(**encoder_specs),
+                               input_shape=input_shape,
+                               output_shape=out_shape,
+                               downsample_input=downsample,
+                               downsampling_rate=(60 / 5),
+                               mode=mode)
+
+        elif model_type == 'Encoder-Decoder' or model_type == 'E-D':
+            common_specs = {'units': units,
+                            'use_dropout': use_dropout,
+                            'dropout_rate': dropout_rate,
+                            'use_norm': use_norm,
+                            'use_hw': use_hw,
+                            'use_quasi_dense': use_quasi_dense,
+                            'only_last_layer_output': True}
+
+            encoder_specs = copy.deepcopy(common_specs)
+            decoder_specs = copy.deepcopy(common_specs)
+            decoder_specs['use_attention'] = use_attention
+            decoder_specs['self_recurrent'] = self_recurrent
+
+            projection_model = tf.keras.layers.Dense(units=out_shape[-1],
+                                                     activation=tf.keras.layers.Softmax(axis=-1))
+            projection_model = tf.keras.layers.TimeDistributed(projection_model)
+
+            from Building_Blocks import block_LSTM, decoder_LSTM_block
+            model_kwargs = {'encoder_block': block_LSTM(**encoder_specs),
+                            "encoder_stateful": True,
+                            'decoder_block': decoder_LSTM_block(**decoder_specs),
+                            'use_teacher': True,
+                            'decoder_uses_attention_on': decoder_specs['use_attention'],
+                            'decoder_stateful': True,
+                            'self_recurrent_decoder': decoder_specs['self_recurrent'],
+                            'projection_block': projection_model,
+                            'input_shape': input_shape,
+                            'output_shape': out_shape}
+
+            from Models import encoder_decoder_model
+            self.model = encoder_decoder_model(**model_kwargs)
+
+        else:
+            print('trying to build with', model_size, model_type, 'but failed')
+
+
+        from Losses_and_Metrics import loss_wrapper
+        self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+                      loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='tile-to-forecast'),
+                      metrics=[loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nME',
+                                            normalizer_value=normalizer_value),
+                               loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nRMSE',
+                                            normalizer_value=normalizer_value),
+                               loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='CRPS'),
+                               ])  # compile, print summary
+        self.model.summary()
+
+    def __train_model(self, batch_size=64):
+        self.metrics = {}
+
+        tf.keras.backend.clear_session()
+        early_stopping_callback = tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
+                                                                   patience=10,
+                                                                   mode='min',
+                                                                   restore_best_weights=True)
+        reduce_lr_on_plateu_callback =tf.keras.callbacks.ReduceLROnPlateau(monitor='nRMSE',
+                                                                           factor=0.10,
+                                                                           patience=5,
+                                                                           verbose=True,
+                                                                           mode='min',
+                                                                           cooldown=5)
+
+        train_history = self.model.fit(x=[self.dataset['train_inputs'],
+                                     self.dataset['train_teacher'],
+                                     self.dataset['train_blend']],
+                                  y=self.dataset['train_targets'],
+                                  batch_size=batch_size,
+                                  epochs=100,
+                                  shuffle=True,
+                                  verbose=True,
+                                  validation_data=([self.dataset['val_inputs'],
+                                                    self.dataset['val_teacher'],
+                                                    self.dataset['val_blend']],
+                                                   self.dataset['val_targets']),
+                                  callbacks=[early_stopping_callback, reduce_lr_on_plateu_callback])
+
+        train_history = train_history.history
+        for key in train_history.keys():
+            self.metrics[key] = train_history[key]
+
+        tf.keras.backend.clear_session()
+
+
+        test_results = self.model.evaluate(x=[self.dataset['test_inputs'],
+                                              self.dataset['test_teacher'],
+                                              self.dataset['test_blend']],
+                                      y=self.dataset['test_targets'],
+                                      batch_size=batch_size,
+                                      verbose=False)
+
+        self.metrics['test_loss'] = test_results[0]
+        self.metrics['test_nME'] = test_results[1]
+        self.metrics['test_nRMSE'] = test_results[2]
+        self.metrics['test_CRPS'] = test_results[3]
+
+
+    def __skill_metrics(self):
+        saved_epoch = np.argmax(self.metrics['val_nRMSE'])
+        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_nRMSE'][saved_epoch] / self.dataset['val_persistency_baseline']['nRMSE'])
+        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_CRPS'][saved_epoch] / self.dataset['val_persistency_baseline']['CRPS'])
+        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['test_nRMSE'] / self.dataset['test_persistency_baseline']['nRMSE'])
+        self.metrics['test_CRPS_skill'] = 1 - (self.metrics['test_CRPS'] / self.dataset['test_persistency_baseline']['CRPS'])
+
+
+
 def __get_max_min_targets(train_targets, test_targets):
     import numpy as np
     max_value_train = np.amax(train_targets, axis=0)
@@ -21,241 +198,27 @@ def __get_max_min_targets(train_targets, test_targets):
     min_value = np.minimum(min_value_test, min_value_train)
     return max_value, min_value
 
-import matplotlib.pyplot as plt
-
-def __plot_training_curves(metrics, experiment_name):
-    val_metrics = {}
-    test_metrics = {}
-    train_metrics = {}
-
-    metrics_dict = metrics[0]
-    k_fold_mode = True
-    for key in metrics_dict[0].keys():
-        print(metrics)
-        if 'val' in str(key):
-            val_metrics[key] = [metrics[index][key] for index in range(len(metrics))]
-        if 'test' in str(key):
-            test_metrics[key] = [metrics[index][key] for index in range(len(metrics))]
-        else:
-            train_metrics[key] = [metrics[index][key] for index in range(len(metrics))]
-
-    val_color = [255, 165, 0]
-    test_color = 'g'
-    train_color = 'b'
 
 
-    for train_key in train_metrics.keys():
-        if k_fold_mode:
-            for set in range(len(train_metrics[train_key])):
-                plt.plot(train_metrics[set][key],
-                         label=str(train_key),
-                         color=train_color)
 
-                saved_val_index = np.amax(val_metrics[set]['val_nRMSE'])
-                for val_key in val_metrics.keys():
-                    if str(train_key) in str(val_key):
-                        plt.plot(val_metrics[set][val_key],
-                                 label=str(val_key) + str(set),
-                                 color=val_color)
-                        plt.plot(x=saved_val_index, y=val_metrics[set][val_key][saved_val_index],
-                                 label='chosen' + str(val_key) + 'set' + str(set),
-                                 color=val_color,
-                                 marker='o', markersize=2)
+#
+# class __adjust_teacher_callback(tf.keras.callbacks.Callback):
+#     if prev_val_metric < self.metrics['val_nRMSE'][-1]:
+#         relative_decrease += 1
+#
+#     if relative_decrease > 2:
+#         # if we have no relative increase in quality towards the previous iteration
+#         # then decrease the blend factor
+#         self.dataset['train_blend'] = self.dataset['train_blend'] - 0.05
+#         self.dataset['train_blend'] = tf.maximum(0.0, self.dataset['train_blend'])
+#         print('lowering blend factor')
+#         relative_decrease = 0
+#
+#     prev_val_metric = train_history['val_nRMSE'][0]
+#
+#     self.model.load_weights('best_weight_set.h5')
 
-                        if np.argmax(val_metrics[set][val_key]) != saved_val_index:
-                            best_val_index = np.argmax(val_metrics[set][val_key])
-                            best_val = np.amax(val_metrics[set][val_key])
-                            plt.plot(x=best_val_index, y=best_val,
-                                     label='bext' + str(val_key) + 'set' + str(set),
-                                     color=val_color,
-                                     marker='*', markersize=2)
 
-                for test_key in test_metrics.keys():
-                    if str(train_key) in str(test_key):
-                        plt.plot(x=saved_val_index, y=test_metrics[set][test_key],
-                                 label=str(test_key), marker='o', markersize=2,
-                                 color=test_color)
-
-        plt.ylabel(str(key))
-        plt.xlabel('number of Epochs')
-        plt.grid()
-        plt.legend()
-
-        plt.savefig(experiment_name, dpi=500, format='pdf')
-
-        plt.show()
-
-def __build_model(input_shape, out_shape, model_type='Encoder-Decoder', normalizer_value=1.0):
-    tf.keras.backend.clear_session()  # make sure we are working clean
-    from Building_Blocks import decoder_LSTM_block, block_LSTM, DenseTCN, attentive_TCN
-    from Models import encoder_decoder_model, mimo_model
-
-    if model_type == 'MiMo-LSTM-downsample':
-        encoder_specs = {'units': [[96, 96, 96]],
-                        'use_dropout': False,
-                        'dropout_rate': 0.15,
-                        'use_norm': False,
-                        'use_hw': False,
-                        'return_state': False,
-                        'use_quasi_dense': False,
-                        'only_last_layer_output': True}
-                            
-        model = mimo_model(function_block=block_LSTM(**encoder_specs),
-                            input_shape=input_shape,
-                            output_shape=out_shape,
-                           downsample_input=True,
-                           downsampling_rate=(60/5),
-                            mode='snip')
-
-    elif model_type == 'MiMo-LSTM-nodownsample':
-        encoder_specs = {'units': [[96, 96, 96]],
-                         'use_dropout': True,
-                         'dropout_rate': 0.15,
-                         'use_norm': True,
-                         'use_hw': False,
-                         'return_state': False,
-                         'use_quasi_dense': False,
-                         'only_last_layer_output': True}
-
-        model = mimo_model(function_block=block_LSTM(**encoder_specs),
-                           input_shape=input_shape,
-                           output_shape=out_shape,
-                           downsample_input=False,
-                           downsampling_rate=(60 / 5),
-                           mode='snip')
-    elif model_type == 'DenseTCN':
-        encoder_specs = {'num_blocks': 1,
-                        'num_layers_per_block': 1,
-                        'growth_rate':12, 
-                        'squeeze_factor':0.5, 
-                        'kernel_sizes':[3],
-                         'use_dropout': True,
-                         'dropout_rate': 0.15,
-                         'use_norm': False}
-
-        model = mimo_model(function_block=DenseTCN(**encoder_specs),
-                           input_shape=input_shape,
-                           output_shape=out_shape,
-                           downsample_input=False,
-                           downsampling_rate=(60 / 5),
-                           mode='snip')
-    elif model_type == 'attentive_TCN':
-        encoder_specs = {'units': [[32,32],[48,48]],
-                         'use_dropout': True,
-                         'dropout_rate': 0.15,
-                         'use_norm': False}
-
-        model = mimo_model(function_block=attentive_TCN(**encoder_specs),
-                           input_shape=input_shape,
-                           output_shape=out_shape,
-                           downsample_input=False,
-                           downsampling_rate=(60 / 5),
-                           mode='snip')
-
-    elif model_type == 'Encoder-Decoder':
-        common_specs = {'units': [[96, 96, 96]],
-                        'use_dropout': True,
-                        'dropout_rate': 0.2,
-                        'use_norm': True,
-                        'use_hw': False,
-                        'use_quasi_dense': False,
-                        'only_last_layer_output': True}
-
-        encoder_specs = copy.deepcopy(common_specs)
-        decoder_specs = copy.deepcopy(common_specs)
-        decoder_specs['use_attention'] = True
-        decoder_specs['self_recurrent'] = False
-        decoder_specs['attention_hidden'] = True
-        encoder_block = block_LSTM(**encoder_specs)
-        decoder_block = decoder_LSTM_block(**decoder_specs)
-
-        projection_model= tf.keras.layers.Dense(units=out_shape[-1],
-                                                            activation=tf.keras.layers.Softmax(axis=-1))
-        projection_model = tf.keras.layers.TimeDistributed(projection_model)
-        model_kwargs = {'encoder_block':encoder_block,
-                          "encoder_stateful":True,
-                          'decoder_block':decoder_block,
-                          'use_teacher':True,
-                          'decoder_uses_attention_on': decoder_specs['use_attention'],
-                          'decoder_stateful':True,
-                          'self_recurrent_decoder': decoder_specs['self_recurrent'],
-                          'projection_block': projection_model,
-                          'input_shape': input_shape,
-                          'output_shape': out_shape}
-        model = encoder_decoder_model(**model_kwargs)
-
-    from Losses_and_Metrics import loss_wrapper
-    model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
-                  loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='tile-to-forecast'),
-                  metrics=[loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nME', normalizer_value=normalizer_value),
-               loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nRMSE', normalizer_value=normalizer_value),
-               loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='CRPS'),
-               ]) #compile, print summary
-    model.summary()
-    return model
-
-def __train_model(model, batch_size, dataset):
-    relative_decrease = 0
-    decrease = 0
-    best_val_metric = np.inf
-    prev_val_metric = np.inf
-
-    metrics = {}
-    while decrease < 20:
-        train_history = model.fit(x=[dataset['train_inputs'], dataset['train_teacher'], dataset['train_blend']],
-                                  y=dataset['train_targets'],
-                                  batch_size=batch_size,
-                                  epochs=1,
-                                  shuffle=True,
-                                  verbose=False,
-                                  validation_data=([dataset['val_inputs'], dataset['val_teacher'], dataset['val_blend']],
-                                                   dataset['val_targets']))
-        print(train_history.history)
-        for key in train_history.history.keys():
-            if 'val' in str(key):
-                if key in metrics:
-                    metrics[key].append(train_history.history[key][0])
-                else:
-                    metrics[key] = [train_history.history[key][0]]
-            else:
-                if key in metrics:
-                    metrics[key].append(train_history.history[key][0])
-                else:
-                    metrics[key] = [train_history.history[key][0]]
-
-        if best_val_metric > metrics['val_nRMSE'][
-            -1]:  # if we see no increase in absolute performance, increase the death counter
-            decrease = 0  # reset the death counter
-            best_val_metric = metrics['val_nRMSE'][-1]
-            best_wts = model.get_weights()
-            print('saving a new model')
-        else:
-            decrease += 1
-
-        if prev_val_metric < metrics['val_nRMSE'][-1]:
-            relative_decrease += 1
-
-        if relative_decrease > 2:
-            # if we have no relative increase in quality towards the previous iteration
-            # then decrease the blend factor
-            dataset['train_blend'] = dataset['train_blend'] - 0.05
-            dataset['train_blend'] = tf.maximum(0.0, dataset['train_blend'])
-            print('lowering blend factor')
-            relative_decrease = 0
-
-        prev_val_metric = train_history.history['val_nRMSE'][0]
-
-    model.set_weights(best_wts)
-    test_results = model.evaluate(x=[dataset['test_inputs'], dataset['test_teacher'], dataset['test_blend']],
-                                  y=dataset['test_targets'],
-                                  batch_size=batch_size,
-                                  verbose=False)
-    metrics['test_loss'] = test_results[0]
-    metrics['test_nME'] = test_results[1]
-    metrics['test_nRMSE'] = test_results[2]
-    metrics['test_CRPS'] = test_results[3]
-
-    return metrics
 
 
 

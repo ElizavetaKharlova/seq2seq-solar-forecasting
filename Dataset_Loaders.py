@@ -23,7 +23,7 @@ def get_Daniels_data(target_data='Pv',
         print('Not Implemented YET, except funky behavior')
         # ToDo: make sure you can add the load data here!
 
-    steps_to_new_sample = 96
+    steps_to_new_sample = 4
     inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = datasets_from_data(raw_data,
                                                           sw_len_samples=input_len_samples,
                                                           fc_len_samples=fc_len_samples,

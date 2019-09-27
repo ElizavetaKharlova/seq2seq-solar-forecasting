@@ -1,5 +1,6 @@
 import tensorflow as tf
 #ToDo: WE gotta change shit to keyword arguments for sanity's skae... jesus fuck
+
 def encoder_decoder_model(encoder_block, decoder_block, projection_block,
                           input_shape, output_shape,
                           use_teacher=True,
@@ -23,7 +24,6 @@ def encoder_decoder_model(encoder_block, decoder_block, projection_block,
 
     # all the inputs we need to define
     encoder_inputs = tf.keras.layers.Input(shape=(in_tsteps, in_dims))
-    print('encoder input', encoder_inputs)
     # we need to define this outside, because at inference time we will provide the 0th innput of the decoder, as it is a value thats already known
     # at inference time, the teacher would be concat([1,out_dims], nan*[rest, out_dims])
     teacher_inputs = tf.keras.layers.Input(shape=(out_tsteps, out_dims))
@@ -40,7 +40,6 @@ def encoder_decoder_model(encoder_block, decoder_block, projection_block,
     else:
         encoder_outputs = encoder_inputs
         encoder_end_state = None
-    print('encoder outputs', encoder_outputs)
 
     # now lets do some decoding
     if not decoder_block:
@@ -172,6 +171,8 @@ def mimo_model(function_block, input_shape, output_shape, mode='project', downsa
         function_block_out = squeeze_features(function_block_out)
 
         mimo_output = function_block_out
+        return tf.keras.Model(inputs, mimo_output)
+
     elif mode=='snip':
         function_block_out_snip = function_block_out[:,-out_tsteps:,:]
 
@@ -183,14 +184,13 @@ def mimo_model(function_block, input_shape, output_shape, mode='project', downsa
                 squeeze_features = tf.keras.layers.Dense(out_dims)
             squeeze_features = tf.keras.layers.TimeDistributed(squeeze_features)
             mimo_output = squeeze_features(function_block_out_snip)
+            return tf.keras.Model(inputs, mimo_output)
         # else we just keep it at that
         else:
             mimo_output = function_block_out_snip
+            return tf.keras.Model(inputs, mimo_output)
     else:
         print('wrong mode, please select either project or snip')
 
-    print('model out', mimo_output)
-
-    return tf.keras.Model(inputs, mimo_output)
 
 

@@ -408,7 +408,7 @@ def __import_profile(pickle_path_name, time_start=None, time_end=None):
 
     return offline_profile
 
-def __slice_and_delete(inp, teacher, target, len_slice, seed, sample_spacing_in_mins, input_rate_in_1_per_min=5):
+def __slice_and_delete(inp, teacher, target, len_slice, seed, sample_spacing_in_mins, input_rate_in_1_per_min=5, previously_taken_start_indices=[], previously_taken_end_indices=[]):
     np.random.seed(seed)
     inp_sw_shape = inp.shape
     one_sw_in_samples = (inp_sw_shape[1]*input_rate_in_1_per_min)/sample_spacing_in_mins
@@ -426,53 +426,55 @@ def __slice_and_delete(inp, teacher, target, len_slice, seed, sample_spacing_in_
 
     index_start = []
     index_end = []
+    failed_tries = 0
     while leftover_samples > 0:
         one_week_in_samples = min(one_sw_in_samples, leftover_samples)
 
         index_start_slice = np.random.uniform(low=day_offset_in_samples, high=inp.shape[0] - 2*one_sw_in_samples, size=None)
         index_start_slice = int(np.floor(index_start_slice))
-        index_end_slice = index_start_slice + one_sw_in_samples
+        index_end_slice = index_start_slice + one_week_in_samples
 
         start_falls_within = False
         end_falls_within = False
-        for entry in range(len(index_start)):
-            start_falls_within = start_falls_within or ((index_start_slice >= index_start[entry]) & (index_start_slice <=index_end[entry]))
-            end_falls_within = end_falls_within or ((index_end_slice >= index_start[entry]) & (index_end_slice <=index_end[entry]))
+        for entry in range(len(previously_taken_start_indices)):
+            start_falls_within = start_falls_within or ((index_start_slice >= previously_taken_start_indices[entry]) & (index_start_slice <= previously_taken_end_indices[entry]))
+            end_falls_within = end_falls_within or ((index_end_slice >= previously_taken_start_indices[entry]) & (index_end_slice <= previously_taken_end_indices[entry]))
 
         if not start_falls_within and not end_falls_within:
             index_start.append(index_start_slice)
             index_end.append(index_end_slice)
+            previously_taken_start_indices.append(index_start_slice)
+            previously_taken_end_indices.append(index_end_slice)
             leftover_samples -= one_week_in_samples
+        else:
+            failed_tries += 1
+            if failed_tries > 1e6:
+                print('huh, this is a lot of failed tries... damn')
+                break
 
-    index_start.sort(reverse=True)
-    index_end.sort(reverse=True)
-
+    index_start_data = 0
     for entry in range(len(index_start)):
         index_start_slice = index_start[entry]
         index_end_slice = index_end[entry]
         num_samples = int(index_end_slice - index_start_slice)
 
-        inp_separated[entry:(entry + num_samples), :, :] = inp[index_start_slice:index_end_slice,:,:]
-        inp = np.delete(inp, np.s_[index_start_slice:index_end_slice], axis=0)
+        inp_separated[index_start_data:(index_start_data + num_samples) :, :] = inp[index_start_slice:index_end_slice,:,:]
 
-        teacher_separated[entry:(entry + num_samples), :, :] = teacher[index_start_slice:index_end_slice,:,:]
-        teacher = np.delete(teacher, np.s_[index_start_slice:index_end_slice], axis=0)
+        teacher_separated[index_start_data:(index_start_data + num_samples), :, :] = teacher[index_start_slice:index_end_slice,:,:]
 
-        persistency_forecast[entry:(entry + num_samples), :, :] = target[(index_start_slice - day_offset_in_samples):(
+        persistency_forecast[index_start_data:(index_start_data + num_samples), :, :] = target[(index_start_slice - day_offset_in_samples):(
                     index_end_slice - day_offset_in_samples), :, :]
-        target_separated[entry:(entry + num_samples), :, :] = target[index_start_slice:index_end_slice, :, :]
-        target = np.delete(target, np.s_[index_start_slice:index_end_slice], axis=0)
+        target_separated[index_start_data:(index_start_data + num_samples), :, :] = target[index_start_slice:index_end_slice, :, :]
 
+        index_start_data += num_samples
 
         if persistency_forecast.shape[0] != target_separated.shape[0]:
             print('WTF, seems theres a mismatch', persistency_forecast.shape, 'vs', target_separated.shape)
             print('slice persistency from',(index_start_slice-day_offset_in_samples), 'to',  (index_end_slice-day_offset_in_samples), '= ', ((index_end_slice-day_offset_in_samples)-(index_start_slice-day_offset_in_samples)))
             print('slice persistency from', (index_start_slice), 'to', (index_end_slice ), '= ', ((index_end_slice) - (index_start_slice)))
 
-
-
     sliced_dataset = [inp_separated, teacher_separated, teacher_blend_separated]
-    return sliced_dataset, target_separated, persistency_forecast, inp, teacher, target
+    return sliced_dataset, target_separated, persistency_forecast, inp, teacher, target, previously_taken_start_indices, previously_taken_end_indices
 
 def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins, normalizer_value, input_rate_in_1_per_min, split_seeds=[24,42]):
     if training_ratio > 1:
@@ -489,7 +491,7 @@ def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins
     tf.keras.backend.clear_session()
     print('Persistency baseline for whole Dataset', persistency_baseline)
     dataset = {}
-    [dataset['test_inputs'], dataset['test_teacher'], dataset['test_blend']], dataset['test_targets'], test_persistent_forecast,  inp, teacher, target = __slice_and_delete(inp,
+    [dataset['test_inputs'], dataset['test_teacher'], dataset['test_blend']], dataset['test_targets'], test_persistent_forecast,  inp, teacher, target, previously_taken_start_indices, previously_taken_end_indices = __slice_and_delete(inp,
                                                                                                                                                                             teacher,
                                                                                                                                                                             target,
                                                                                                                                                                             test_len,
@@ -502,13 +504,13 @@ def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins
                                                                            normalizer_value=normalizer_value)
     tf.keras.backend.clear_session()
     print('test baseline values:', dataset['test_persistency_baseline'])
-    [dataset['val_inputs'], dataset['val_teacher'], dataset['val_blend']], dataset['val_targets'], val_persistent_forecast, inp, teacher, target = __slice_and_delete(inp,
+    [dataset['val_inputs'], dataset['val_teacher'], dataset['val_blend']], dataset['val_targets'], val_persistent_forecast, inp, teacher, target, previously_taken_start_indices, previously_taken_end_indices = __slice_and_delete(inp,
                                                                                                                                                                       teacher,
                                                                                                                                                                       target,
                                                                                                                                                                       val_len,
                                                                                                                                                                       seed=split_seeds[1],
                                                                                                                                                                       sample_spacing_in_mins=sample_spacing_in_mins,
-                                                                                                                                                                      input_rate_in_1_per_min=input_rate_in_1_per_min)
+                                                                                                                                                                      input_rate_in_1_per_min=input_rate_in_1_per_min, previously_taken_start_indices=previously_taken_start_indices, previously_taken_end_indices=previously_taken_end_indices)
     dataset['val_persistency_baseline'] = __calculatate_skillscore_baseline(dataset['val_targets'],
                                                                             persistent_forecast=val_persistent_forecast,
                                                                            sample_spacing_in_mins=sample_spacing_in_mins,
@@ -516,6 +518,15 @@ def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins
     tf.keras.backend.clear_session()
 
     print('val baseline values:', dataset['val_persistency_baseline'])
+    previously_taken_start_indices.sort(reverse=True)
+    previously_taken_end_indices.sort(reverse=True)
+    for entry in range(len(previously_taken_start_indices)):
+        index_start_slice = previously_taken_start_indices[entry]
+        index_end_slice = previously_taken_end_indices[entry]
+        target = np.delete(target, np.s_[index_start_slice:index_end_slice], axis=0)
+        teacher = np.delete(teacher, np.s_[index_start_slice:index_end_slice], axis=0)
+        inp = np.delete(inp, np.s_[index_start_slice:index_end_slice], axis=0)
+
     blend_train = [1] * inp.shape[0]
     dataset['train_inputs'] = np.asarray(inp)
     dataset['train_teacher'] = np.asarray(teacher)
@@ -535,7 +546,7 @@ def __augment_Daniels_dataset(dataset):
             pv_sample = sample_inputs[:, 0:5]
             rest_sample = sample_inputs[:, (pv_sample.shape[-1]):]
             pv_sample = np.mean(pv_sample, axis=-1)
-            new_values[sample,:,0] = pv_sample.numpy()
+            new_values[sample,:,0] = pv_sample
             new_values[sample,:,1:] = rest_sample
 
         dataset['val_inputs'] = np.asarray(new_values)
@@ -549,25 +560,19 @@ def __augment_Daniels_dataset(dataset):
             pv_sample = sample_inputs[:, 0:5]
             rest_sample = sample_inputs[:, (pv_sample.shape[-1]):]
             pv_sample = np.mean(pv_sample, axis=-1)
-            new_values[sample,:,0] = pv_sample.numpy()
+            new_values[sample,:,0] = pv_sample
             new_values[sample,:,1:] = rest_sample
 
         dataset['test_inputs'] = np.asarray(new_values)
 
     if 'train_inputs' in dataset:
         print('adjusting train_inputs', dataset['train_inputs'].shape)
-
-        original_teacher = dataset['train_teacher']
-        original_blend = dataset['train_blend']
-        original_targets = dataset['train_targets']
         original_inputs_shape = dataset['train_inputs'].shape
 
         new_values = np.zeros(shape=[original_inputs_shape[0]*5, original_inputs_shape[1], original_inputs_shape[-1] - 5 + 1])
-        new_teacher = np.zeros(shape=[original_teacher.shape[0]*5, original_teacher.shape[1], original_teacher.shape[2]])
-        new_blend = np.zeros(
-            shape=[original_blend.shape[0] * 5])
-        new_targets = np.zeros(
-            shape=[original_targets.shape[0] * 5, original_targets.shape[1], original_targets.shape[2]])
+        new_teacher = np.zeros(shape=[dataset['train_teacher'].shape[0]*5, dataset['train_teacher'].shape[1], dataset['train_teacher'].shape[2]])
+        new_blend = np.zeros(shape=[dataset['train_blend'].shape[0] * 5])
+        new_targets = np.zeros(shape=[dataset['train_targets'].shape[0] * 5, dataset['train_targets'].shape[1], dataset['train_targets'].shape[2]])
 
         sample_inputs = dataset['train_inputs']
         pv = sample_inputs[:,:, 0:5]
@@ -590,19 +595,19 @@ def __augment_Daniels_dataset(dataset):
 
                     new_values[num_original_samples*pv_set + sample,:,0] = pv_sample[sample,:]
                     new_values[num_original_samples*pv_set + sample,:,1:] = augmented_features[sample,:,:]
-                    new_teacher[num_original_samples*pv_set + sample,:,:] = original_teacher[sample,:,:]
-                    new_blend[num_original_samples * pv_set + sample] = original_blend[sample]
-                    new_targets[num_original_samples * pv_set + sample, :, :] = original_targets[sample, :, :]
+                    new_teacher[num_original_samples*pv_set + sample,:,:] = dataset['train_teacher'][sample,:,:]
+                    new_blend[num_original_samples * pv_set + sample] = dataset['train_blend'][sample]
+                    new_targets[num_original_samples * pv_set + sample, :, :] = dataset['train_targets'][sample, :, :]
 
-        dataset['train_inputs'] = np.asarray(new_values)
-        dataset['train_teacher'] = np.asarray(new_teacher)
-        dataset['train_blend'] = np.asarray(new_blend)
-        dataset['train_targets'] = np.asarray(new_targets)
+        dataset['train_inputs'] = new_values
+        dataset['train_teacher'] = new_teacher
+        dataset['train_blend'] = new_blend
+        dataset['train_targets'] = new_targets
         print('train_inputs are now: ', dataset['train_inputs'].shape)
 
     return dataset
 
-def __create_and_save_3_fold_CrossValidation():
+def __create_and_save_1_fold_CrossValidation(name='Daniels_dataset_2', seeds=[43, 42]):
     inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Daniels_data()
     normalizer_value = np.amax(ev_targets) - np.amin(ev_targets)
     dataset_splitter_kwargs = {'inp':inp,
@@ -613,27 +618,11 @@ def __create_and_save_3_fold_CrossValidation():
                               'normalizer_value':normalizer_value,
                               'input_rate_in_1_per_min':5}
 
-    dataset_splitter_kwargs['split_seeds'] = [42, 23]
+    dataset_splitter_kwargs['split_seeds'] = seeds
     dataset = __split_dataset(**dataset_splitter_kwargs)
     dataset = __augment_Daniels_dataset(dataset)
     dataset['normalizer_value'] = normalizer_value
-    with open('Daniels_dataset_1.pickle', 'wb') as handle:
-        pickle.dump(dataset, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    del dataset
-
-    dataset_splitter_kwargs['split_seeds'] = [23, 42]
-    dataset = __split_dataset(**dataset_splitter_kwargs)
-    dataset = __augment_Daniels_dataset(dataset)
-    dataset['normalizer_value'] = normalizer_value
-    with open('Daniels_dataset_2.pickle', 'wb') as handle:
-        pickle.dump(dataset, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    del dataset
-
-    dataset_splitter_kwargs['split_seeds'] = [69, 96]
-    dataset = __split_dataset(**dataset_splitter_kwargs)
-    dataset = __augment_Daniels_dataset(dataset)
-    dataset['normalizer_value'] = normalizer_value
-    with open('Daniels_dataset_3.pickle', 'wb') as handle:
+    with open(name + '.pickle', 'wb') as handle:
         pickle.dump(dataset, handle, protocol=pickle.HIGHEST_PROTOCOL)
     del dataset
 

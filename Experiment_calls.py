@@ -35,6 +35,36 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
     with open(experiment_name+'.pickle', 'wb') as handle:
         pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
+def train_on_Lizas_data():
+
+    data_files = ['Lizas_dataset_2.pickle',
+                  # 'Daniels_dataset_2.pickle',
+                  #'Daniels_dataset_3.pickle',
+                  ]
+    experiment_name = 'small-MiMo-attn-tcn'
+    metrics = {}
+    for set in data_files:
+        metrics[set] = []
+        for run in range(2):
+            model_kwargs = {'model_type': 'MiMo-attn-tcn',
+                            'model_size':'small'}
+            train_kwargs = {'batch_size':512}
+
+            experiment = Model_Container(dataset=pickle.load(open(set, 'rb')),
+                                      model_kwargs=model_kwargs,
+                                      train_kwargs=train_kwargs)
+            results = experiment.get_results()
+            del experiment
+            tf.keras.backend.clear_session()
+
+            metrics[set].append(results)
+
+    experiment_name = 'medium-MiMo-attn-tcn'
+
+    __plot_training_curves(metrics, experiment_name=experiment_name)
+    with open(experiment_name+'.pickle', 'wb') as handle:
+        pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
 
 def __plot_training_curves(metrics, experiment_name):
 

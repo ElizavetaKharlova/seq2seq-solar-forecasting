@@ -47,7 +47,7 @@ def get_Lizas_data():
     specs = NetworkData['specs']
     print('Specs:', specs)
     sample_rate_raw_data_mins = 15.0
-    steps_to_new_sample = 12
+    steps_to_new_sample = 2
     inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = datasets_from_data(data=mvts_array,
                                       sw_len_samples=specs['sw_steps'],
                                       fc_len_samples=specs['num_steps'],
@@ -628,4 +628,23 @@ def __create_and_save_1_fold_CrossValidation(name='Daniels_dataset_2', seeds=[43
 
     del inp, pdf_teacher, pdf_targets, ev_teacher, ev_targets
 
+def __create_and_save_1_fold_CrossValidation_Liza(name='Lizas_dataset_2', seeds=[43, 42]):
+    inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Lizas_data()
+    normalizer_value = np.amax(ev_targets) - np.amin(ev_targets)
+    dataset_splitter_kwargs = {'inp':inp,
+                              'target':pdf_targets,
+                              'teacher':pdf_teacher,
+                              'training_ratio':0.6,
+                              'sample_spacing_in_mins':sample_spacing_in_mins,
+                              'normalizer_value':normalizer_value,
+                              'input_rate_in_1_per_min':15}
 
+    dataset_splitter_kwargs['split_seeds'] = seeds
+    dataset = __split_dataset(**dataset_splitter_kwargs)
+    # dataset = __augment_Daniels_dataset(dataset)
+    dataset['normalizer_value'] = normalizer_value
+    with open(name + '.pickle', 'wb') as handle:
+        pickle.dump(dataset, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    del dataset
+
+    del inp, pdf_teacher, pdf_targets, ev_teacher, ev_targets

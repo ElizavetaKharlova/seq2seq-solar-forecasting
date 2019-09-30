@@ -644,6 +644,7 @@ class attentive_TCN(tf.keras.layers.Layer):
             else:
                 # dense tcn block concatenates the outputs automatically
                 out = self.encoder[block](out)
+                encoder_inputs = out
         return out
 
 

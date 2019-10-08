@@ -197,10 +197,10 @@ class Model_Container():
         elif model_type == 'MiMo-attn-tcn':
             print('building a', model_size, model_type)
             from Building_Blocks import attentive_TCN
-            encoder_specs = {'units': [[21],[6, 6, 6], [42], [8, 8, 8, 8]],
+            encoder_specs = {'units': [[32],[32],[32],[32],[32]],
                              'use_dropout': use_dropout,
                              'dropout_rate': dropout_rate,
-                             'use_norm': use_norm}
+                             'use_norm': True}
 
             from Models import mimo_model
             self.model = mimo_model(function_block=attentive_TCN(**encoder_specs),
@@ -209,7 +209,8 @@ class Model_Container():
                                downsample_input=False,
                                downsampling_rate=(60 / 5),
                                mode='project')
-        elif model_type == 'Encoder-Decoder-TCN' or model_type == 'E-D-TCN':
+
+        elif model_type == 'Encoder-TCN' or model_type == 'E-TCN':
             common_specs = {'units': units,
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
@@ -220,7 +221,7 @@ class Model_Container():
 
             # encoder_specs = copy.deepcopy(common_specs)
             decoder_specs = copy.deepcopy(common_specs)
-            encoder_specs = {'units': [[64],[64],[64]],
+            encoder_specs = {'units': [[32],[32],[32]],
                              'use_dropout': use_dropout,
                              'dropout_rate': dropout_rate,
                              'use_norm': use_norm}
@@ -247,13 +248,45 @@ class Model_Container():
             from Models import encoder_decoder_model
             self.model = encoder_decoder_model(**model_kwargs)
 
+        elif model_type == 'Encoder-Decoder-TCN' or model_type == 'E-D-TCN':
+            common_specs = {'units': [[32],[32],[32]],
+                            'use_dropout': use_dropout,
+                            'dropout_rate': dropout_rate,
+                            'use_norm': True}
+
+            encoder_specs = copy.deepcopy(common_specs)
+            decoder_specs = copy.deepcopy(common_specs)
+                             
+            decoder_specs['use_attention'] = True
+            decoder_specs['self_recurrent'] = self_recurrent
+            decoder_specs['mode'] = 'decoder'
+
+            projection_model = tf.keras.layers.Dense(units=out_shape[-1],
+                                                     activation=tf.keras.layers.Softmax(axis=-1))
+            projection_model = tf.keras.layers.TimeDistributed(projection_model)
+
+            from Building_Blocks import attentive_TCN
+            model_kwargs = {'encoder_block': attentive_TCN(**encoder_specs),
+                            "encoder_stateful": False,
+                            'decoder_block': attentive_TCN(**decoder_specs),
+                            'use_teacher': True,
+                            'decoder_uses_attention_on': decoder_specs['use_attention'],
+                            'decoder_stateful': False,
+                            'self_recurrent_decoder': decoder_specs['self_recurrent'],
+                            'projection_block': projection_model,
+                            'input_shape': input_shape,
+                            'output_shape': out_shape}
+
+            from Models import encoder_decoder_model
+            self.model = encoder_decoder_model(**model_kwargs)
+
         elif model_type == 'Encoder-Decoder' or model_type == 'E-D':
             print('building E-D')
             common_specs = {'units': units,
                             'use_dropout': use_dropout,
-                            'dropout_rate': dropout_rate,
+                            'dropout_rate': 0.15,
                             'use_norm': use_norm,
-                            'use_hw': use_hw,
+                            'use_hw': True,
                             'use_quasi_dense': use_quasi_dense,
                             'only_last_layer_output': True}
 

@@ -8,3 +8,23 @@ __pycache__/
 \.ipynb_checkpoints/
 
 \.idea/
+
+best_weight_set.h5
+
+Daniels_dataset_1.pickle
+
+Daniels_dataset_2.pickle
+
+Daniels_dataset_3.pickle
+
+Experiment_results/big_E-D.pickle
+
+Experiment_results/bigMiMo-LSTM.pickle
+
+Experiment_results/medMiMo-LSTM.pickle
+
+Experiment_results/smallMiMo-LSTM.pickle
+
+med_E-D.pickle
+
+med_MiMo-attn-tcn.pickle

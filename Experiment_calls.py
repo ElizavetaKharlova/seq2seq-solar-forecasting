@@ -5,7 +5,7 @@ from Train_Eval import Model_Container
 import tensorflow as tf
 
 def train_LSTM_baseline_3fold_on_Daniel_data():
-
+    # ToDo: do the dataset one folder up
     datasets = ['Daniels_dataset_1', 'Daniels_dataset_2', 'Daniels_dataset_3', ]
     metrics = {}
     for set in datasets:

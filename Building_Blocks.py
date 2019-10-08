@@ -520,10 +520,26 @@ class DenseTCN(tf.keras.layers.Layer):
     # build a stack for one layer of the network
     def build_layer(self, num_layer, kernel_size):
         layer = []
-        layer.append(self.cnn_layer(self.bottleneck_features, kernel_size=1, dilation_rate=1))
-        layer.append(self.cnn_layer(self.growth_rate, kernel_size, dilation_rate=2**num_layer))
+        #Bottleneck features
         if self.use_norm:
-            self.norm.append(tf.keras.layers.BatchNormalization())
+            layer.append(tf.keras.layers.BatchNormalization(axis=-1, center=True))
+        else:
+            layer.append([])
+        layer.append(self.cnn_layer(self.bottleneck_features, kernel_size=1, dilation_rate=1))
+        if self.use_dropout:
+            layer.append(tf.keras.layers.Dropout(rate=self.dropout_rate, noise_shape=(1,self.bottleneck_features)))
+        else:
+            layer.append([])
+        # Growth feature layer
+        if self.use_norm:
+            layer.append(tf.keras.layers.BatchNormalization(axis=-1, center=True))
+        else:
+            layer.append([])
+        layer.append(self.cnn_layer(self.growth_rate, kernel_size, dilation_rate=2**num_layer))
+        if self.use_dropout:
+            layer.append(tf.keras.layers.Dropout(rate=self.dropout_rate, noise_shape=(1,self.growth_rate)))
+        else:
+            layer.append([])
         return layer
 
     # stack the network layers within a stream 
@@ -556,16 +572,24 @@ class DenseTCN(tf.keras.layers.Layer):
     # run one basic dense network layer
     # return output concatednated with input
     def run_layer(self, block, num_layer, num_stream, inputs):
-        out = inputs
-        out = self.blocks[block][num_stream][num_layer][0](out)
-        out = self.blocks[block][num_stream][num_layer][1](out)
-        if self.use_norm:
-            out = self.norm[num_layer]
-        if self.use_dropout:
-            out = tf.nn.dropout(out,rate=self.dropout_rate)
-        #TODO: not sure which activation to use
-        out = tf.keras.activations.relu(out)
-        return tf.concat([out, inputs], 2)
+       out = inputs
+       # self.blocks[block][num_stream][num_layer] = [Bottleneck_norm, Bottleneck_features, bottleneck_dropout,
+       #                                              growth_norm, growth_layer, growth_dropout]
+       # Bottleneck section
+       if self.use_norm:
+           out = self.blocks[block][num_stream][num_layer][0](out)
+       out = tf.keras.activations.relu(out)
+       out = self.blocks[block][num_stream][num_layer][1](out)
+       if self.use_dropout:
+            out = self.blocks[block][num_stream][num_layer][2](out, training=tf.keras.backend.learning_phase())
+       # growth section
+       if self.use_norm:
+           out = self.blocks[block][num_stream][num_layer][3](out)
+       out = tf.keras.activations.relu(out)
+       out = self.blocks[block][num_stream][num_layer][4](out)
+       if self.use_dropout:
+           out = self.blocks[block][num_stream][num_layer][5](out, training=tf.keras.backend.learning_phase())
+       return tf.concat([out, inputs], axis=-1)
     
     # run output through one stream
     def run_stream(self, block, num_stream, inputs):
@@ -609,42 +633,57 @@ class attentive_TCN(tf.keras.layers.Layer):
     the first block is always self-attention in order to get the most information from the input
     outputs after each block (dense tcn and self-attention) are concatenated
     '''
-    def __init__(self, units, use_dropout=False, dropout_rate=0.15, use_norm=False):
+    def __init__(self, units, use_dropout=False, dropout_rate=0.15, use_norm=False, mode='encoder', use_attention=True, self_recurrent=False):
+        # self_recurrent is a quick fix, change to exclude later
         super(attentive_TCN, self).__init__()
 
         self.units = units
-        self.encoder = []
+        self.mode = mode
+        self.use_attention = use_attention
+        self.use_norm = use_norm
+        self.block_stack = []
+        self.norm_stack = []
         for block in range(len(self.units)):
             # first block is always attention
-            if block%2 == 0:
+            if block%2 == 1:
                 # can accommodate several self-attention layers
-                encoder_block = []
+                attn_block = []
+                norm_block = []
                 for layer in range(len(self.units[block])):
-                    encoder_block.append(Attention(self.units[block][layer], mode='Transformer'))
-                self.encoder.append(encoder_block)
+                    attn_block.append(Attention(self.units[block][layer], mode='Transformer'))
+                    norm_block.append(tf.keras.layers.LayerNormalization())
+                self.block_stack.append(attn_block)
+                self.norm_stack.append(norm_block)
             else:
-                self.encoder.append(DenseTCN(num_blocks=1, 
+                self.block_stack.append(DenseTCN(num_blocks=1, 
                                             num_layers_per_block=len(self.units[block]), 
-                                            growth_rate=12, 
+                                            growth_rate=12,
                                             squeeze_factor=0.5, 
                                             use_dropout = use_dropout,
                                             dropout_rate=dropout_rate,
                                             use_norm=use_norm,
                                             kernel_sizes=[3]))
+                self.norm_stack.append([])
+        if self.mode == 'decoder' and self.use_attention:
+            self.attention_layer = Attention(self.units[-1][-1], mode='Transformer')
 
 
-    def call(self, encoder_inputs):
-        for block in range(len(self.encoder)):
+    def call(self, inputs, decoder_init_state=None, attention_query=None, attention_value=None):
+        if self.mode=='decoder' and self.use_attention:
+            context_vector = self.attention_layer(attention_query, value=attention_value)
+            inputs = tf.concat([inputs,context_vector], axis=-1)
+        for block in range(len(self.block_stack)):
             # for the first and later attention layers, concatenate the outputs
-            if block%2 == 0:
-                for layer in range(len(self.encoder[block])):
-                    out = self.encoder[block][layer](encoder_inputs)
-                    out = tf.concat([out,encoder_inputs],-1)
-                    encoder_inputs = out
+            if block%2 == 1:
+                for layer in range(len(self.block_stack[block])):
+                    out = self.block_stack[block][layer](inputs)
+                    out = self.norm_stack[block][layer](out)
+                    out = tf.concat([out,inputs],-1)
+                    inputs = out
             else:
                 # dense tcn block concatenates the outputs automatically
-                out = self.encoder[block](out)
-                encoder_inputs = out
+                out = self.block_stack[block](inputs)
+                inputs = out
         return out
 
 

@@ -3,6 +3,12 @@ venv/
 
 _data/
 
+Daniels_dataset_1/
+
+Daniels_dataset_2/
+
+Daniels_dataset_3/
+
 __pycache__/
 
 \.ipynb_checkpoints/

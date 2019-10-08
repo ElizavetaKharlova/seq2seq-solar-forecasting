@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import tensorflow as tf
 import pickle
+import shutil
 
 def get_Daniels_data(target_data='Pv',
                      input_len_samples=int(3 * 24 * (60 / 5)),
@@ -19,11 +20,11 @@ def get_Daniels_data(target_data='Pv',
     if target_data == 'PV' or target_data == 'pv' or target_data == 'Pv':
         target_dims = [0, 1, 2, 3, 4]
     elif target_data == 'Load' or target_data == 'load' or target_data == 'LOAD':
-        target_dims = None
-        print('Not Implemented YET, except funky behavior')
+        target_dims = [0, 1, 2, 3, 4]
+        print('Not Implemented, and tested YET, except funky behavior')
         # ToDo: make sure you can add the load data here!
 
-    steps_to_new_sample = 3
+    steps_to_new_sample = 1
     inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher = datasets_from_data(raw_data,
                                                           sw_len_samples=input_len_samples,
                                                           fc_len_samples=fc_len_samples,
@@ -106,11 +107,11 @@ def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles,
     fc_tiles = int(fc_tiles)
     num_samples = int((data.shape[0] - fc_len_samples - sw_len_samples)/steps_to_new_sample)
 
-    pdf_targets = np.zeros([num_samples, fc_steps,fc_tiles])    # pdf forecast
-    pdf_supports = np.zeros([num_samples, fc_steps,fc_tiles])
-    ev_targets = np.zeros([num_samples, fc_steps,1])     # expected value forecast
-    ev_supports = np.zeros([num_samples, fc_steps,1])
-    sw_inputs = np.zeros([num_samples, sw_len_samples, data.shape[-1]])      # inputs
+    pdf_targets = np.zeros([num_samples, fc_steps,fc_tiles], dtype=np.float32)    # pdf forecast
+    pdf_supports = np.zeros([num_samples, fc_steps,fc_tiles], dtype=np.float32)
+    ev_targets = np.zeros([num_samples, fc_steps,1], dtype=np.float32)     # expected value forecast
+    ev_supports = np.zeros([num_samples, fc_steps,1], dtype=np.float32)
+    sw_inputs = np.zeros([num_samples, sw_len_samples, data.shape[-1]], dtype=np.float32)      # inputs
 
     for sample in range(num_samples):
         timestep = sample*steps_to_new_sample
@@ -176,7 +177,7 @@ def __convert_to_pdf(target, num_tiles, num_steps, min_max):  # takes the target
     # num_tiles is the granulatiry of the pdf
     # num_steps is the target dowsample rate
 
-    pdf_target = np.zeros([num_steps, num_tiles])
+    pdf_target = np.zeros([num_steps, num_tiles], dtype=np.float32)
     min_max[1] = min_max[1] + min_max[0]  # rescale the maximum with regards to the minimum
     samples_in_step = int(target.shape[0] / num_steps)  # see how many steps we need to bunch into one pdf-step
     target = target / min_max[1]  # rescale
@@ -301,7 +302,7 @@ def _get_weather_data(weather_data_folder):
     wind = weather_mvts[:,-1]
     weather_mvts = np.delete(weather_mvts, -1, axis=-1)
     wind_in_radians = wind * np.pi / 180
-    wind_in_radians = np.array(wind_in_radians, dtype=np.float)
+    wind_in_radians = np.array(wind_in_radians, dtype=np.float32)
     wind_in_cos = np.expand_dims(np.cos(wind_in_radians), axis=-1)
     wind_in_sin = np.expand_dims(np.sin(wind_in_radians), axis=-1)
     weather_mvts = np.concatenate((weather_mvts, wind_in_cos, wind_in_sin), axis=-1)
@@ -418,11 +419,11 @@ def __slice_and_delete(inp, teacher, target, len_slice, seed, sample_spacing_in_
 
     day_offset_in_samples = int((24*60)/sample_spacing_in_mins)
 
-    inp_separated = np.zeros([leftover_samples, inp.shape[1], inp.shape[2]])
-    teacher_separated = np.zeros([leftover_samples, teacher.shape[1], teacher.shape[2]])
-    teacher_blend_separated = np.zeros([leftover_samples])
-    target_separated = np.zeros([leftover_samples, target.shape[1], target.shape[2]])
-    persistency_forecast = np.zeros([leftover_samples, target.shape[1], target.shape[2]])
+    inp_separated = np.zeros([leftover_samples, inp.shape[1], inp.shape[2]], dtype=np.float32)
+    teacher_separated = np.zeros([leftover_samples, teacher.shape[1], teacher.shape[2]], dtype=np.float32)
+    teacher_blend_separated = np.zeros([leftover_samples], dtype=np.float32)
+    target_separated = np.zeros([leftover_samples, target.shape[1], target.shape[2]], dtype=np.float32)
+    persistency_forecast = np.zeros([leftover_samples, target.shape[1], target.shape[2]], dtype=np.float32)
 
     index_start = []
     index_end = []
@@ -528,86 +529,166 @@ def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins
         inp = np.delete(inp, np.s_[index_start_slice:index_end_slice], axis=0)
 
     blend_train = [1] * inp.shape[0]
-    dataset['train_inputs'] = np.asarray(inp)
-    dataset['train_teacher'] = np.asarray(teacher)
-    dataset['train_blend'] = np.asarray(blend_train)
-    dataset['train_targets'] = np.asarray(target)
+    dataset['train_inputs'] = np.asarray(inp, dtype=np.float32)
+    dataset['train_teacher'] = np.asarray(teacher, dtype=np.float32)
+    dataset['train_blend'] = np.asarray(blend_train, dtype=np.float32)
+    dataset['train_targets'] = np.asarray(target, dtype=np.float32)
 
     print('Dataset has', dataset['train_targets'].shape[0], 'training samples', dataset['val_targets'].shape[0], 'val samples', dataset['test_targets'].shape[0], 'test samples')
     return dataset
 
-def __augment_Daniels_dataset(dataset):
+def __save_and_augment_Daniels_dataset(dataset, dataset_name, augment_data=True):
+
+    # prepare some os stuff, we gotta save the current work directory, create the dataset directory and delete the dataset directory from before if it exists!
+
+    current_wd = os.getcwd()
+    if os.path.isdir(dataset_name):
+        print('deleting previous dataset')
+        shutil.rmtree(dataset_name, ignore_errors=True)
+    os.mkdir(dataset_name)
+    dataset_folder_path = current_wd + '/' + dataset_name
+    os.chdir(dataset_folder_path)
+
+    original_inputs_shape = dataset['train_inputs'].shape # get the original inputs shape, so we can infer what shape the augmented inputs will have
+
+    # do for val_set if in dataset
     if 'val_inputs' in dataset:
+        print('saving val inputs')
+        os.mkdir('validation') # create a folder, move to the folder
+        os.chdir((dataset_folder_path + '/validation'))
+        for sample in range(len(dataset['val_inputs'])): # for every sample in the dataset, write one tfrecord
+            with tf.io.TFRecordWriter(str(sample) + '.tfrecord') as writer:
 
-        corrected_shape = dataset['val_inputs'].shape
-        new_values = np.zeros(shape=[corrected_shape[0], corrected_shape[1], corrected_shape[-1] - 5 + 1])
-        for sample in range(len(dataset['val_inputs'])):
-            sample_inputs = dataset['val_inputs'][sample]
-            pv_sample = sample_inputs[:, 0:5]
-            rest_sample = sample_inputs[:, (pv_sample.shape[-1]):]
-            pv_sample = np.mean(pv_sample, axis=-1)
-            new_values[sample,:,0] = pv_sample
-            new_values[sample,:,1:] = rest_sample
+                if augment_data: # do some daniel specific stuff, adjust to the format of augmented inputs
+                    sample_input = np.zeros(shape=[original_inputs_shape[1], original_inputs_shape[-1] - 5 + 1],
+                                            dtype=np.float32)
+                    original_data = dataset['val_inputs'][sample]
+                    pv_sample = original_data[:, 0:5]
+                    sample_input[:, 0] = np.mean(pv_sample, axis=-1)
+                    sample_input[:, 1:] = original_data[:, (pv_sample.shape[-1]):]
+                else:
+                    sample_input = dataset['val_inputs'][sample]  # get sample
 
-        dataset['val_inputs'] = np.asarray(new_values)
+                # get a tf.example, and write the example to the tf.records path
+                example = __example_from_features(sample_input, dataset['val_teacher'][sample, :, :], dataset['val_targets'][sample, :, :])
+                writer.write(example)
 
+        # we're done with val set, so jump back to the dataset folder
+        os.chdir(dataset_folder_path)
+        del dataset['val_inputs']
+        del dataset['val_targets']
+        del dataset['val_teacher']
+        print('val saved')
+    # literally a clone of the val stuff
     if 'test_inputs' in dataset:
-        print('adjusting test set')
-        corrected_shape = dataset['test_inputs'].shape
-        new_values = np.zeros(shape=[corrected_shape[0], corrected_shape[1], corrected_shape[-1] - 5 + 1])
+        print('saving test inputs')
+        os.mkdir('test')
+        os.chdir((dataset_folder_path + '/test'))
         for sample in range(len(dataset['test_inputs'])):
-            sample_inputs = dataset['test_inputs'][sample]
-            pv_sample = sample_inputs[:, 0:5]
-            rest_sample = sample_inputs[:, (pv_sample.shape[-1]):]
-            pv_sample = np.mean(pv_sample, axis=-1)
-            new_values[sample,:,0] = pv_sample
-            new_values[sample,:,1:] = rest_sample
+            with tf.io.TFRecordWriter(str(sample) + '.tfrecord') as writer:
 
-        dataset['test_inputs'] = np.asarray(new_values)
+                if augment_data: # do some daniel specific stuff, adjust to the format of augmented inputs
+                    sample_input = np.zeros(shape=[original_inputs_shape[1], original_inputs_shape[-1] - 5 + 1],
+                                            dtype=np.float32)
+                    original_data = dataset['test_inputs'][sample]
+                    pv_sample = original_data[:, 0:5]
+                    sample_input[:, 0] = np.mean(pv_sample, axis=-1)
+                    sample_input[:, 1:] = original_data[:, (pv_sample.shape[-1]):]
+                else:
+                    sample_input = dataset['test_inputs'][sample]  # get sample
 
+                example = __example_from_features(sample_input, dataset['test_teacher'][sample, :, :], dataset['test_targets'][sample, :, :])
+                writer.write(example)
+        os.chdir(dataset_folder_path)
+        del dataset['test_inputs']
+        del dataset['test_targets']
+        del dataset['test_teacher']
+        print('test saved')
+    # for the training set, we augment with noisy interpolation
     if 'train_inputs' in dataset:
-        print('adjusting train_inputs', dataset['train_inputs'].shape)
+        print('saving training inputs')
         original_inputs_shape = dataset['train_inputs'].shape
 
-        new_values = np.zeros(shape=[original_inputs_shape[0]*5, original_inputs_shape[1], original_inputs_shape[-1] - 5 + 1])
-        new_teacher = np.zeros(shape=[dataset['train_teacher'].shape[0]*5, dataset['train_teacher'].shape[1], dataset['train_teacher'].shape[2]])
-        new_blend = np.zeros(shape=[dataset['train_blend'].shape[0] * 5])
-        new_targets = np.zeros(shape=[dataset['train_targets'].shape[0] * 5, dataset['train_targets'].shape[1], dataset['train_targets'].shape[2]])
+        os.mkdir('train')
+        os.chdir((dataset_folder_path + '/train'))
 
-        sample_inputs = dataset['train_inputs']
-        pv = sample_inputs[:,:, 0:5]
-        rest = sample_inputs[:,:, pv.shape[-1]:]
-        num_sets = pv.shape[-1]
-        num_original_samples = original_inputs_shape[0]
-        for pv_set in range(num_sets):
-            pv_sample = pv[:,:,pv_set]
-            augmented_features = rest
-            feature_deltas = np.subtract(augmented_features[:,1:,:], augmented_features[:,:-1,:])
+        if augment_data:
+            pv = dataset['train_inputs'][:,:, 0:5]
+            num_sets = pv.shape[-1]
+            num_original_samples = original_inputs_shape[0]
+            num_total_augmented_samples = num_sets*num_original_samples
+            original_features = dataset['train_inputs'][:, :, pv.shape[-1]:]
+            feature_deltas = np.subtract(original_features[:, 1:, :], original_features[:, :-1, :])
 
-            for sample in range(num_original_samples):
-                offset_bias = np.random.randint(low=1, high=num_sets)
-                for feature in range(augmented_features.shape[-1]):
-                    offsets = feature_deltas[sample, :, feature]
-                    offset_noise = np.random.uniform(low=0.0, high=1.0, size=offsets.shape)
-                    offset_noise = np.multiply(offsets/(num_sets+1), offset_noise)
-                    offsets = np.add(offsets*offset_bias/(num_sets+1), offset_noise)
-                    augmented_features[sample,:-1,feature] = np.add(augmented_features[sample,:-1,feature], offsets)
+            sample = 0
+            for pv_set in range(num_sets):
+                pv_sample = pv[:,:,pv_set]
 
-                    new_values[num_original_samples*pv_set + sample,:,0] = pv_sample[sample,:]
-                    new_values[num_original_samples*pv_set + sample,:,1:] = augmented_features[sample,:,:]
-                    new_teacher[num_original_samples*pv_set + sample,:,:] = dataset['train_teacher'][sample,:,:]
-                    new_blend[num_original_samples * pv_set + sample] = dataset['train_blend'][sample]
-                    new_targets[num_original_samples * pv_set + sample, :, :] = dataset['train_targets'][sample, :, :]
 
-        dataset['train_inputs'] = new_values
-        dataset['train_teacher'] = new_teacher
-        dataset['train_blend'] = new_blend
-        dataset['train_targets'] = new_targets
-        print('train_inputs are now: ', dataset['train_inputs'].shape)
+                for original_sample in range(num_original_samples):
+                    offset_bias = pv_set
+                    augmented_features = np.zeros(shape=[original_inputs_shape[1], original_features.shape[2]],
+                                            dtype=np.float32)
+                    # for each feature, perform noisy interpolation
+                    for feature in range(original_features.shape[-1]):
+                        offsets = feature_deltas[original_sample, :, feature]
+                        offset_noise = np.random.uniform(low=0.0, high=1.0, size=offsets.shape)
+                        offset_noise = np.multiply(offsets/(num_sets+1), offset_noise)
+                        offsets = np.add(offsets*offset_bias/(num_sets+1), offset_noise)
+                        augmented_features[original_sample,:-1,feature] = np.add(original_features[original_sample,:-1,feature], offsets)
 
-    return dataset
+                    sample_input = np.zeros(shape=[original_inputs_shape[1], original_inputs_shape[-1] - 5 + 1],
+                                            dtype=np.float32)
+                    sample_input[:,0] = pv_sample[original_sample,:]
+                    sample_input[:,1:] = augmented_features[original_sample,:,:]
 
-def __create_and_save_1_fold_CrossValidation(name='Daniels_dataset_2', seeds=[43, 42]):
+                    with tf.io.TFRecordWriter(str(sample) + '.tfrecord') as writer:
+                        example = __example_from_features(sample_input, dataset['train_teacher'][sample,:,:], dataset['train_targets'][sample, :, :])
+                        writer.write(example)
+                    sample += 1
+        else:
+            for sample in range(len(dataset['train_inputs'])):
+                with tf.io.TFRecordWriter(str(sample) + '.tfrecord') as writer:
+                    example = __example_from_features(dataset['train_inputs'][sample], dataset['train_teacher'][sample,:,:], dataset['train_targets'][sample, :, :])
+                    writer.write(example)
+
+        del dataset['train_inputs']
+        del dataset['train_targets']
+        del dataset['train_teacher']
+        print('train saved')
+    # go back up one folder
+    # adjust the data
+    print('saving dataset info')
+    os.chdir(dataset_folder_path)
+    with open('dataset_info' + '.pickle', 'wb') as handle:
+        pickle.dump(dataset, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    del dataset
+    os.chdir(current_wd)
+
+
+def __create_float_feature(flattened_value):
+    """Returns a float_list from a float / double."""
+    return tf.train.Feature(float_list=tf.train.FloatList(value=flattened_value))
+def __create_int_feature(flattened_value):
+    """Returns a float_list from a float / double."""
+    return tf.train.Feature(int64_list=tf.train.Int64List(value=flattened_value))
+
+def __example_from_features(input_sw, teacher, target):
+    features = {'inputs': __create_float_feature(input_sw.flatten()),
+               'teacher': __create_float_feature(teacher.flatten()),
+               'target': __create_float_feature(target.flatten())}
+    example = tf.train.Example(features=tf.train.Features(feature=features))
+    return example.SerializeToString()
+
+def __tf_serialize_example(input_sw, teacher, target):
+    tf_string = tf.py_function(
+        __example_from_features,
+        (input_sw, teacher, target),  # pass these args to the above function.
+        tf.string)  # the return type is `tf.string`.
+    return tf.reshape(tf_string, ())  # The result is a scalar
+
+
+def __create_and_save_1_fold_CrossValidation(name='Daniels_dataset_1', seeds=[42, 43]):
     inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Daniels_data()
     normalizer_value = np.amax(ev_targets) - np.amin(ev_targets)
     dataset_splitter_kwargs = {'inp':inp,
@@ -620,13 +701,17 @@ def __create_and_save_1_fold_CrossValidation(name='Daniels_dataset_2', seeds=[43
 
     dataset_splitter_kwargs['split_seeds'] = seeds
     dataset = __split_dataset(**dataset_splitter_kwargs)
-    dataset = __augment_Daniels_dataset(dataset)
-    dataset['normalizer_value'] = normalizer_value
-    with open(name + '.pickle', 'wb') as handle:
-        pickle.dump(dataset, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    del dataset
-
     del inp, pdf_teacher, pdf_targets, ev_teacher, ev_targets
+
+    dataset['input_shape'] = dataset['train_inputs'].shape[1:]
+    dataset['teacher_shape'] = dataset['train_teacher'].shape[1:]
+    dataset['target_shape'] = dataset['train_targets'].shape[1:]
+    dataset['normalizer_value'] = normalizer_value
+
+    __save_and_augment_Daniels_dataset(dataset, dataset_name=name, augment_data=False)
+    print('done')
+
+
 
 def __create_and_save_1_fold_CrossValidation_Liza(name='Lizas_dataset_2', seeds=[43, 42]):
     inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Lizas_data()
@@ -641,10 +726,13 @@ def __create_and_save_1_fold_CrossValidation_Liza(name='Lizas_dataset_2', seeds=
 
     dataset_splitter_kwargs['split_seeds'] = seeds
     dataset = __split_dataset(**dataset_splitter_kwargs)
-    # dataset = __augment_Daniels_dataset(dataset)
     dataset['normalizer_value'] = normalizer_value
-    with open(name + '.pickle', 'wb') as handle:
-        pickle.dump(dataset, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    del dataset
-
     del inp, pdf_teacher, pdf_targets, ev_teacher, ev_targets
+
+    dataset['input_shape'] = dataset['train_inputs'].shape[1:]
+    dataset['teacher_shape'] = dataset['train_teacher'].shape[1:]
+    dataset['target_shape'] = dataset['train_targets'].shape[1:]
+    dataset['normalizer_value'] = normalizer_value
+
+    # ToDo: Liza's gotta figure out how augmentation would work for her dataset
+    __save_and_augment_Daniels_dataset(dataset, dataset_name=name, augment_data=False)

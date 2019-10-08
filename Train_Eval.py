@@ -5,45 +5,162 @@ import numpy as np
 #from Building_Blocks import build_model
 from Benchmarks import build_model
 import copy
-
+import glob
+import os
+import pickle
 
 class Model_Container():
     def __init__(self,
-                 dataset,
+                 dataset_folder,
                  model_kwargs, #see __build_model
                  train_kwargs, #currently only batch size
+                 try_distribution_across_GPUs=True,
                  ):
-        self.dataset = dataset
-
-        model_kwargs['input_shape'] = dataset['train_inputs'].shape[1:]
-        model_kwargs['out_shape'] = dataset['train_targets'].shape[1:]
-        model_kwargs['normalizer_value'] = dataset['normalizer_value']
+        self.dataset_path = dataset_folder
+        self.try_distribution_across_GPUs = try_distribution_across_GPUs
+        self.dataset_info = pickle.load(open(dataset_folder + '/dataset_info.pickle', 'rb'))
+        model_kwargs['input_shape'] = self.dataset_info['input_shape']
+        model_kwargs['out_shape'] = self.dataset_info['target_shape']
+        model_kwargs['normalizer_value'] = self.dataset_info['normalizer_value']
 
         self.model_kwargs = model_kwargs
         self.train_kwargs = train_kwargs
+        self.__read_one_sample()
 
     def get_results(self):
-        tf.keras.backend.clear_session()  # make sure we are working clean
-        self.__build_model(**self.model_kwargs)
-        del self.model_kwargs
+        tf.keras.backend.clear_session()
+        # TODo, see wether this makes sense first
 
+        # strategy = tf.distribute.MirroredStrategy()
+        # strategy = tf.distribute.experimental.CentralStorageStrategy()
+        # with strategy.scope():
+        # make sure we are working clean
+
+        self.__build_model(**self.model_kwargs)
+        self.__create_datasets()
         self.__train_model(**self.train_kwargs)
         del self.train_kwargs
         del self.model
 
         self.__skill_metrics()
-        del self.dataset
 
         tf.keras.backend.clear_session()
         return self.metrics
+    def __read_one_sample(self):
+        def __get_all_tfrecords_in_folder(folder):
+            if os.path.isdir(folder):
+                file_list = glob.glob(folder + '/*.tfrecord')
+            else:
+                print('didnt find training data folder, expect issues!!')
+            return file_list
 
+        train_folder = self.dataset_path + '/train'
+        print('fetching training set...')
+        train_list = __get_all_tfrecords_in_folder(train_folder)
+        train_list
+        input_shape = self.model_kwargs['input_shape']
+        flattened_input_shape = 1
+        flattened_input_shape = [flattened_input_shape*dimension_shape for dimension_shape in input_shape]
+
+        output_shape = self.model_kwargs['out_shape']
+        flattened_output_shape = 1
+        flattened_output_shape = [flattened_output_shape * dimension_shape for dimension_shape in output_shape]
+
+        def __read_and_process_tfrecord(example):
+            print(example)
+            features = {'inputs': tf.io.FixedLenFeature(flattened_input_shape, tf.float32),
+                        'teacher': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),
+                        'target': tf.io.FixedLenFeature(flattened_output_shape, tf.float32), }
+
+            unadjusted_example = tf.io.parse_single_example(example, features)
+            inputs = tf.reshape(unadjusted_example['inputs'], input_shape)
+            teacher = tf.reshape(unadjusted_example['teacher'], output_shape)
+            target = tf.reshape(unadjusted_example['target'], output_shape)
+
+            return {'inputs_input': inputs, 'teacher_input': teacher}, target
+
+        dataset =tf.data.TFRecordDataset(train_list[0])
+        dataset = dataset.map(__read_and_process_tfrecord)
+        print(dataset)
+    def __create_datasets(self):
+        def __get_all_tfrecords_in_folder(folder):
+            if os.path.isdir(folder):
+                file_list = glob.glob(folder + '/*.tfrecord')
+            else:
+                print('didnt find training data folder, expect issues!!')
+            return file_list
+        input_shape = self.model_kwargs['input_shape']
+        flattened_input_shape = 1
+        output_shape = self.model_kwargs['out_shape']
+        flattened_output_shape = 1
+        model_type = self.model_kwargs['model_type']
+
+        for dimension_shape in input_shape:
+            flattened_input_shape = flattened_input_shape * dimension_shape
+        for dimension_shape in output_shape:
+            flattened_output_shape = flattened_output_shape * dimension_shape
+
+        def __read_and_process_tfrecord(example):
+            features = {'inputs': tf.io.FixedLenFeature(flattened_input_shape, tf.float32),
+                        'teacher': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),
+                        'target': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),}
+            unadjusted_example = tf.io.parse_single_example(example, features)
+            inputs = tf.reshape(tensor=unadjusted_example['inputs'], shape=[input_shape[0], input_shape[1]])
+            target = tf.reshape(tensor=unadjusted_example['target'], shape=[output_shape[0], output_shape[1]])
+
+            if 'MiMo' in model_type:
+                return inputs, target
+            else:
+                teacher = tf.reshape(tensor=unadjusted_example['teacher'],
+                                     shape=[output_shape[0], output_shape[1]])
+                return {'inputs_input': inputs, 'teacher_input': teacher}, target
+
+        def get_batched_dataset(file_list, batch_size):
+            option_no_order = tf.data.Options()
+            option_no_order.experimental_deterministic = False
+
+            #dataset = tf.data.Dataset.list_files(file_list)
+            dataset = tf.data.TFRecordDataset(file_list, num_parallel_reads=20)
+            dataset = dataset.with_options(option_no_order)
+            #dataset = dataset.interleave(map_func=tf.data.TFRecordDataset,
+            #                              num_parallel_calls=20)
+
+            # does this order make any fucking sense at all?!?!?!?
+            dataset = dataset.map(__read_and_process_tfrecord, num_parallel_calls=10)
+            dataset = dataset.repeat()
+            dataset = dataset.shuffle(4 * batch_size)
+            # dataset = dataset.prefetch(5 * batch_size)
+            dataset = dataset.batch(batch_size, drop_remainder=False)
+            return dataset
+
+        batch_size = self.train_kwargs['batch_size']
+        train_folder = self.dataset_path + '/train'
+        train_list = __get_all_tfrecords_in_folder(train_folder)
+        def get_training_dataset():
+            return get_batched_dataset(train_list, batch_size)
+        self.train_dataset_generator = get_training_dataset
+        self.train_steps_epr_epoch = int(np.ceil(len(train_list)/batch_size))
+
+        val_folder = self.dataset_path + '/validation'
+        val_list = __get_all_tfrecords_in_folder(val_folder)
+        def get_val_dataset():
+            return get_batched_dataset(val_list, batch_size)
+        self.val_dataset_generator = get_val_dataset
+        self.val_steps_epr_epoch = int(np.ceil(len(val_list) / batch_size))
+
+        test_folder = self.dataset_path + '/test'
+        test_list = __get_all_tfrecords_in_folder(test_folder)
+        def get_test_dataset():
+            return get_batched_dataset(test_list, batch_size)
+        self.test_dataset_generator = get_test_dataset
+        self.test_steps_epr_epoch = int(np.ceil(len(test_list) / batch_size))
 
     def __build_model(self,
                       input_shape, out_shape, normalizer_value,
                       model_type='MiMo-sth',
                       model_size='small',
                       use_dropout=False, dropout_rate=0.0, use_hw=False, use_norm=False, use_quasi_dense=False, #general architecture stuff
-                      use_attention=False, self_recurrent=False, # E-D stuff
+                      use_attention=False, attention_hidden=False, self_recurrent=False, # E-D stuff
                       downsample=True, mode='snip', #MiMo stuff
                       ):
 
@@ -80,7 +197,7 @@ class Model_Container():
         elif model_type == 'MiMo-attn-tcn':
             print('building a', model_size, model_type)
             from Building_Blocks import attentive_TCN
-            encoder_specs = {'units': [[32],[32],[32]],
+            encoder_specs = {'units': [[21],[6, 6, 6], [42], [8, 8, 8, 8]],
                              'use_dropout': use_dropout,
                              'dropout_rate': dropout_rate,
                              'use_norm': use_norm}
@@ -107,8 +224,8 @@ class Model_Container():
                              'use_dropout': use_dropout,
                              'dropout_rate': dropout_rate,
                              'use_norm': use_norm}
-            decoder_specs['use_attention'] = True
-            decoder_specs['attention_hidden'] = True
+            decoder_specs['use_attention'] = use_attention
+            decoder_specs['attention_hidden'] = attention_hidden
             decoder_specs['self_recurrent'] = self_recurrent
 
             projection_model = tf.keras.layers.Dense(units=out_shape[-1],
@@ -131,6 +248,7 @@ class Model_Container():
             self.model = encoder_decoder_model(**model_kwargs)
 
         elif model_type == 'Encoder-Decoder' or model_type == 'E-D':
+            print('building E-D')
             common_specs = {'units': units,
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
@@ -142,6 +260,7 @@ class Model_Container():
             encoder_specs = copy.deepcopy(common_specs)
             decoder_specs = copy.deepcopy(common_specs)
             decoder_specs['use_attention'] = use_attention
+            decoder_specs['attention_hidden'] = attention_hidden
             decoder_specs['self_recurrent'] = self_recurrent
 
             projection_model = tf.keras.layers.Dense(units=out_shape[-1],
@@ -181,7 +300,6 @@ class Model_Container():
     def __train_model(self, batch_size=64):
         self.metrics = {}
 
-        tf.keras.backend.clear_session()
         early_stopping_callback = tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
                                                                    patience=10,
                                                                    mode='min',
@@ -192,34 +310,22 @@ class Model_Container():
                                                                            verbose=True,
                                                                            mode='min',
                                                                            cooldown=5)
-
-        train_history = self.model.fit(x=[self.dataset['train_inputs'],
-                                     self.dataset['train_teacher'],
-                                     self.dataset['train_blend']],
-                                  y=self.dataset['train_targets'],
-                                  batch_size=batch_size,
-                                  epochs=100,
-                                  shuffle=True,
-                                  verbose=True,
-                                  validation_data=([self.dataset['val_inputs'],
-                                                    self.dataset['val_teacher'],
-                                                    self.dataset['val_blend']],
-                                                   self.dataset['val_targets']),
-                                  callbacks=[early_stopping_callback, reduce_lr_on_plateu_callback])
+        print('starting to train model')
+        train_history = self.model.fit(self.train_dataset_generator(),
+                                       steps_per_epoch=self.train_steps_epr_epoch,
+                                      epochs=100,
+                                      verbose=2,
+                                      validation_data=self.val_dataset_generator(),
+                                       validation_steps=self.val_steps_epr_epoch,
+                                      callbacks=[early_stopping_callback, reduce_lr_on_plateu_callback])
 
         train_history = train_history.history
         for key in train_history.keys():
             self.metrics[key] = train_history[key]
 
-        tf.keras.backend.clear_session()
-
-
-        test_results = self.model.evaluate(x=[self.dataset['test_inputs'],
-                                              self.dataset['test_teacher'],
-                                              self.dataset['test_blend']],
-                                      y=self.dataset['test_targets'],
-                                      batch_size=batch_size,
-                                      verbose=False)
+        test_results = self.model.evaluate(self.test_dataset_generator(),
+                                           steps=self.test_steps_epr_epoch,
+                                      verbose=2)
 
         self.metrics['test_loss'] = test_results[0]
         self.metrics['test_nME'] = test_results[1]
@@ -229,10 +335,10 @@ class Model_Container():
 
     def __skill_metrics(self):
         saved_epoch = np.argmax(self.metrics['val_nRMSE'])
-        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_nRMSE'][saved_epoch] / self.dataset['val_persistency_baseline']['nRMSE'])
-        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_CRPS'][saved_epoch] / self.dataset['val_persistency_baseline']['CRPS'])
-        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['test_nRMSE'] / self.dataset['test_persistency_baseline']['nRMSE'])
-        self.metrics['test_CRPS_skill'] = 1 - (self.metrics['test_CRPS'] / self.dataset['test_persistency_baseline']['CRPS'])
+        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_nRMSE'][saved_epoch] / self.dataset_info['val_persistency_baseline']['nRMSE'])
+        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_CRPS'][saved_epoch] / self.dataset_info['val_persistency_baseline']['CRPS'])
+        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['test_nRMSE'] / self.dataset_info['test_persistency_baseline']['nRMSE'])
+        self.metrics['test_CRPS_skill'] = 1 - (self.metrics['test_CRPS'] / self.dataset_info['test_persistency_baseline']['CRPS'])
 
 
 

@@ -1,69 +1,65 @@
 import numpy as np
 import pickle
-from Dataset_Loaders import get_Lizas_data, get_Daniels_data, __split_dataset, __augment_Daniels_dataset
 import matplotlib.pyplot as plt
 from Train_Eval import Model_Container
 import tensorflow as tf
 
 def train_LSTM_baseline_3fold_on_Daniel_data():
 
-    data_files = ['Daniels_dataset_1.pickle',
-                  # 'Daniels_dataset_2.pickle',
-                  #'Daniels_dataset_3.pickle',
-                  ]
-    experiment_name = 'small-MiMo-LSTM-downsample'
+    datasets = ['Daniels_dataset_1', 'Daniels_dataset_2', 'Daniels_dataset_3', ]
     metrics = {}
-    for set in data_files:
+    for set in datasets:
         metrics[set] = []
-        for run in range(2):
-            model_kwargs = {'model_type': 'MiMo-LSTM',
-                            'model_size':'med'}
-            train_kwargs = {'batch_size':512}
+        for run in range(3):
+            model_kwargs = {'model_type': 'MiMo-attn-tcn',
+                            'model_size': 'med',
+                            'use_attention': True,
+                            'attention_hidden': False,
+                            'self_recurrent': False,
+                            'use_dropout': True,
+                            'dropout_rate': 0.3,
+                            'use_norm': False}
+            train_kwargs = {'batch_size': 256}
 
-            experiment = Model_Container(dataset=pickle.load(open(set, 'rb')),
+            experiment = Model_Container(dataset_folder=set,
                                       model_kwargs=model_kwargs,
-                                      train_kwargs=train_kwargs)
-            results = experiment.get_results()
+                                      train_kwargs=train_kwargs,
+                                      try_distribution_across_GPUs=False,)
+            metrics[set].append(experiment.get_results())
             del experiment
             tf.keras.backend.clear_session()
 
-            metrics[set].append(results)
-
-    experiment_name = 'medium-MiMo-LSTM-downsample'
-
-    __plot_training_curves(metrics, experiment_name=experiment_name)
+    experiment_name = model_kwargs['model_size'] + '_' + model_kwargs['model_type']
     with open(experiment_name+'.pickle', 'wb') as handle:
         pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
+    __plot_training_curves(metrics, experiment_name=experiment_name)
+
 def train_on_Lizas_data():
 
-    data_files = ['Lizas_dataset_2.pickle',
-                  # 'Daniels_dataset_2.pickle',
-                  #'Daniels_dataset_3.pickle',
-                  ]
-    experiment_name = 'small-MiMo-attn-tcn'
+    # ToDo: Gotta recompile ur datasets obviously
+    data_files = ['Lizas_dataset_2',]
     metrics = {}
     for set in data_files:
         metrics[set] = []
         for run in range(2):
             model_kwargs = {'model_type': 'MiMo-attn-tcn',
-                            'model_size':'small'}
+                            'model_size':'small',}
             train_kwargs = {'batch_size':512}
 
-            experiment = Model_Container(dataset=pickle.load(open(set, 'rb')),
-                                      model_kwargs=model_kwargs,
-                                      train_kwargs=train_kwargs)
-            results = experiment.get_results()
+            experiment = Model_Container(dataset_folder=set,
+                                         model_kwargs=model_kwargs,
+                                         train_kwargs=train_kwargs,
+                                         try_distribution_across_GPUs=False, )
+            metrics[set].append(experiment.get_results())
             del experiment
             tf.keras.backend.clear_session()
 
-            metrics[set].append(results)
-
-    experiment_name = 'medium-MiMo-attn-tcn'
-
-    __plot_training_curves(metrics, experiment_name=experiment_name)
+    experiment_name = model_kwargs['model_size'] + '_' + model_kwargs['model_type']
     with open(experiment_name+'.pickle', 'wb') as handle:
         pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    __plot_training_curves(metrics, experiment_name=experiment_name)
 
 
 def __plot_training_curves(metrics, experiment_name):
@@ -76,7 +72,7 @@ def __plot_training_curves(metrics, experiment_name):
     test_metrics = {}
     train_metrics = {}
 
-    run_linestyles = [':', '--', '.-', '-']
+    run_linestyles = [':', '--', '-.', '-']
 
     for set in metrics.keys():
         for key in metrics[set][0].keys():

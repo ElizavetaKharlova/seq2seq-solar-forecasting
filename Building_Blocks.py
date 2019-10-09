@@ -487,7 +487,8 @@ class DenseTCN(tf.keras.layers.Layer):
                 squeeze_factor=0.5, 
                 use_dropout=False, 
                 dropout_rate=0.0, 
-                use_norm=False, 
+                use_norm=False,
+                downsample_rate=1,
                 kernel_sizes=[3, 5]):
         super(DenseTCN, self).__init__()
         
@@ -500,6 +501,7 @@ class DenseTCN(tf.keras.layers.Layer):
         self.squeeze_factor = squeeze_factor
         self.use_dropout = use_dropout
         self.dropout_rate = dropout_rate
+        self.downsample_rate = downsample_rate
         self.kernel_sizes = kernel_sizes
         self.use_norm = use_norm
         # build flag
@@ -511,10 +513,11 @@ class DenseTCN(tf.keras.layers.Layer):
         self.squeeze = []
 
     # initialize one CNN layer with arbitrary parameters
-    def cnn_layer(self, num_features, kernel_size, dilation_rate):
-        return tf.keras.layers.Conv1D(num_features,
+    def cnn_layer(self, num_features, kernel_size, dilation_rate, stride=1):
+        return tf.keras.layers.Conv1D(filters=num_features,
                                         kernel_size=kernel_size,
                                         dilation_rate=dilation_rate,
+                                        strides=stride,
                                         padding='causal')
                                         
     # build a stack for one layer of the network
@@ -535,7 +538,8 @@ class DenseTCN(tf.keras.layers.Layer):
             layer.append(tf.keras.layers.BatchNormalization(axis=-1, center=True))
         else:
             layer.append([])
-        layer.append(self.cnn_layer(self.growth_rate, kernel_size, dilation_rate=2**num_layer))
+        #ToDo: Fix this thing pltz!!
+        layer.append(self.cnn_layer(self.growth_rate, [int(kernel_size)*(num_layer+1)], dilation_rate=1))
         if self.use_dropout:
             layer.append(tf.keras.layers.Dropout(rate=self.dropout_rate, noise_shape=(1,self.growth_rate)))
         else:
@@ -564,7 +568,10 @@ class DenseTCN(tf.keras.layers.Layer):
             else: 
                 num_features = int(self.squeeze_factor*(num_features + self.num_layers_per_block*self.growth_rate))
             # create stack of squeeze layers
-            self.squeeze.append(self.cnn_layer(num_features, kernel_size=1, dilation_rate=1))
+            self.squeeze.append(self.cnn_layer(num_features, kernel_size=1, dilation_rate=1, stride=1))
+            if self.downsample_rate > 1:
+                self.pool = tf.keras.layers.AvgPool1D(pool_size=self.downsample_rate,
+                                                      strides=self.downsample_rate)
         # update build flag
         self.already_built = True
         return None
@@ -572,24 +579,26 @@ class DenseTCN(tf.keras.layers.Layer):
     # run one basic dense network layer
     # return output concatednated with input
     def run_layer(self, block, num_layer, num_stream, inputs):
-       out = inputs
-       # self.blocks[block][num_stream][num_layer] = [Bottleneck_norm, Bottleneck_features, bottleneck_dropout,
-       #                                              growth_norm, growth_layer, growth_dropout]
-       # Bottleneck section
-       if self.use_norm:
-           out = self.blocks[block][num_stream][num_layer][0](out)
-       out = tf.keras.activations.relu(out)
-       out = self.blocks[block][num_stream][num_layer][1](out)
-       if self.use_dropout:
+        out = inputs
+        # self.blocks[block][num_stream][num_layer] = [Bottleneck_norm, Bottleneck_features, bottleneck_dropout,
+        #                                              growth_norm, growth_layer, growth_dropout]
+        # Bottleneck section
+        if self.use_norm:
+            out = self.blocks[block][num_stream][num_layer][0](out)
+        out = tf.keras.activations.relu(out)
+        out = self.blocks[block][num_stream][num_layer][1](out)
+        if self.use_dropout:
             out = self.blocks[block][num_stream][num_layer][2](out, training=tf.keras.backend.learning_phase())
-       # growth section
-       if self.use_norm:
-           out = self.blocks[block][num_stream][num_layer][3](out)
-       out = tf.keras.activations.relu(out)
-       out = self.blocks[block][num_stream][num_layer][4](out)
-       if self.use_dropout:
-           out = self.blocks[block][num_stream][num_layer][5](out, training=tf.keras.backend.learning_phase())
-       return tf.concat([out, inputs], axis=-1)
+        # growth section
+        if self.use_norm:
+            out = self.blocks[block][num_stream][num_layer][3](out)
+
+        out = self.blocks[block][num_stream][num_layer][4](out)
+        out = tf.keras.activations.relu(out)
+        if self.use_dropout:
+            out = self.blocks[block][num_stream][num_layer][5](out, training=tf.keras.backend.learning_phase())
+
+        return tf.concat([out, inputs], axis=-1)
     
     # run output through one stream
     def run_stream(self, block, num_stream, inputs):
@@ -607,7 +616,7 @@ class DenseTCN(tf.keras.layers.Layer):
             if num_stream == 0:
                 out = self.run_stream(block, num_stream, inputs)
             else:
-                out = tf.concat([out, self.run_stream(block, num_stream, inputs)], 2)
+                out = tf.concat([out, self.run_stream(block, num_stream, inputs)], -1)
         # return output concatednated with input
         return out
 
@@ -616,13 +625,14 @@ class DenseTCN(tf.keras.layers.Layer):
         out = inputs
         # call the init function upon first call
         if not self.already_built:
-            self.build_block(inputs.shape[1])
+            self.build_block(inputs.shape[-1])
         # iterate through blocks
         for block in range(self.num_blocks):
             out = self.run_block(block, out)
             # apply squeeze after each block except last
-            if block < (self.num_blocks-1):
-                out = self.squeeze[block](out)
+            out = self.squeeze[block](out)
+            if self.downsample_rate >1:
+                out = self.pool(out)
         return out
 
 ########################################################################################################################
@@ -722,221 +732,114 @@ class Dropout_wrapper(tf.keras.layers.Wrapper):
         return self.dropout(self.layer(inputs), training=tf.keras.backend.learning_phase())
 
 class multihead_attentive_layer(tf.keras.layers.Layer):
-    def __init__(self, num_heads, num_units_per_head=[80],
-                 num_units_projection=[120]):
+    def __init__(self, num_heads, num_units_per_head=80):
         super(multihead_attentive_layer, self).__init__()
         # units is a list of lists, containing the numbers of units in the attention head
         self.num_heads = num_heads
-        if num_units_projection == None:
-            self.projection = False
-        else:
-            self.projection = True
-            self.project = tf.keras.layers.Dense(units=num_units_projection,
-                                  activation=None,
-                                  kernel_initializer='glorot_uniform',
-                                  bias_initializer='zeros',
-                                  )
+        self.projection = False
 
         self.multihead_attention = []
         for head in range(self.num_heads):
-            attention = Attention(num_units_per_head[head],
+            attention = Attention(num_units_per_head,
                                   mode='Transformer',
                                   only_context=True)
             self.multihead_attention.append(attention)
 
     def call(self,query, value):
-
         multihead_out = [head(query, value) for head in self.multihead_attention]
-        if self.projection:
-            multihead_out = tf.concat(multihead_out, axis=-1)
-            return self.project(multihead_out)
-        else:
-            return multihead_out
+        return tf.concat(multihead_out, axis=-1)
 
-class Transformer_encoder(tf.keras.layers.Layer):
+class TCN_Transformer(tf.keras.layers.Layer):
     def __init__(self,
-                num_units_per_head_per_layer, num_proj_units_per_layer,
-                 use_dropout=True,
-                 dropout_rate=0.15,
-                 norm='layer'):
-        super(Transformer_encoder, self).__init__()
+                 units=[[20, 20], [10, 10, 10],    # first si the attention layer units, then the TCN units
+                                  [30, 30], [10, 10, 10],
+                                  [45, 45], [10, 10, 10]],
+                 mode='Encoder',
+                 use_dropout=True, dropout_rate=0.2, use_norm=True, **kwargs):
+        super(TCN_Transformer, self).__init__()
+
         self.use_dropout = use_dropout
-        if norm == 'layer':
-            self.use_norm = True
+        self.dropout_rate = dropout_rate
+        self.use_norm = use_norm
+        self.mode = mode
+
+        self.all_layers = []
+        if self.mode == 'decoder' or self.mode =='Decoder' or self.mode=='D':
+            downsample_rate = 1
         else:
-            self.use_norm = False
+            downsample_rate = 2
 
-        self.num_layers = len(num_units_per_head_per_layer)
-        self.self_attention = []
-        self.input_projection = []
-        self.transition_layer = []
-        if self.use_dropout:
-            self.self_attn_dropout = []
-            self.transition_dropout = []
-        if self.use_norm:
-            self.self_attn_norm = []
-            self.transition_norm = []
+        for stage_in_block in range(len(units)):
+            if stage_in_block%2 == 0: # attention stuffs
+                block_layers = []
+                # self attention
+                num_heads = len(units[stage_in_block])
+                num_units = units[stage_in_block][0]
+                block_layers.append(multihead_attentive_layer(num_heads=num_heads, num_units_per_head=num_units) )
+                if self.use_norm:
+                    block_layers.append(tf.keras.layers.BatchNormalization(axis=-1, center=True, scale=True))
+                else:
+                    block_layers.append([])
+                if self.use_dropout:
+                    block_layers.append( tf.keras.layers.Dropout(dropout_rate, noise_shape=(1, num_heads*num_units) ) )
+                else:
+                    block_layers.append([])
 
-        for layer in range(self.num_layers):
-            num_units = num_units_per_head_per_layer[layer]
-            channel_depth = num_proj_units_per_layer[layer]
+                # Wohoo, do the whole thing again, yay
+                if self.mode == 'decoder' or self.mode =='Decoder' or self.mode=='D':
 
-            in_projection = tf.keras.layers.Dense(units=channel_depth,
-                              activation='relu',
-                              kernel_initializer='glorot_uniform',
-                              bias_initializer='zeros',
-                              )
-            in_projection = Norm_wrapper(in_projection, norm='layer')
-            self.input_projection.append(in_projection)
+                    block_layers.append(multihead_attentive_layer(num_heads=num_heads, num_units_per_head=num_units))
+                    if self.use_norm:
+                        block_layers.append(tf.keras.layers.BatchNormalization(axis=-1, center=True, scale=True))
+                    else:
+                        block_layers.append([])
+                    if self.use_dropout:
+                        block_layers.append(
+                            tf.keras.layers.Dropout(dropout_rate, noise_shape=(1, num_heads * num_units)))
+                    else:
+                        block_layers.append([])
 
+            elif stage_in_block%2 == 1 and units[stage_in_block] != []:
+                block_layers.append( DenseTCN(num_blocks=1,
+                                            num_layers_per_block=len(units[stage_in_block]),
+                                            growth_rate=units[stage_in_block][0],
+                                            squeeze_factor=0.7,
+                                            use_dropout = use_dropout,
+                                            dropout_rate=dropout_rate,
+                                              downsample_rate=downsample_rate,
+                                            use_norm=use_norm,
+                                            kernel_sizes=[3]))
+                self.all_layers.append(block_layers)
+            elif units[stage_in_block] == []:
+                block_layers.append([])
+                self.all_layers.append(block_layers)
 
-            self.self_attention.append(multihead_attentive_layer(num_heads=len(num_units_per_head_per_layer),
-                                                              num_units_per_head=num_units,
-                                                              num_units_projection=channel_depth))
-            if self.use_dropout:
-                self.self_attn_dropout.append(tf.keras.layers.Dropout(dropout_rate))
-                self.transition_dropout.append(tf.keras.layers.Dropout(dropout_rate))
+    def call(self, input, attention_query=None, attention_value=None):
+        out = input
+        for num_block in range(len(self.all_layers)):
+            # block_layer in encoder case: [attention, norm, dropout, tcn]
+            # block_layer in decoder case [attention, norm, dropout, attention, norm, dropout, tcn]
 
-            if norm=='layer':
-                self.self_attn_norm.append(tf.keras.layers.LayerNormalization(axis=-1,
-                                                           center=True,
-                                                           scale=True))
-                self.transition_norm.append(tf.keras.layers.LayerNormalization(axis=-1,
-                                                           center=True,
-                                                           scale=True))
-
-            transition_layer = tf.keras.layers.Dense(units=channel_depth,
-                              activation='relu',
-                              kernel_initializer='glorot_uniform',
-                              bias_initializer='zeros',
-                              )
-            self.transition_layer.append(transition_layer)
-
-    def call(self, layer_input):
-        is_training = tf.keras.backend.learning_phase()
-        for layer in range(self.num_layers):
-            projected_input = self.input_projection[layer](layer_input)
-            self_attention = self.self_attention[layer](projected_input, value=projected_input)
-            if self.use_dropout:
-                self_attention = self.self_attn_dropout[layer](self_attention, training=is_training)
-            # do residuals
-            self_attention = self_attention + projected_input
+            # self attention stage
+            out = self.all_layers[num_block][0](out, value=out)
             if self.use_norm:
-                self_attention = self.self_attn_norm[layer](self_attention)
-
-            transition = self.transition_layer[layer](self_attention)
+                out = self.all_layers[num_block][1](out)
             if self.use_dropout:
-                transition = self.transition_dropout[layer](transition, training=is_training)
-            # do residuals
-            transition = transition + self_attention
-            if self.use_norm:
-                transition = self.transition_norm[layer](transition)
+                out = self.all_layers[num_block][2](out, training=tf.keras.backend.learning_phase())
 
-            layer_input = transition
-        return layer_input
+            # context attention stage
+            if self.mode == 'decoder' or self.mode =='Decoder' or self.mode=='D':
+                out = self.all_layers[num_block][3](out, value=attention_value)
 
+                if self.use_norm:
+                    out = self.all_layers[num_block][4](out)
+                if self.use_dropout:
+                    out = self.all_layers[num_block][5](out, training=tf.keras.backend.learning_phase())
 
-class Transformer_decoder(tf.keras.layers.Layer):
-    def __init__(self,
-                 num_units_per_head_per_layer, num_proj_units_per_layer,
-                 use_dropout=True,
-                 dropout_rate=0.15,
-                 norm='layer'):
-        super(Transformer_decoder, self).__init__()
-        self.use_dropout = use_dropout
-        if norm == 'layer':
-            self.use_norm = True
-        else:
-            self.use_norm = False
+            if self.all_layers[num_block][-1] != []:
+                out = self.all_layers[num_block][-1](out)
 
-        self.num_layers = len(num_units_per_head_per_layer)
-        self.self_attention = []
-        self.encoder_attnetion = []
-        self.input_projection = []
-        self.transition_layer = []
-        if self.use_dropout:
-            self.self_attn_dropout = []
-            self.attn_dropout = []
-            self.transition_dropout = []
-        if self.use_norm:
-            self.self_attn_norm = []
-            self.attn_norm = []
-            self.transition_norm = []
-
-        for layer in range(self.num_layers):
-            num_units = num_units_per_head_per_layer[layer]
-            channel_depth = num_proj_units_per_layer[layer]
-
-            in_projection = tf.keras.layers.Dense(units=channel_depth,
-                                                  activation='relu',
-                                                  kernel_initializer='glorot_uniform',
-                                                  bias_initializer='zeros',
-                                                  )
-            in_projection = Norm_wrapper(in_projection, norm='layer')
-            self.input_projection.append(in_projection)
-
-            self.self_attention.append(multihead_attentive_layer(num_heads=len(num_units_per_head_per_layer),
-                                                                 num_units_per_head=num_units,
-                                                                 num_units_projection=channel_depth))
-            self.encoder_attnetion.append(multihead_attentive_layer(num_heads=len(num_units_per_head_per_layer),
-                                                                 num_units_per_head=num_units,
-                                                                 num_units_projection=channel_depth))
-            if self.use_dropout:
-                self.self_attn_dropout.append(tf.keras.layers.Dropout(dropout_rate))
-                self.attn_dropout.append(tf.keras.layers.Dropout(dropout_rate))
-                self.transition_dropout.append(tf.keras.layers.Dropout(dropout_rate))
-
-            if norm == 'layer':
-                self.self_attn_norm.append(tf.keras.layers.LayerNormalization(axis=-1,
-                                                                         center=True,
-                                                                         scale=True))
-                self.attn_norm.append(tf.keras.layers.LayerNormalization(axis=-1,
-                                                                         center=True,
-                                                                         scale=True))
-                self.transition_norm.append(tf.keras.layers.LayerNormalization(axis=-1,
-                                                                               center=True,
-                                                                               scale=True))
-
-            transition_layer = tf.keras.layers.Dense(units=channel_depth,
-                                                     activation='relu',
-                                                     kernel_initializer='glorot_uniform',
-                                                     bias_initializer='zeros',
-                                                     )
-            self.transition_layer.append(transition_layer)
-
-    def call(self, decoder_inputs, attention_value):
-
-        is_training = tf.keras.backend.learning_phase()
-        layer_input = decoder_inputs
-        for layer in range(self.num_layers):
-            projected_input = self.input_projection[layer](layer_input)
-            self_attention = self.self_attention[layer](projected_input, value=projected_input)
-            if self.use_dropout:
-                self_attention = self.self_attn_dropout[layer](self_attention, training=is_training)
-            # do residuals
-            self_attention = self_attention + projected_input
-            if self.use_norm:
-                self_attention = self.self_attn_norm[layer](self_attention)
-
-            encoder_attention = self.encoder_attnetion[layer](self_attention, value=attention_value)
-            if self.use_dropout:
-                encoder_attention = self.attn_dropout[layer](encoder_attention, training=is_training)
-            # do residuals
-            encoder_attention = encoder_attention + self_attention
-            if self.use_norm:
-                encoder_attention = self.attn_norm[layer](encoder_attention)
-
-            transition = self.transition_layer[layer](encoder_attention)
-            if self.use_dropout:
-                transition = self.transition_dropout[layer](transition, training=is_training)
-            # do residuals
-            transition = transition + encoder_attention
-            if self.use_norm:
-                transition = self.transition_norm[layer](transition)
-
-            layer_input = transition
-
-        return layer_input
+        return out
 
 class SelfAttentiveSelfRecurrent_Decoder(tf.keras.layers.Layer):
     def __init__(self,
@@ -949,7 +852,7 @@ class SelfAttentiveSelfRecurrent_Decoder(tf.keras.layers.Layer):
                  return_state=True,
                  attention_hidden=False,
                  only_last_layer_output=True):
-        super(SelfAttentiveSelfRecurrent_Decoder, self).__init()
+        super(SelfAttentiveSelfRecurrent_Decoder, self).__init__()
 
         self.self_attention = multihead_attentive_layer(num_heads=len(units[0]),
                                                         num_units_per_head=units[0][0],

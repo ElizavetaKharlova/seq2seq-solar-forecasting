@@ -248,6 +248,38 @@ class Model_Container():
             from Models import encoder_decoder_model
             self.model = encoder_decoder_model(**model_kwargs)
 
+        elif model_type =='Daniels_stuff':
+            print('building Daneils dumb experimentoro')
+            common_specs = {'units': [[20, 20], [8,8],
+                                      [35,35], [10,10],
+                                      [50,50], []],
+                            'use_dropout': True,
+                            'dropout_rate': dropout_rate,
+                            'use_norm': False}
+            encoder_specs = copy.deepcopy(common_specs)
+            decoder_specs = copy.deepcopy(common_specs)
+            decoder_specs['units'] = [[50,50], [10,10],
+                                      [60,60], []]
+            decoder_specs['use_attention'] = True
+            decoder_specs['self_recurrent'] = True
+            decoder_specs['mode'] = 'decoder'
+            projection_model = tf.keras.layers.Dense(units=out_shape[-1],
+                                                     activation=tf.keras.layers.Softmax(axis=-1))
+            from Building_Blocks import TCN_Transformer
+            model_kwargs = {'encoder_block': TCN_Transformer(**encoder_specs),
+                            "encoder_stateful": False,
+                            'decoder_block': TCN_Transformer(**decoder_specs),
+                            'use_teacher': False,
+                            'decoder_uses_attention_on': decoder_specs['use_attention'],
+                            'decoder_stateful': False,
+                            'self_recurrent_decoder': decoder_specs['self_recurrent'],
+                            'projection_block': projection_model,
+                            'input_shape': input_shape,
+                            'output_shape': out_shape}
+
+            from Models import encoder_decoder_model
+            self.model = encoder_decoder_model(**model_kwargs)
+
         elif model_type == 'Encoder-Decoder-TCN' or model_type == 'E-D-TCN':
             common_specs = {'units': [[32],[32],[32]],
                             'use_dropout': use_dropout,

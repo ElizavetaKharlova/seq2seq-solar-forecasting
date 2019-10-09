@@ -12,15 +12,9 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
     for set in datasets:
         metrics[set] = []
         for run in range(3):
-            model_kwargs = {'model_type': 'MiMo-attn-tcn',
-                            'model_size': 'med',
-                            'use_attention': True,
-                            'attention_hidden': False,
-                            'self_recurrent': False,
-                            'use_dropout': True,
-                            'dropout_rate': 0.3,
-                            'use_norm': False}
-            train_kwargs = {'batch_size': 256}
+            model_kwargs = {'model_type': 'Daniels_stuff',
+                            'model_size': 'small'}
+            train_kwargs = {'batch_size': 200}
 
             experiment = Model_Container(dataset_folder=set,
                                       model_kwargs=model_kwargs,

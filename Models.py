@@ -23,12 +23,10 @@ def encoder_decoder_model(encoder_block, decoder_block, projection_block,
     out_dims = output_shape[-1]
 
     # all the inputs we need to define
-    encoder_inputs = tf.keras.layers.Input(shape=(in_tsteps, in_dims))
+    encoder_inputs = tf.keras.layers.Input(shape=(in_tsteps, in_dims), name='inputs_input')
     # we need to define this outside, because at inference time we will provide the 0th innput of the decoder, as it is a value thats already known
     # at inference time, the teacher would be concat([1,out_dims], nan*[rest, out_dims])
-    teacher_inputs = tf.keras.layers.Input(shape=(out_tsteps, out_dims))
-    if use_teacher:
-        blend_factor_teacher_forcing = tf.keras.layers.Input(shape=(1))
+    teacher_inputs = tf.keras.layers.Input(shape=(out_tsteps, out_dims), name='teacher_input')
 
     # Encoding step, check if we have a model, if so then use that. Otherwise don't
     if encoder_block and encoder_stateful:
@@ -72,14 +70,14 @@ def encoder_decoder_model(encoder_block, decoder_block, projection_block,
                 else:
                     teacher_support = tf.expand_dims(teacher_inputs[:, forecast_timestep, :], axis=1)
 
-                def blend_shit(decoder_timestep_input, teacher_support):
-                    teacher_support = tf.multiply(teacher_support, blend_factor_teacher_forcing)
-                    decoder_timestep_input = tf.multiply((1.0-blend_factor_teacher_forcing), decoder_timestep_input)
-                    return teacher_support + decoder_timestep_input
 
-                decoder_timestep_input = tf.keras.backend.in_train_phase(x=blend_shit(decoder_timestep_input, teacher_support), alt=decoder_timestep_input)
+                decoder_timestep_input = tf.keras.backend.in_train_phase(x=teacher_support, alt=decoder_timestep_input)
             else:
-                decoder_input_forecast = forecast_step
+                if self_recurrent_decoder:
+                    zero = tf.expand_dims(teacher_inputs[:, 0, :], axis=1)
+                    decoder_timestep_input = tf.concat([zero, forecast_step], axis=1)
+                else:
+                    decoder_timestep_input = forecast_step
 
             if decoder_stateful: #then we wanna find out the state of the decoder and then call it to get a state back
                 # This implicitly assumes that we made sure that the encoder states have the right shapes!!
@@ -91,11 +89,10 @@ def encoder_decoder_model(encoder_block, decoder_block, projection_block,
 
             if decoder_uses_attention_on == 'hidden' or decoder_uses_attention_on =='output' or decoder_uses_attention_on==True:
                 decoder_kwargs['attention_query'] = decoder_timestep_input
-
             if decoder_stateful:
                 decoder_timestep_forecast, decoder_state_forecast_timestep = decoder_block(decoder_timestep_input, **decoder_kwargs)
             else: #just call it to get the output
-                decoder_timestep_forecast = decoder_block(decoder_input_forecast, **decoder_kwargs)
+                decoder_timestep_forecast = decoder_block(decoder_timestep_input, **decoder_kwargs)
 
             if projection_block:
                 # if the decoder is a list, implying several layers of outputs
@@ -109,7 +106,7 @@ def encoder_decoder_model(encoder_block, decoder_block, projection_block,
                 forecast = forecast_step
 
     if use_teacher:
-        return tf.keras.Model([encoder_inputs, teacher_inputs, blend_factor_teacher_forcing], forecast)
+        return tf.keras.Model([encoder_inputs, teacher_inputs], forecast)
     else:
         return tf.keras.Model([encoder_inputs, teacher_inputs], forecast)
 

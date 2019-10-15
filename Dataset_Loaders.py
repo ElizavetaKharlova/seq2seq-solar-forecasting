@@ -63,6 +63,258 @@ def get_Lizas_data():
 
     return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins
 
+def Create_full_dataset(dataset_name='Daniels_Dataset_1',
+                    weather_data_folder='\_data\Weather_2016', pv_data_path="/_data/",
+                     sw_len_samples=int(5 * 24 * 60),
+                     fc_len_samples=int(1 * 24 * 60),
+                     fc_steps=24,
+                     fc_tiles=40):
+    # get the NWP data, separate faults array
+    weather_nwp, start_end_date = _get_weather_data(weather_data_folder)
+    faults = weather_nwp[:,-1]
+    weather_nwp = weather_nwp[:, :-1]
+    # get the NWP data, interpolate, normalize
+    # get the PV data and normalize
+    historical_pv = _get_PV(pv_data_path, start_end_date)
+    history_shape = historical_pv.shape
+    scaler = StandardScaler()
+    historical_pv = np.expand_dims(historical_pv, axis=1)
+    scaler.fit(historical_pv)
+    historical_pv = scale(historical_pv, axis=0, with_mean=True, with_std=True, copy=True)
+    historical_pv = np.squeeze(historical_pv)
+    history_min_max = [np.amin(historical_pv), np.amax(historical_pv)]
+    print('history min_max', history_min_max)
+
+    nwp_shape = weather_nwp.shape
+    history_indices = np.arange(history_shape[0])
+    nwp_indices = np.arange(0, history_shape[0], int(history_shape[0] / nwp_shape[0]))
+    weather_nwp_interpolated = np.zeros([history_shape[0], nwp_shape[1]])
+    faults = np.repeat(faults, int(history_shape[0] / nwp_shape[0]))
+    # interpolate
+    for feature_axis in range(nwp_shape[1]):
+        features = np.asarray(weather_nwp[:, feature_axis], dtype=np.float64)
+        insert = np.interp(history_indices, nwp_indices, features)
+        weather_nwp_interpolated[:, feature_axis] = insert
+    del weather_nwp, nwp_shape
+
+    # normalize and scale
+    for axis in range(weather_nwp_interpolated.shape[-1]):
+        min = np.amin(weather_nwp_interpolated[:,axis])
+        weather_nwp_interpolated[:, axis] = (weather_nwp_interpolated[:, axis] - min)
+        if np.amin(weather_nwp_interpolated[:,axis]) != 0.0:
+            print('somehow failed to level data to 0 min')
+        max = np.amax(weather_nwp_interpolated[:,axis])
+        if max != 0:
+            weather_nwp_interpolated[:,axis] = weather_nwp_interpolated[:, axis]/max
+    scaler = StandardScaler()
+    scaler.fit(weather_nwp_interpolated)
+    weather_nwp_interpolated = scale(weather_nwp_interpolated, axis=0, with_mean=True, with_std=True, copy=True) #scale the dataset
+
+
+    print('fetching indices')
+    train_indices, val_indices, test_indices = assign_samples_to_set(faults, train_ratio=0.8, sample_length=sw_len_samples+fc_len_samples,
+                                                                     val_seed=1,
+                                                                     test_seed=2,
+                                                                     )
+    print('fetches', len(train_indices), 'train samples, ', len(test_indices), 'test samples ', len(val_indices), 'val_samples')
+
+    target_len_samples = int(fc_len_samples)
+    target_steps = int(fc_steps)
+    target_tiles = int(fc_tiles)
+    one_addl_fc_timestep = int(fc_len_samples / fc_steps)
+    target_downsampling_rate = target_len_samples / target_steps
+    nwp_downsampling_rate = 15
+    support_steps = int(sw_len_samples / target_downsampling_rate)
+    sw_len_samples = int(sw_len_samples)
+
+    def _features_to_example(nwp_input, historical_support_raw, teacher_raw, target_raw):
+        target_pdf = __convert_to_pdf(target_raw, num_steps=target_steps, num_tiles=target_tiles, min_max=history_min_max)  # pdf for probability distribution thingie
+        teacher_pdf = __convert_to_pdf(teacher_raw, num_steps=target_steps, num_tiles=target_tiles, min_max=history_min_max)
+        historical_support_pdf = __convert_to_pdf(historical_support_raw, num_steps=support_steps, num_tiles=target_tiles, min_max=history_min_max)
+        features = {'nwp_input': __create_float_feature(nwp_input.flatten()),
+
+                    'raw_historical_input': __create_float_feature(historical_support_raw.flatten()),
+                    'raw_teacher': __create_float_feature(teacher_raw.flatten()),
+                    'raw_target': __create_float_feature(target_raw.flatten()),
+
+                    'pdf_historical_input': __create_float_feature(historical_support_pdf.flatten()),
+                    'pdf_teacher': __create_float_feature(teacher_pdf.flatten()),
+                    'pdf_target': __create_float_feature(target_pdf.flatten())}
+        example = tf.train.Example(features=tf.train.Features(feature=features))
+        return example.SerializeToString()
+
+
+    # Delete Dataset folder if already exists, create new folder
+    current_wd = os.getcwd()
+    if os.path.isdir(dataset_name):
+        print('deleting previous dataset')
+        shutil.rmtree(dataset_name, ignore_errors=True)
+    os.mkdir(dataset_name)
+    dataset_folder_path = current_wd + '/' + dataset_name
+    os.chdir(dataset_folder_path)
+    from Losses_and_Metrics import __calculatate_skillscore_baseline
+
+    def __save_set_to_folder(sub_dataset, folder_name='train', save_every_xth_step=1):
+        os.mkdir(folder_name)  # create a folder, move to the folder
+        os.chdir((dataset_folder_path + '/' + folder_name))
+        set_nRMSE = []
+        set_nME = []
+        set_CRPS = []
+        # downsample dataset granularity
+        if save_every_xth_step > 1:
+            sub_dataset = sub_dataset[::save_every_xth_step]
+        if len(sub_dataset) > 1e5:
+            partials = True
+            target_pdf = np.zeros([int(len(sub_dataset)/100), fc_steps, fc_tiles])
+            persistency_pdf = np.zeros([int(len(sub_dataset)/100), fc_steps, fc_tiles])
+        else:
+            partials = False
+            target_pdf = np.zeros([len(sub_dataset), fc_steps, fc_tiles])
+            persistency_pdf = np.zeros([len(sub_dataset), fc_steps, fc_tiles])
+        num_sample = 0
+        for sample_index in sub_dataset:
+            nwp_input = weather_nwp_interpolated[sample_index:(sample_index+sw_len_samples+fc_len_samples):nwp_downsampling_rate, :]
+            history_support = historical_pv[sample_index:(sample_index+sw_len_samples)]
+
+            target_start_index = sample_index + sw_len_samples
+            target = historical_pv[target_start_index:(target_start_index+fc_len_samples)]
+
+            teacher_start_index = target_start_index - one_addl_fc_timestep
+            teacher = historical_pv[teacher_start_index:(teacher_start_index+fc_len_samples)]
+
+            persistency_start_index = target_start_index - fc_len_samples
+            persistency = historical_pv[persistency_start_index:(persistency_start_index+fc_len_samples)]
+
+            target_sample_pdf = __convert_to_pdf(target, num_steps=target_steps, num_tiles=target_tiles, min_max=history_min_max)
+            target_pdf[num_sample,:,:]  = target_sample_pdf
+            if np.sum(target_sample_pdf) - fc_steps > 1e-6 or np.sum(target_sample_pdf) - fc_steps < -1e6:
+                print('sth is wrong', np.sum(target_sample_pdf, axis=-1))
+            persistency_pdf[num_sample, :,:] = __convert_to_pdf(persistency, num_steps=target_steps, num_tiles=target_tiles, min_max=history_min_max)
+            num_sample += 1
+            if partials and num_sample+1 >= len(sub_dataset)/100:
+                num_sample = 0
+                partial_baseline = __calculatate_skillscore_baseline(target_pdf, persistent_forecast=persistency_pdf, normalizer_value=np.amax(historical_pv))
+                set_nME.append(partial_baseline['nME'])
+                set_nRMSE.append(partial_baseline['nRMSE'])
+                set_CRPS.append(partial_baseline['CRPS'])
+
+            with tf.io.TFRecordWriter(str(sample_index) + '.tfrecord') as writer:
+
+                example = _features_to_example(nwp_input=nwp_input,
+                                               historical_support_raw=history_support,
+                                               teacher_raw=teacher,
+                                               target_raw=target)
+                writer.write(example)
+
+                    # we're done with val set, so jump back to the dataset folder
+        os.chdir(dataset_folder_path)
+        if not partials:
+            sample_baseline = __calculatate_skillscore_baseline(target_pdf, persistent_forecast=persistency_pdf, normalizer_value=np.amax(historical_pv))
+        else:
+            sample_baseline = {
+                'nME': tf.reduce_mean(set_nME).numpy(),
+                'nRMSE': tf.reduce_mean(set_nRMSE).numpy(),
+                'CRPS': tf.reduce_mean(set_CRPS).numpy()
+            }
+        return sample_baseline
+
+    dataset_info = {}
+    sw_as_pdf_len = sw_len_samples*fc_steps/fc_len_samples
+    dataset_info['nwp_downsampling_rate'] = nwp_downsampling_rate
+    dataset_info['nwp_dims'] = weather_nwp_interpolated.shape[0]
+    dataset_info['sw_len_samples'] = sw_len_samples
+    dataset_info['fc_len_samples'] = fc_len_samples
+    dataset_info['fc_tiles'] = fc_tiles
+    dataset_info['fc_steps'] = fc_steps
+    dataset_info['input_shape'] = [(sw_len_samples+fc_len_samples)/nwp_downsampling_rate, weather_nwp_interpolated.shape[1]]
+    dataset_info['teacher_shape'] = [fc_steps, fc_tiles]
+    dataset_info['target_shape'] = [fc_steps, fc_tiles]
+    dataset_info['history_support_shape'] = [sw_len_samples*fc_steps/fc_len_samples, fc_tiles]
+    dataset_info['normalizer_value'] = np.amax(historical_pv) - np.amin(historical_pv)
+
+
+    val_baseline = __save_set_to_folder(val_indices,
+                                        folder_name='validation',
+                                        save_every_xth_step=10)
+    dataset_info['val_baseline'] = val_baseline
+    print('saved val set, baseline:', val_baseline)
+
+    with open('dataset_info' + '.pickle', 'wb') as handle:
+        pickle.dump(dataset_info, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+    test_baseline = __save_set_to_folder(test_indices,
+                                        folder_name='test',
+                                        save_every_xth_step=10)
+    dataset_info['test_baseline'] = test_baseline
+    print('saved test set, baseline:', test_baseline)
+
+    train_baseline = __save_set_to_folder(train_indices,
+                                        folder_name='train',
+                                        save_every_xth_step=3)
+    dataset_info['train_baseline'] = train_baseline
+    print('saved train set, baseline:', train_baseline)
+
+def assign_samples_to_set(faults, train_ratio=0.8, sample_length=2, val_seed=1, test_seed=2):
+    num_val_samples = int(faults.shape[0] * (1.0-train_ratio)/2)
+    num_test_samples = int(faults.shape[0] * (1.0-train_ratio)/2)
+
+    num_consecutive_samples = int(1*sample_length)
+    taken_indices = np.zeros(faults.shape, dtype=np.bool)
+
+    num_val_samples_fetched = 0
+    num_test_samples_fetched = 0
+
+    train_indices = []
+    val_indices = []
+    test_indices = []
+
+    def _fetch(faults, how_many_to_fetch, taken_indices):
+        got_a_good_one = False #did we fetch a set?
+
+        while not got_a_good_one:
+            # generate a random guess of where to fetch a batch from
+            index_start_subset = np.random.uniform(low=0, high=(faults.shape[0] - how_many_to_fetch), size=None)
+            index_start_subset = int(index_start_subset)
+            indices_subset = np.arange(index_start_subset, index_start_subset + how_many_to_fetch)
+
+            # see if it is available, meaning: does it have faults (any index of the set = 1?) or is it already taken?
+            available = True
+            for subset_index in indices_subset:
+                if taken_indices[subset_index]:
+                    available = False
+                elif np.sum(faults[subset_index:(subset_index + sample_length)]) != 0:
+                    available = False
+            # if still avaliable after check, set flag to true
+            if available:
+                got_a_good_one = True
+
+        return indices_subset
+
+    # get exhaustive validation indices, not yet downsampled to every 10th!
+    np.random.seed(val_seed)
+    while num_val_samples_fetched < num_val_samples:
+        how_many_to_fetch = min(num_consecutive_samples, num_val_samples - num_val_samples_fetched)
+        next_batch = _fetch(faults, how_many_to_fetch, taken_indices)
+        for index in next_batch:
+            val_indices.append(index)
+            taken_indices[index] = True
+        num_val_samples_fetched = len(val_indices)
+
+    # get exhaustive test indices, not yet downsampled to every 10th!
+    np.random.seed(test_seed)
+    while num_test_samples_fetched < num_test_samples:
+        how_many_to_fetch = min(num_consecutive_samples, num_test_samples - num_test_samples_fetched)
+        next_batch = _fetch(faults, how_many_to_fetch, taken_indices)
+        for index in next_batch:
+            test_indices.append(index)
+            taken_indices[index] = True
+        num_test_samples_fetched = len(test_indices)
+    # get remaining training indices
+    for index in range(taken_indices.shape[0]):
+        if not taken_indices[index]:
+            if np.sum(faults[index:(index + sample_length)]) == 0:
+                train_indices.append(index)
+    return train_indices, val_indices, test_indices
 
 def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles, target_dims, plot=False, steps_to_new_sample=1):
     # -------------------------------------------------------------------------------------------------------------------
@@ -178,14 +430,14 @@ def __convert_to_pdf(target, num_tiles, num_steps, min_max):  # takes the target
     # num_steps is the target dowsample rate
 
     pdf_target = np.zeros([num_steps, num_tiles], dtype=np.float32)
-    min_max[1] = min_max[1] + min_max[0]  # rescale the maximum with regards to the minimum
+    target = target - min_max[0]
+    target = target/(min_max[1] - min_max[0])
     samples_in_step = int(target.shape[0] / num_steps)  # see how many steps we need to bunch into one pdf-step
-    target = target / min_max[1]  # rescale
-    target = np.where(target == 1, target - 1e-9, target)  # make sure we dont get overflow
-    target = np.floor(num_tiles * target)  # convert to indices
+    target = np.where(target >= 1-(.3/num_tiles), 1-(.3/num_tiles), target)  # make sure we dont get overflow
+    target = np.floor((num_tiles) * target)  # convert to indices
     for step in range(num_steps):
         for sample in range(samples_in_step):
-            pdf_target[step, int(target[step * samples_in_step + sample])] += 1.0 / samples_in_step
+            pdf_target[step, int(np.floor(target[step * samples_in_step + sample]))] += 1.0 / samples_in_step
     return pdf_target
 
 def __convert_to_mv(target, num_steps):  # creates expected value targets
@@ -325,7 +577,6 @@ def _get_weather_data(weather_data_folder):
 
     for axis in range(1, weather_mvts.shape[-1] - 1): #for all but the last data array
         mean = np.mean(weather_mvts[:,axis])
-
         weather_mvts[:, axis] = np.where(faults == 1, mean, weather_mvts[:, axis])
     faults = np.expand_dims(faults, axis=-1)
     weather_mvts = np.concatenate((weather_mvts, daytime_cos, daytime_sin, yeartime_cos, yeartime_sin, faults), axis=-1)
@@ -665,7 +916,6 @@ def __save_and_augment_Daniels_dataset(dataset, dataset_name, augment_data=True)
     del dataset
     os.chdir(current_wd)
 
-
 def __create_float_feature(flattened_value):
     """Returns a float_list from a float / double."""
     return tf.train.Feature(float_list=tf.train.FloatList(value=flattened_value))
@@ -680,21 +930,16 @@ def __example_from_features(input_sw, teacher, target):
     example = tf.train.Example(features=tf.train.Features(feature=features))
     return example.SerializeToString()
 
-def __tf_serialize_example(input_sw, teacher, target):
-    tf_string = tf.py_function(
-        __example_from_features,
-        (input_sw, teacher, target),  # pass these args to the above function.
-        tf.string)  # the return type is `tf.string`.
-    return tf.reshape(tf_string, ())  # The result is a scalar
-
 
 def __create_and_save_1_fold_CrossValidation(name='Daniels_dataset_1', seeds=[42, 43]):
+    # seeds that seem to work: [1,1]
     inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins = get_Daniels_data()
     normalizer_value = np.amax(ev_targets) - np.amin(ev_targets)
+    print(normalizer_value)
     dataset_splitter_kwargs = {'inp':inp,
                               'target':pdf_targets,
                               'teacher':pdf_teacher,
-                              'training_ratio':0.6,
+                              'training_ratio':0.8,
                               'sample_spacing_in_mins':sample_spacing_in_mins,
                               'normalizer_value':normalizer_value,
                               'input_rate_in_1_per_min':5}
@@ -719,7 +964,7 @@ def __create_and_save_1_fold_CrossValidation_Liza(name='Lizas_dataset_2', seeds=
     dataset_splitter_kwargs = {'inp':inp,
                               'target':pdf_targets,
                               'teacher':pdf_teacher,
-                              'training_ratio':0.6,
+                              'training_ratio':0.8,
                               'sample_spacing_in_mins':sample_spacing_in_mins,
                               'normalizer_value':normalizer_value,
                               'input_rate_in_1_per_min':15}

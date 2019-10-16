@@ -50,7 +50,8 @@ def loss_wrapper(last_output_dim_size, loss_type='nME', normalizer_value=1.0):
 def __calculate_expected_value(signal, last_output_dim_size):
     indices = tf.range(last_output_dim_size, dtype=tf.float32) # (last_output_dim_size)
     weighted_signal = tf.multiply(signal, indices) # (batches, timesteps, last_output_dim_size)
-    return tf.reduce_sum(weighted_signal, axis=-1, keepdims=True)
+    expected_value = tf.reduce_sum(weighted_signal, axis=-1, keepdims=True)
+    return expected_value
 
 def __pdf_to_cdf(pdf, last_output_dim_size):
     for tile in range(last_output_dim_size):
@@ -119,7 +120,7 @@ def calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size):
         tile_loss = 0.0
         for target_tile in range(last_output_dim_size):
             tile_distance_sq = tf.cast(target_tile - prediction_tile, dtype=tf.float32)
-            tile_distance_sq = tf.abs(tile_distance_sq)
+            tile_distance_sq = tf.square(tile_distance_sq)
 
             tile_tile_loss = tf.multiply(target[:, :, target_tile],
                                          inverse_log_probability_error[:, :, prediction_tile])
@@ -150,12 +151,13 @@ def calculate_KL_Divergence(target, prediction, last_output_dim_size):
     KL_divergence = tf.reduce_mean(KL_divergence)
     return KL_divergence
 
-def __calculatate_skillscore_baseline(set_targets, sample_spacing_in_mins, normalizer_value, persistent_forecast=None):
+def __calculatate_skillscore_baseline(set_targets, sample_spacing_in_mins=5, normalizer_value=1.0, persistent_forecast=None):
 
-    persistency_offset = (24*60)/sample_spacing_in_mins
-    persistency_offset = int(persistency_offset)
+
 
     if persistent_forecast is None:
+        persistency_offset = (24 * 60) / sample_spacing_in_mins
+        persistency_offset = int(persistency_offset)
         targets = set_targets[persistency_offset:, :, :]
         persistent_forecast = set_targets[:-persistency_offset, :,:]
     else:

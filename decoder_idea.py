@@ -851,48 +851,36 @@ class Conv_Transformer(tf.keras.layers.Layer):
         return out
 
 class whatever(tf.keras.layers.Layer):
-    def __init__(self, units, 
+    def __init__(self, units=None,
                 use_dropout=False,
                 dropout_rate=0.15, 
-                use_norm=False, 
-                self_recurrent=False, 
-                use_self_attention=True,
-                forecast_mode='LSTM'):
+                use_norm=False,
+                 ):
         super(whatever, self).__init__()
 
         if units is None:
-            units = {'units_tcn': [[32,32],[32,32]],
-                    'units_context_tcn': [[32,32],[32,32]],
+            units = {'units_tcn': [[20,20],[20,20]],
+                    'units_context_tcn': [[20, 20],[20, 20]],
                     'num_context_blocks': 1,
-                    'attention_units': [[32,32,32],[32,32,32]],
-                    'project_units': 24}
+                    'attention_units': [[20,20],[20, 20]],
+                     }
         self.units_tcn = units['units_tcn']
         self.units_context_tcn = units['units_context_tcn']
         self.num_context_blocks = units['num_context_blocks']
         self.attention_units = units['attention_units']
-        self.project_units = units['project_units']
         self.use_dropout = use_dropout
         self.dropout_rate = dropout_rate
         self.use_norm = use_norm
-        self.use_self_attention = use_self_attention
-        self.forecast_mode = forecast_mode
         self.context_built = False
 
-        self.tcn_block = []
-
-        self.tcn_block.append(DenseTCN(num_blocks=len(self.units_tcn),
+        self.tcn_block = DenseTCN(num_blocks=len(self.units_tcn),
                                             num_layers_per_block=len(self.units_tcn[0]), 
                                             growth_rate=self.units_tcn[0][0],
                                             squeeze_factor=0.5, 
                                             use_dropout = use_dropout,
                                             dropout_rate=dropout_rate,
                                             use_norm=use_norm,
-                                            kernel_sizes=[3]))
-
-        self.project = tf.keras.layers.Conv1D(filters=self.project_units,
-                                        kernel_size=1,
-                                        dilation_rate=1,
-                                        padding='causal')
+                                            kernel_sizes=[3])
 
 
     def build_context_block(self):
@@ -905,9 +893,9 @@ class whatever(tf.keras.layers.Layer):
                                             num_layers_per_block=len(self.units_context_tcn[0]), 
                                             growth_rate=self.units_context_tcn[0][0],
                                             squeeze_factor=0.5, 
-                                            use_dropout = use_dropout,
-                                            dropout_rate=dropout_rate,
-                                            use_norm=use_norm,
+                                            use_dropout = self.use_dropout,
+                                            dropout_rate=self.dropout_rate,
+                                            use_norm= self.use_norm,
                                             kernel_sizes=[3]))
             self.context_block.append(one_block)
         self.context_built = True
@@ -916,9 +904,12 @@ class whatever(tf.keras.layers.Layer):
     def run_context(self, decoder_inputs, encoder_features):
         out = decoder_inputs
         for block in range(self.num_context_blocks):
+            # Do the attention steps
             out_SA = self.context_block[block][0](out, value=out)
             out_A = self.context_block[block][1](out, value=encoder_features)
             out = tf.concat([out_SA, out_A], -1)
+
+            # do the transformation step
             out = self.context_block[block][2](out)
 
         return out
@@ -931,7 +922,7 @@ class whatever(tf.keras.layers.Layer):
 
         out = self.tcn_block(out)
         out = self.run_context(out, encoder_features=attention_value)
-        out = self.project(out)
+
         return out
 
 class encoder_CNN(tf.keras.layers.Layer):

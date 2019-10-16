@@ -112,7 +112,9 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
 
 
     print('fetching indices')
-    train_indices, val_indices, test_indices = assign_samples_to_set(faults, train_ratio=0.8, sample_length=sw_len_samples+fc_len_samples,
+    train_indices, val_indices, test_indices = assign_samples_to_set(faults,
+                                                                     train_ratio=0.8,
+                                                                     sample_length=sw_len_samples+fc_len_samples,
                                                                      val_seed=1,
                                                                      test_seed=2,
                                                                      )
@@ -131,6 +133,7 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
         target_pdf = __convert_to_pdf(target_raw, num_steps=target_steps, num_tiles=target_tiles, min_max=history_min_max)  # pdf for probability distribution thingie
         teacher_pdf = __convert_to_pdf(teacher_raw, num_steps=target_steps, num_tiles=target_tiles, min_max=history_min_max)
         historical_support_pdf = __convert_to_pdf(historical_support_raw, num_steps=support_steps, num_tiles=target_tiles, min_max=history_min_max)
+
         features = {'nwp_input': __create_float_feature(nwp_input.flatten()),
 
                     'raw_historical_input': __create_float_feature(historical_support_raw.flatten()),
@@ -140,6 +143,8 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
                     'pdf_historical_input': __create_float_feature(historical_support_pdf.flatten()),
                     'pdf_teacher': __create_float_feature(teacher_pdf.flatten()),
                     'pdf_target': __create_float_feature(target_pdf.flatten())}
+        if 'nwp_input' not in features:
+            print('WTF, lost NWP input!!')
         example = tf.train.Example(features=tf.train.Features(feature=features))
         return example.SerializeToString()
 
@@ -173,6 +178,9 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
             persistency_pdf = np.zeros([len(sub_dataset), fc_steps, fc_tiles])
         num_sample = 0
         for sample_index in sub_dataset:
+            if sample_index - fc_len_samples - sw_len_samples > weather_nwp_interpolated.shape[0]:
+                print('fuck, sth went wrong,index too high!!')
+
             nwp_input = weather_nwp_interpolated[sample_index:(sample_index+sw_len_samples+fc_len_samples):nwp_downsampling_rate, :]
             history_support = historical_pv[sample_index:(sample_index+sw_len_samples)]
 
@@ -221,7 +229,7 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
     dataset_info = {}
     sw_as_pdf_len = sw_len_samples*fc_steps/fc_len_samples
     dataset_info['nwp_downsampling_rate'] = nwp_downsampling_rate
-    dataset_info['nwp_dims'] = weather_nwp_interpolated.shape[0]
+    dataset_info['nwp_dims'] = weather_nwp_interpolated.shape[1]
     dataset_info['sw_len_samples'] = sw_len_samples
     dataset_info['fc_len_samples'] = fc_len_samples
     dataset_info['fc_tiles'] = fc_tiles
@@ -250,7 +258,7 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
 
     train_baseline = __save_set_to_folder(train_indices,
                                         folder_name='train',
-                                        save_every_xth_step=3)
+                                        save_every_xth_step=2)
     dataset_info['train_baseline'] = train_baseline
     print('saved train set, baseline:', train_baseline)
 
@@ -258,7 +266,7 @@ def assign_samples_to_set(faults, train_ratio=0.8, sample_length=2, val_seed=1, 
     num_val_samples = int(faults.shape[0] * (1.0-train_ratio)/2)
     num_test_samples = int(faults.shape[0] * (1.0-train_ratio)/2)
 
-    num_consecutive_samples = int(1*sample_length)
+    num_consecutive_samples = int(1.5*sample_length)
     taken_indices = np.zeros(faults.shape, dtype=np.bool)
 
     num_val_samples_fetched = 0
@@ -268,14 +276,14 @@ def assign_samples_to_set(faults, train_ratio=0.8, sample_length=2, val_seed=1, 
     val_indices = []
     test_indices = []
 
-    def _fetch(faults, how_many_to_fetch, taken_indices):
+    def _fetch(faults, how_many_to_fetch_at_once, taken_indices):
         got_a_good_one = False #did we fetch a set?
 
         while not got_a_good_one:
             # generate a random guess of where to fetch a batch from
-            index_start_subset = np.random.uniform(low=0, high=(faults.shape[0] - how_many_to_fetch), size=None)
+            index_start_subset = np.random.uniform(low=0, high=(faults.shape[0] - how_many_to_fetch_at_once - sample_length), size=None)
             index_start_subset = int(index_start_subset)
-            indices_subset = np.arange(index_start_subset, index_start_subset + how_many_to_fetch)
+            indices_subset = np.arange(index_start_subset, index_start_subset + how_many_to_fetch_at_once)
 
             # see if it is available, meaning: does it have faults (any index of the set = 1?) or is it already taken?
             available = True
@@ -310,10 +318,9 @@ def assign_samples_to_set(faults, train_ratio=0.8, sample_length=2, val_seed=1, 
             taken_indices[index] = True
         num_test_samples_fetched = len(test_indices)
     # get remaining training indices
-    for index in range(taken_indices.shape[0]):
-        if not taken_indices[index]:
-            if np.sum(faults[index:(index + sample_length)]) == 0:
-                train_indices.append(index)
+    for index in range(taken_indices.shape[0] - sample_length - 1):
+        if not taken_indices[index] and np.sum(faults[index:(index + sample_length)]) == 0:
+            train_indices.append(index)
     return train_indices, val_indices, test_indices
 
 def datasets_from_data(data, sw_len_samples, fc_len_samples, fc_steps, fc_tiles, target_dims, plot=False, steps_to_new_sample=1):

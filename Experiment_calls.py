@@ -7,14 +7,16 @@ import tensorflow as tf
 def train_LSTM_baseline_3fold_on_Daniel_data():
     # ToDo: do the dataset one folder up
     #hmmm...
-    datasets = ['Daniels_dataset_1', 'Daniels_dataset_2', 'Daniels_dataset_3', ]
+    datasets = [
+                'Daniels_Dataset_1',
+            ]
     metrics = {}
     for set in datasets:
         metrics[set] = []
         for run in range(3):
-            model_kwargs = {'model_type': 'Daniels_stuff',
-                            'model_size': 'small'}
-            train_kwargs = {'batch_size': 200}
+            model_kwargs = {'model_type': 'whatcouldgowrong',
+                            }
+            train_kwargs = {'batch_size': 64}
 
             experiment = Model_Container(dataset_folder=set,
                                       model_kwargs=model_kwargs,
@@ -24,7 +26,7 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
             del experiment
             tf.keras.backend.clear_session()
 
-    experiment_name = model_kwargs['model_size'] + '_' + model_kwargs['model_type']
+    experiment_name = 'S2S_dropout_norm_CNN_attn' + model_kwargs['model_size'] + '2_layers'
     with open(experiment_name+'.pickle', 'wb') as handle:
         pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
 

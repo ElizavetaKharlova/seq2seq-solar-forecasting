@@ -17,15 +17,36 @@ class Model_Container():
                  try_distribution_across_GPUs=True,
                  ):
         self.dataset_path = dataset_folder
-        self.try_distribution_across_GPUs = try_distribution_across_GPUs
+        #if try_distribution_across_GPUs:
+
+        self.strategy = tf.distribute.MirroredStrategy()
+
         self.dataset_info = pickle.load(open(dataset_folder + '/dataset_info.pickle', 'rb'))
-        model_kwargs['input_shape'] = self.dataset_info['input_shape']
-        model_kwargs['out_shape'] = self.dataset_info['target_shape']
-        model_kwargs['normalizer_value'] = self.dataset_info['normalizer_value']
+        self.sw_len_samples = self.dataset_info['sw_len_samples']
+        #self.sw_len_samples = int(5 * 24 * 60)
+        self.fc_len_samples = self.dataset_info['fc_len_samples']
+        #self.fc_len_samples = int(1 * 24 * 60)
+        self.fc_steps = self.dataset_info['fc_steps']
+        #self.fc_steps = 24
+        self.fc_tiles = self.dataset_info['fc_tiles']
+        #self.fc_tiles = 40
+        self.nwp_downsampling_rate = self.dataset_info['nwp_downsampling_rate']
+        # self.nwp_downsampling_rate = 15
+        self.nwp_dims = self.dataset_info['nwp_dims']
+        self.nwp_dims = 16
+        self.teacher_shape = [self.fc_steps, self.fc_tiles]
+        self.target_shape = [self.fc_steps, self.fc_tiles]
+        self.raw_nwp_shape = [int( (self.sw_len_samples + self.fc_len_samples)/self.nwp_downsampling_rate ), self.nwp_dims]
+        self.pdf_history_shape = [int(self.sw_len_samples/(self.fc_len_samples/self.fc_steps)), self.fc_tiles]
+        self.actual_input_shape = [int( self.sw_len_samples/self.nwp_downsampling_rate ), self.raw_nwp_shape[1] + self.nwp_downsampling_rate]
+
+        model_kwargs['input_shape'] = self.actual_input_shape
+        model_kwargs['out_shape'] = self.target_shape
+        model_kwargs['normalizer_value'] = 1.0
+        # self.dataset_info['normalizer_value']
 
         self.model_kwargs = model_kwargs
         self.train_kwargs = train_kwargs
-        self.__read_one_sample()
 
     def get_results(self):
         tf.keras.backend.clear_session()
@@ -35,9 +56,10 @@ class Model_Container():
         # strategy = tf.distribute.experimental.CentralStorageStrategy()
         # with strategy.scope():
         # make sure we are working clean
+        self.__create_datasets()
 
         self.__build_model(**self.model_kwargs)
-        self.__create_datasets()
+
         self.__train_model(**self.train_kwargs)
         del self.train_kwargs
         del self.model
@@ -46,42 +68,7 @@ class Model_Container():
 
         tf.keras.backend.clear_session()
         return self.metrics
-    def __read_one_sample(self):
-        def __get_all_tfrecords_in_folder(folder):
-            if os.path.isdir(folder):
-                file_list = glob.glob(folder + '/*.tfrecord')
-            else:
-                print('didnt find training data folder, expect issues!!')
-            return file_list
 
-        train_folder = self.dataset_path + '/train'
-        print('fetching training set...')
-        train_list = __get_all_tfrecords_in_folder(train_folder)
-        train_list
-        input_shape = self.model_kwargs['input_shape']
-        flattened_input_shape = 1
-        flattened_input_shape = [flattened_input_shape*dimension_shape for dimension_shape in input_shape]
-
-        output_shape = self.model_kwargs['out_shape']
-        flattened_output_shape = 1
-        flattened_output_shape = [flattened_output_shape * dimension_shape for dimension_shape in output_shape]
-
-        def __read_and_process_tfrecord(example):
-            print(example)
-            features = {'inputs': tf.io.FixedLenFeature(flattened_input_shape, tf.float32),
-                        'teacher': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),
-                        'target': tf.io.FixedLenFeature(flattened_output_shape, tf.float32), }
-
-            unadjusted_example = tf.io.parse_single_example(example, features)
-            inputs = tf.reshape(unadjusted_example['inputs'], input_shape)
-            teacher = tf.reshape(unadjusted_example['teacher'], output_shape)
-            target = tf.reshape(unadjusted_example['target'], output_shape)
-
-            return {'inputs_input': inputs, 'teacher_input': teacher}, target
-
-        dataset =tf.data.TFRecordDataset(train_list[0])
-        dataset = dataset.map(__read_and_process_tfrecord)
-        print(dataset)
     def __create_datasets(self):
         def __get_all_tfrecords_in_folder(folder):
             if os.path.isdir(folder):
@@ -89,29 +76,54 @@ class Model_Container():
             else:
                 print('didnt find training data folder, expect issues!!')
             return file_list
-        input_shape = self.model_kwargs['input_shape']
-        flattened_input_shape = 1
-        output_shape = self.model_kwargs['out_shape']
+        nwp_shape = self.raw_nwp_shape
+        flattened_nwp_shape = 1
+        for dimension_shape in nwp_shape:
+            flattened_nwp_shape = flattened_nwp_shape * dimension_shape
+        pv_input_shape = [self.sw_len_samples]
+        output_shape = self.target_shape
         flattened_output_shape = 1
-        model_type = self.model_kwargs['model_type']
-
-        for dimension_shape in input_shape:
-            flattened_input_shape = flattened_input_shape * dimension_shape
         for dimension_shape in output_shape:
             flattened_output_shape = flattened_output_shape * dimension_shape
 
         def __read_and_process_tfrecord(example):
-            features = {'inputs': tf.io.FixedLenFeature(flattened_input_shape, tf.float32),
-                        'teacher': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),
-                        'target': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),}
-            unadjusted_example = tf.io.parse_single_example(example, features)
-            inputs = tf.reshape(tensor=unadjusted_example['inputs'], shape=[input_shape[0], input_shape[1]])
-            target = tf.reshape(tensor=unadjusted_example['target'], shape=[output_shape[0], output_shape[1]])
+            # 'nwp_input':
+            # 'raw_historical_input':
+            # 'raw_teacher':
+            # 'raw_target':
+            # 'pdf_historical_input':
+            # 'pdf_teacher':
+            # 'pdf_target':
 
-            if 'MiMo' in model_type:
+            features = {'nwp_input': tf.io.FixedLenFeature(flattened_nwp_shape, tf.float32),
+                        'raw_historical_input': tf.io.FixedLenFeature(pv_input_shape, tf.float32),
+                        'pdf_historical_input': tf.io.FixedLenFeature(self.pdf_history_shape[0] * self.pdf_history_shape[1], tf.float32),
+                        'pdf_target': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),
+                        'pdf_teacher': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),
+                        }
+            unadjusted_example = tf.io.parse_single_example(example, features)
+            nwp_inputs = tf.reshape(tensor=unadjusted_example['nwp_input'], shape=[nwp_shape[0], nwp_shape[1]])
+
+            target = tf.reshape(tensor=unadjusted_example['pdf_target'], shape=[output_shape[0], output_shape[1]])
+
+            if 'MiMo' in self.model_kwargs['model_type']:
+                history_pv = tf.reshape(tensor=unadjusted_example['raw_historical_input'], shape=[self.nwp_downsampling_rate, int(self.sw_len_samples/self.nwp_downsampling_rate)])
+                history_pv = tf.transpose(history_pv, [1,0])
+                nwp_inputs = nwp_inputs[(self.fc_len_samples/self.nwp_downsampling_rate):,:]
+                inputs = tf.concat([nwp_inputs, history_pv], axis=-1)
                 return inputs, target
+            elif 'whatcouldgowrong' in self.model_kwargs['model_type']:
+                print('yaaay', self.model_kwargs['model_type'])
+                history_pdf = tf.reshape(tensor=unadjusted_example['pdf_historical_input'], shape=[self.pdf_history_shape[0], self.pdf_history_shape[1]])
+                teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
+                                     shape=[output_shape[0], output_shape[1]])
+                return{'support_input': nwp_inputs, 'history_input': history_pdf, 'teacher_input': teacher}, target
             else:
-                teacher = tf.reshape(tensor=unadjusted_example['teacher'],
+                history_pv = tf.reshape(tensor=unadjusted_example['raw_historical_input'], shape=[self.nwp_downsampling_rate, int(self.sw_len_samples/self.nwp_downsampling_rate)])
+                history_pv = tf.transpose(history_pv, [1,0])
+                nwp_inputs = nwp_inputs[int(self.fc_len_samples/self.nwp_downsampling_rate):,:]
+                inputs = tf.concat([nwp_inputs, history_pv], axis=-1)
+                teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
                                      shape=[output_shape[0], output_shape[1]])
                 return {'inputs_input': inputs, 'teacher_input': teacher}, target
 
@@ -134,6 +146,7 @@ class Model_Container():
             return dataset
 
         batch_size = self.train_kwargs['batch_size']
+        # ToDo: change back to '/train'
         train_folder = self.dataset_path + '/train'
         train_list = __get_all_tfrecords_in_folder(train_folder)
         def get_training_dataset():
@@ -168,11 +181,11 @@ class Model_Container():
         if model_size == 'small':
             units = [[32, 32, 32]]
         elif model_size =='medium' or model_size == 'med':
-            units = [[64, 64, 64]]
+            units = [[64, 64, 64, 64, 64]]
         elif model_size == 'big':
             units = [[128, 128, 128]]
         elif model_size == 'large':
-            units = [[256, 256, 256]]
+            units = [[256, 256]]
 
         if model_type == 'MiMo-LSTM':
             print('building a', model_size, model_type)
@@ -193,7 +206,7 @@ class Model_Container():
                                downsample_input=downsample,
                                downsampling_rate=(60 / 5),
                                mode=mode)
-    
+
         elif model_type == 'MiMo-attn-tcn':
             print('building a', model_size, model_type)
             from Building_Blocks import attentive_TCN
@@ -248,37 +261,32 @@ class Model_Container():
             from Models import encoder_decoder_model
             self.model = encoder_decoder_model(**model_kwargs)
 
-        elif model_type =='Daniels_stuff':
-            print('building Daneils dumb experimentoro')
-            common_specs = {'units': [[20, 20], [8,8],
-                                      [35,35], [10,10],
-                                      [50,50], []],
-                            'use_dropout': True,
-                            'dropout_rate': dropout_rate,
-                            'use_norm': False}
-            encoder_specs = copy.deepcopy(common_specs)
-            decoder_specs = copy.deepcopy(common_specs)
-            decoder_specs['units'] = [[50,50], [10,10],
-                                      [60,60], []]
-            decoder_specs['use_attention'] = True
-            decoder_specs['self_recurrent'] = True
-            decoder_specs['mode'] = 'decoder'
-            projection_model = tf.keras.layers.Dense(units=out_shape[-1],
-                                                     activation=tf.keras.layers.Softmax(axis=-1))
-            from Building_Blocks import TCN_Transformer
-            model_kwargs = {'encoder_block': TCN_Transformer(**encoder_specs),
-                            "encoder_stateful": False,
-                            'decoder_block': TCN_Transformer(**decoder_specs),
-                            'use_teacher': False,
-                            'decoder_uses_attention_on': decoder_specs['use_attention'],
-                            'decoder_stateful': False,
-                            'self_recurrent_decoder': decoder_specs['self_recurrent'],
-                            'projection_block': projection_model,
-                            'input_shape': input_shape,
-                            'output_shape': out_shape}
+        elif model_type =='whatcouldgowrong':
+            from decoder_idea import DenseTCN, whatever
+            from Models import forecaster_model
+            units_tcn = [[20,20],[20,20]]
+            encoder = DenseTCN(num_blocks=len(units_tcn),
+                                            num_layers_per_block=len(units_tcn[0]),
+                                            growth_rate=units_tcn[0][0],
+                                            squeeze_factor=0.5,
+                                            use_dropout = use_dropout,
+                                            dropout_rate=dropout_rate,
+                                            use_norm=use_norm,
+                                            kernel_sizes=[3])
 
-            from Models import encoder_decoder_model
-            self.model = encoder_decoder_model(**model_kwargs)
+            projection = tf.keras.layers.Conv1D(filters=out_shape[-1],
+                                                kernel_size=1,
+                                                strides=1,
+                                                padding='causal',
+                                                activation=tf.keras.layers.Softmax(axis=-1),
+                                                kernel_initializer='glorot_uniform')
+            self.model = forecaster_model(encoder_block=encoder,
+                                     decoder_block=whatever(),
+                                     projection_block=projection,
+                                    use_teacher=True,
+                                     output_shape=out_shape,
+                                     support_shape=self.raw_nwp_shape,
+                                     history_shape=self.pdf_history_shape)
 
         elif model_type == 'Encoder-Decoder-TCN' or model_type == 'E-D-TCN':
             common_specs = {'units': [[32],[32],[32]],
@@ -288,7 +296,7 @@ class Model_Container():
 
             encoder_specs = copy.deepcopy(common_specs)
             decoder_specs = copy.deepcopy(common_specs)
-                             
+
             decoder_specs['use_attention'] = True
             decoder_specs['self_recurrent'] = self_recurrent
             decoder_specs['mode'] = 'decoder'
@@ -316,9 +324,9 @@ class Model_Container():
             print('building E-D')
             common_specs = {'units': units,
                             'use_dropout': use_dropout,
-                            'dropout_rate': 0.15,
+                            'dropout_rate': dropout_rate,
                             'use_norm': use_norm,
-                            'use_hw': True,
+                            'use_hw': use_hw,
                             'use_quasi_dense': use_quasi_dense,
                             'only_last_layer_output': True}
 
@@ -421,28 +429,6 @@ def __get_max_min_targets(train_targets, test_targets):
     min_value_test = np.amin(min_value_test, axis=0)
     min_value = np.minimum(min_value_test, min_value_train)
     return max_value, min_value
-
-
-
-
-#
-# class __adjust_teacher_callback(tf.keras.callbacks.Callback):
-#     if prev_val_metric < self.metrics['val_nRMSE'][-1]:
-#         relative_decrease += 1
-#
-#     if relative_decrease > 2:
-#         # if we have no relative increase in quality towards the previous iteration
-#         # then decrease the blend factor
-#         self.dataset['train_blend'] = self.dataset['train_blend'] - 0.05
-#         self.dataset['train_blend'] = tf.maximum(0.0, self.dataset['train_blend'])
-#         print('lowering blend factor')
-#         relative_decrease = 0
-#
-#     prev_val_metric = train_history['val_nRMSE'][0]
-#
-#     self.model.load_weights('best_weight_set.h5')
-
-
 
 
 

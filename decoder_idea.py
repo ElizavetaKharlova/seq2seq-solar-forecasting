@@ -217,43 +217,41 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
         return all_out, states_list_o_lists
 
 class Attention(tf.keras.Model):
+    '''
+    Attention class
+    '''
     def __init__(self, units, mode='Transformer',
                  only_context=True, context_mode='timeseries-like'):
         super(Attention, self).__init__()
-        self.W1 = tf.keras.layers.Dense(units, kernel_initializer='glorot_uniform', use_bias=False)
-        #self.W1 = tf.keras.layers.TimeDistributed(self.W1)
-
-        self.W2 = tf.keras.layers.Dense(units, kernel_initializer='glorot_uniform', use_bias=False)
-        #self.W2 = tf.keras.layers.TimeDistributed(self.W2)
-
-        # if use_norm:
-        #     self.W1 = Norm_wrapper(self.W1)
-        #     self.W2 = Norm_wrapper(self.W2)
-        # if use_dropout:
-        #     self.W1 = Dropout_wrapper(self.W1, dropout_rate=dropout_rate)
-        #     self.W2 = Dropout_wrapper(self.W2, dropout_rate=dropout_rate)
 
         self.context_mode = context_mode
         self.mode = mode
+        self.only_context = only_context
+        self.use_mask = False
+
+        self.W1 = tf.keras.layers.Dense(units, kernel_initializer='glorot_uniform', use_bias=False)
+        self.W2 = tf.keras.layers.Dense(units, kernel_initializer='glorot_uniform', use_bias=False)
         if self.mode == 'Bahdanau':
             self.V = tf.keras.layers.Dense(1)
         elif self.mode == 'Transformer':
             self.W3 = tf.keras.layers.Dense(units,kernel_initializer='glorot_uniform', use_bias=False)
-            #self.W3 = tf.keras.layers.TimeDistributed(self.W3)
 
-            # if use_norm:
-            #     self.W3 = Norm_wrapper(self.W3)
-            # if use_dropout:
-            #     self.W3 = Dropout_wrapper(self.W3, dropout_rate=dropout_rate)
+    def build_mask(self, forecast_timesteps, input_shape):
+        # create mask to wipe out the future timesteps
+        # forecast_timesteps is the length of the forecast (different each step)
+        causal_mask = tf.Variable(tf.ones(shape=[input_shape[0],input_shape[0]], dtype=tf.dtypes.float32))
+        causal_mask = self.causal_mask[:forecast_timesteps,-forecast_timesteps:].assign(tf.constant(float('-inf'), shape=[forecast_timesteps,forecast_timesteps]))
+        return causal_mask
 
-        self.only_context = only_context
     
-    def call(self, query, value=None, key=None):
+    def call(self, query, value=None, key=None, forecast_timesteps=forecast_timesteps):
         # hidden shape == (batch_size, hidden size)
         # hidden_with_time_axis shape == (batch_size, 1, hidden size)
         # we are doing this to perform addition to calculate the score
         if value is None:
             value = query
+            self.use_mask = True
+            causal_mask = self.build_mask(forecast_timesteps, input_shape=query.shape)
         if key is None:
             key = value
         key = self.W2(key)
@@ -278,6 +276,8 @@ class Attention(tf.keras.Model):
             score = tf.matmul(query, key, transpose_b=True)
             # scale score
             score = score / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
+            if self.use_mask:
+                score = tf.multiply(score, causal_mask)
             score = tf.nn.softmax(score, axis=1)
 
             context_vector = tf.matmul(score, value)
@@ -901,12 +901,12 @@ class whatever(tf.keras.layers.Layer):
         self.context_built = True
         return None
 
-    def run_context(self, decoder_inputs, encoder_features):
+    def run_context(self, decoder_inputs, encoder_features, forecast_timesteps):
         out = decoder_inputs
         for block in range(self.num_context_blocks):
             # Do the attention steps
-            out_SA = self.context_block[block][0](out, value=out)
-            out_A = self.context_block[block][1](out, value=encoder_features)
+            out_SA = self.context_block[block][0](out, value=out, forecast_timesteps=forecast_timesteps)
+            out_A = self.context_block[block][1](out, value=encoder_features, forecast_timesteps=forecast_timesteps)
             out = tf.concat([out_SA, out_A], -1)
 
             # do the transformation step
@@ -973,8 +973,8 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                                   only_context=True)
             self.multihead_attention.append(attention)
 
-    def call(self, query, value):
-        multihead_out = [head(query, value) for head in self.multihead_attention]
+    def call(self, query, value, forecast_timesteps):
+        multihead_out = [head(query, value, forecast_timesteps) for head in self.multihead_attention]
         return tf.concat(multihead_out, axis=-1)
 
 class TCN_Transformer(tf.keras.layers.Layer):

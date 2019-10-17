@@ -240,7 +240,9 @@ class Attention(tf.keras.Model):
         # create mask to wipe out the future timesteps
         # forecast_timesteps is the length of the forecast (different each step)
         causal_mask = tf.Variable(tf.ones(shape=[input_shape[0],input_shape[0]], dtype=tf.dtypes.float32))
-        causal_mask = self.causal_mask[:forecast_timesteps,-forecast_timesteps:].assign(tf.constant(float('-inf'), shape=[forecast_timesteps,forecast_timesteps]))
+        fill = tf.constant(float('-inf'), shape=[forecast_timesteps,forecast_timesteps])
+        fill = tf.linalg.band_part(fill, 0, -1) + 1.0
+        causal_mask = causal_mask[:forecast_timesteps,-forecast_timesteps:].assign(fill)
         return causal_mask
 
     

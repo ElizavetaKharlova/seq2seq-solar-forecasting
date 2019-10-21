@@ -114,10 +114,13 @@ class Model_Container():
                 return inputs, target
             elif 'whatcouldgowrong' in self.model_kwargs['model_type']:
                 print('yaaay', self.model_kwargs['model_type'])
-                history_pdf = tf.reshape(tensor=unadjusted_example['pdf_historical_input'], shape=[self.pdf_history_shape[0], self.pdf_history_shape[1]])
+                history_pdf = tf.reshape(tensor=unadjusted_example['pdf_historical_input'],
+                                         shape=[self.pdf_history_shape[0], self.pdf_history_shape[1]])
                 teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
                                      shape=[output_shape[0], output_shape[1]])
-                return{'support_input': nwp_inputs, 'history_input': history_pdf, 'teacher_input': teacher}, target
+                return{'support_input': nwp_inputs,
+                       'history_input': history_pdf,
+                       'teacher_input': teacher}, target
             else:
                 history_pv = tf.reshape(tensor=unadjusted_example['raw_historical_input'], shape=[self.nwp_downsampling_rate, int(self.sw_len_samples/self.nwp_downsampling_rate)])
                 history_pv = tf.transpose(history_pv, [1,0])
@@ -264,7 +267,7 @@ class Model_Container():
         elif model_type =='whatcouldgowrong':
             from decoder_idea import DenseTCN, whatever
             from Models import forecaster_model
-            units_tcn = [[20,20],[20,20]]
+            units_tcn = [[10,10,10,10],[10,10,10,10]]
             encoder = DenseTCN(num_blocks=len(units_tcn),
                                             num_layers_per_block=len(units_tcn[0]),
                                             growth_rate=units_tcn[0][0],

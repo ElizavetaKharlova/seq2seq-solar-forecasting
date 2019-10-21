@@ -80,7 +80,7 @@ def forecaster_model(encoder_block, decoder_block, projection_block,
         decoder_input = tf.concat([history_input, teacher], axis=1)
         print(decoder_input, 'as decoder input')
 
-        decoder_signal = decoder_block(decoder_input, attention_value=encoder_features)
+        decoder_signal = decoder_block(decoder_input, attention_value=encoder_features, forecast_timestep=out_steps)
         relevant_decoder_signal = decoder_signal[:,-out_steps:, :]
         print('train phase, ', relevant_decoder_signal)
         forecast = projection_block(relevant_decoder_signal)
@@ -90,7 +90,7 @@ def forecaster_model(encoder_block, decoder_block, projection_block,
     def recurrent_forecast():
         decoder_input = history_input
         for timestep in range(out_steps):
-            decoder_signal = decoder_block(decoder_input, attention_value=encoder_features)
+            decoder_signal = decoder_block(decoder_input, attention_value=encoder_features, forecast_timestep=timestep)
             relevant_decoder_signal = decoder_signal[:,-1,:]
             relevant_decoder_signal = tf.expand_dims(relevant_decoder_signal, axis=1)
             forecast_step = projection_block(relevant_decoder_signal)

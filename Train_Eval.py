@@ -226,6 +226,27 @@ class Model_Container():
                                downsampling_rate=(60 / 5),
                                mode='project')
 
+        elif model_type == 'MiMo-just-tcn':
+            print('building a', model_size, model_type)
+            from Building_Blocks import DenseTCN
+            encoder_specs = {'num_blocks': 3, 
+                             'num_layers_per_block': 3,
+                            'growth_rate': 12, 
+                            'use_dropout': False, 
+                            'dropout_rate': 0.0, 
+                            'use_norm': False,
+                            'downsample_rate': 1}
+
+
+            from Models import mimo_model
+            self.model = mimo_model(function_block=DenseTCN(**encoder_specs),
+                               input_shape=input_shape,
+                               output_shape=out_shape,
+                               downsample_input=False,
+                               downsampling_rate=(60 / 5),
+                               mode='project')
+
+
         elif model_type == 'Encoder-TCN' or model_type == 'E-TCN':
             common_specs = {'units': units,
                             'use_dropout': use_dropout,

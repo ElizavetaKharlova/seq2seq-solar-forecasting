@@ -9,6 +9,20 @@ Daniels_dataset_2/
 
 Daniels_dataset_3/
 
+Lizas_dataset_1/
+
+Lizas_dataset_2/
+
+Lizas_Dataset_3/
+
+experiments/
+
+test.py
+
+Dataset_Loaders_for_Liza.py
+
+process_lizas_data.py
+
 __pycache__/
 
 \.ipynb_checkpoints/

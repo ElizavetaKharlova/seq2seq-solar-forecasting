@@ -9,7 +9,8 @@ import gzip, pickle
 # 0 mean and unit variance 
 def process_weather_load(weather_data, load_data):
     # drop the columns with insufficient values
-    weather_data = weather_data.drop(['MW1U', 'Pool_price', 'ANC1', 'Interchange', 'Calgary_hmdx', 'Calgary_wind_chill', 'Calgary_weather', 'Edmonton_hmdx', 'Edmonton_wind_chill', 'Edmonton_weather', 'McMurray_hmdx', 'McMurray_wind_chill', 'McMurray_weather'], axis=1)
+    weather_data = weather_data.drop(['MW1U', 'Pool_price', 'ANC1', 'Interchange', 'Calgary_hmdx', 'Calgary_wind_chill', 'Calgary_weather', 
+                                    'Edmonton_hmdx', 'Edmonton_wind_chill', 'Edmonton_weather', 'McMurray_hmdx', 'McMurray_wind_chill', 'McMurray_weather'], axis=1)
 
     col_names = weather_data.columns
     # replace the NaNs with interpolated values
@@ -37,10 +38,20 @@ def process_weather_load(weather_data, load_data):
 
 
     # get training and test sets 'Interchange',
-    X_old = weather_data[['Calgary_temp', 'Calgary_dew_point_temp', 'Calgary_rel_hum', 'Calgary_wind_dir', 'Calgary_wind_spd', 'Calgary_visibility', 'Calgary_stn_press', 'Edmonton_temp', 'Edmonton_dew_point_temp', 'Edmonton_rel_hum', 'Edmonton_wind_dir', 'Edmonton_wind_spd', 'Edmonton_visibility', 'Edmonton_stn_press', 'McMurray_temp', 'McMurray_dew_point_temp', 'McMurray_rel_hum', 'McMurray_wind_dir', 'McMurray_wind_spd', 'McMurray_visibility', 'McMurray_stn_press']]
+    # X_old = weather_data[['Calgary_temp', 'Calgary_dew_point_temp', 'Calgary_rel_hum', 'Calgary_wind_dir', 'Calgary_wind_spd', 'Calgary_visibility', 'Calgary_stn_press', 
+    #                     'Edmonton_temp', 'Edmonton_dew_point_temp', 'Edmonton_rel_hum', 'Edmonton_wind_dir', 'Edmonton_wind_spd', 'Edmonton_visibility', 'Edmonton_stn_press', 
+    #                     'McMurray_temp', 'McMurray_dew_point_temp', 'McMurray_rel_hum', 'McMurray_wind_dir', 'McMurray_wind_spd', 'McMurray_visibility', 'McMurray_stn_press']]
+    X_old = weather_data[['Edmonton_temp', 'Edmonton_dew_point_temp', 'Edmonton_rel_hum', 'Edmonton_wind_dir', 'Edmonton_wind_spd', 'Edmonton_visibility', 'Edmonton_stn_press']]
 
     X_weather = []
-    s = pd.Series([float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN')], index=['Calgary_temp', 'Calgary_dew_point_temp', 'Calgary_rel_hum', 'Calgary_wind_dir', 'Calgary_wind_spd', 'Calgary_visibility', 'Calgary_stn_press', 'Edmonton_temp', 'Edmonton_dew_point_temp', 'Edmonton_rel_hum', 'Edmonton_wind_dir', 'Edmonton_wind_spd', 'Edmonton_visibility', 'Edmonton_stn_press', 'McMurray_temp', 'McMurray_dew_point_temp', 'McMurray_rel_hum', 'McMurray_wind_dir', 'McMurray_wind_spd', 'McMurray_visibility', 'McMurray_stn_press'])
+    # s = pd.Series([float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),
+    #                 float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),
+    #                 float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN')], 
+    #                 index=['Calgary_temp', 'Calgary_dew_point_temp', 'Calgary_rel_hum', 'Calgary_wind_dir', 'Calgary_wind_spd', 'Calgary_visibility', 'Calgary_stn_press', 
+    #                 'Edmonton_temp', 'Edmonton_dew_point_temp', 'Edmonton_rel_hum', 'Edmonton_wind_dir', 'Edmonton_wind_spd', 'Edmonton_visibility', 'Edmonton_stn_press', 
+    #                 'McMurray_temp', 'McMurray_dew_point_temp', 'McMurray_rel_hum', 'McMurray_wind_dir', 'McMurray_wind_spd', 'McMurray_visibility', 'McMurray_stn_press'])
+    s = pd.Series([float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN')], 
+                    index=['Edmonton_temp', 'Edmonton_dew_point_temp', 'Edmonton_rel_hum', 'Edmonton_wind_dir', 'Edmonton_wind_spd', 'Edmonton_visibility', 'Edmonton_stn_press'])
 
     for i in range(len(X_old)):
         X_weather.append(s)
@@ -105,7 +116,7 @@ weather, load = process_weather_load(weather_data, load_data)
 # num_steps: the number of steps in the forecast in the lenght of samples
 # forecast_steps: length of the forecast in desired sample size
 # num_tiles: number of tiles in the probability distribution
-specs_dict = {'target': [21],
+specs_dict = {'target': [7],
             'sw_steps': 7*96,
             'num_steps':96,
             'forecast_steps':24,

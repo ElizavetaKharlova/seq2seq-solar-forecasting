@@ -247,16 +247,15 @@ class Attention(tf.keras.Model):
         return causal_mask
 
     
-    def call(self, query, value=None, key=None, forecast_timesteps=0):
+    def call(self, query, value=None, key=None):
         # hidden shape == (batch_size, hidden size)
         # hidden_with_time_axis shape == (batch_size, 1, hidden size)
         # we are doing this to perform addition to calculate the score
 
         if value is None:
             value = query
-            if forecast_timesteps>0:
-                self.use_mask = True
-                causal_mask = self.build_mask(forecast_timesteps, input_shape=query.shape)
+            self.use_mask = True
+            causal_mask = self.build_mask(input_shape=query.shape)
         if key is None:
             key = value
         print(key, query, value)
@@ -909,12 +908,12 @@ class whatever(tf.keras.layers.Layer):
         self.context_built = True
         return None
 
-    def run_context(self, decoder_inputs, encoder_features, forecast_timesteps):
+    def run_context(self, decoder_inputs, encoder_features):
         out = decoder_inputs
         for block in range(self.num_context_blocks):
             # Do the attention steps
-            out_SA = self.context_block[block][0](out, value=out, forecast_timesteps=forecast_timesteps)
-            out_A = self.context_block[block][1](out, value=encoder_features, forecast_timesteps=forecast_timesteps)
+            out_SA = self.context_block[block][0](out, value=out)
+            out_A = self.context_block[block][1](out, value=encoder_features)
             out = tf.concat([out_SA, out_A], -1)
 
             # do the transformation step
@@ -922,14 +921,14 @@ class whatever(tf.keras.layers.Layer):
 
         return out
 
-    def call(self, decoder_inputs, attention_value=None, forecast_timestep=0):
+    def call(self, decoder_inputs, attention_value=None):
         if not self.context_built:
             self.build_context_block()
 
         out = decoder_inputs
 
         out = self.tcn_block(out)
-        out = self.run_context(out, encoder_features=attention_value, forecast_timesteps=forecast_timestep)
+        out = self.run_context(out, encoder_features=attention_value)
 
         return out
 

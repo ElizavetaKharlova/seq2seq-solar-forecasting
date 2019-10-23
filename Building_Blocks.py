@@ -1,25 +1,13 @@
 # contains all the building blocks necessary to build the architectures we will be working on
 # In a sense, this will be the main modiefied file
 
-# ToDO: clean up commentary
-#ToDo: change in a way, that we can pass different encoders and decoders as arguments or something
-# ToDO: change everything to tf.float32 for speeeeed
-
 
 import tensorflow as tf
-# this builds a basic encoder decoder model with:
-# encoder layers / units == decoder layers / units
-# output shape is the desired shape of the output [timesteps, dimensions]
-# input shape is the supplied encoder input shape [inp_tmesteps, input_dimensions]
-# the model will have three inputs:
-# the encoder input [inp_tmesteps, input_dimensions]
-# the decoder input  [timesteps, dimensions](for teacher forcing and blending to non-teacher forcing)
-# the blend factor between decoder model output and real target out
-# the model will have one output
-# output [timesteps, dimensions]
 
-# Application of feed-forward & recurrent dropout on encoder & decoder hidden states.
 class DropoutWrapper(tf.keras.layers.Wrapper):
+    '''
+    Application of feed-forward & recurrent dropout on encoder & decoder hidden states.
+    '''
     def __init__(self, layer, dropout_prob, units):
         super(DropoutWrapper, self).__init__(layer)
         self.i_o_dropout_layer = tf.keras.layers.Dropout(rate=dropout_prob, noise_shape=(1,units))
@@ -36,8 +24,10 @@ class DropoutWrapper(tf.keras.layers.Wrapper):
         output = self.i_o_dropout_layer(output, training=istraining)
         return output, state_h, state_c
 
-# Application of Zoneout on hidden encoder & decoder states.
 class ZoneoutWrapper(tf.keras.layers.Wrapper):
+    '''
+    Application of Zoneout on hidden encoder & decoder states.
+    '''
     def __init__(self, layer, zoneout_prob):
         super(ZoneoutWrapper, self).__init__(layer)
         self.zoneout_prob = zoneout_prob
@@ -93,15 +83,213 @@ class Norm_LSTM_wrapper(tf.keras.layers.Wrapper):
         layer_out = self.norm(layer_out)
         return layer_out, state_h, state_c
 
-# this builds the wrapper class for the multilayer LSTM
-# in addition to the multiple LSTM layers it adds
-# dropout
-# layer norm (or maybe recurrent layer norm, whatever feels best)
-# inits are the num_layers, num_units per layer and dropout rate
-# call needs the inputs and the initial state
-# it gives the outputs of all RNN layers (or should it be just one?)
-# and the states at the last step
+class Norm_wrapper(tf.keras.layers.Wrapper):
+    def __init__(self, layer, norm='layer'):
+        super(Norm_wrapper, self).__init__(layer)
+
+        if norm == 'layer':
+            self.norm = tf.keras.layers.LayerNormalization(axis=-1,
+                                                           center=True,
+                                                           scale=True,)
+        else:
+            print('norm type', norm, 'not found, check the code to see if it is a typo')
+
+    def call(self, inputs):
+        return self.norm(self.layer(inputs))
+
+class Dropout_wrapper(tf.keras.layers.Wrapper):
+    def __init__(self, layer, dropout_rate):
+        super(Dropout_wrapper, self).__init__(layer)
+        self.dropout = tf.keras.layers.Dropout(rate=dropout_rate)
+
+    def call(self, inputs):
+        return self.dropout(self.layer(inputs), training=tf.keras.backend.learning_phase())
+
+########################################################################################################################
+
+class Attention(tf.keras.Model):
+    '''
+    Attention class
+    '''
+    def __init__(self, units, mode='Transformer',
+                 only_context=True, context_mode='timeseries-like'):
+        super(Attention, self).__init__()
+
+        self.context_mode = context_mode
+        self.mode = mode
+        self.only_context = only_context
+        self.use_mask = False
+
+        self.W1 = tf.keras.layers.Dense(units, kernel_initializer='glorot_uniform', use_bias=False)
+        self.W2 = tf.keras.layers.Dense(units, kernel_initializer='glorot_uniform', use_bias=False)
+        if self.mode == 'Bahdanau':
+            self.V = tf.keras.layers.Dense(1)
+        elif self.mode == 'Transformer':
+            self.W3 = tf.keras.layers.Dense(units,kernel_initializer='glorot_uniform', use_bias=False)
+
+    def build_mask(self, input_shape):
+        # create mask to wipe out the future timesteps
+        causal_mask = tf.Variable(tf.ones(shape=[input_shape[0],input_shape[0]], dtype=tf.dtypes.float32))
+        fill = tf.constant(float('-inf'), shape=[input_shape[0]-1,input_shape[0]-1])
+        fill = tf.linalg.band_part(fill, 0, -1) + 1.0
+        # upper triangular matrix with -inf values, and 1s on the diagonal
+        causal_mask = causal_mask[:-1,1:].assign(fill)
+
+        return causal_mask
+
+    
+    def call(self, query, value=None, key=None):
+        # hidden shape == (batch_size, hidden size)
+        # hidden_with_time_axis shape == (batch_size, 1, hidden size)
+        # we are doing this to perform addition to calculate the score
+
+        if value is None:
+            value = query
+            self.use_mask = True
+            causal_mask = self.build_mask(input_shape=query.shape)
+        if key is None:
+            key = value
+        print(key, query, value)
+        key = self.W2(key)
+        query = self.W1(query)
+
+        if self.mode == 'Bahdanau':
+            # Bahdaau style attention: score = tanh(Q + V)
+            # score shape == (batch_size, max_length, 1)
+            # we get 1 at the last axis because we are applying score to self.V
+            # the shape of the tensor before applying self.V is (batch_size, max_length, units)
+            # attention_weights shape == (batch_size, max_length, 1)
+            attention_weights = tf.nn.softmax(self.V(tf.nn.tanh(query + key)), axis=1)
+            context_vector = attention_weights * value
+
+        elif self.mode == 'Transformer':
+            value = self.W3(value)
+
+            # Trasformer style attention: score=Q*K/sqrt(dk)
+            # in this case keys = values
+            if len(query.shape) < len(key.shape):
+                query = tf.expand_dims(query,1)
+            score = tf.matmul(query, key, transpose_b=True)
+            # scale score
+            score = score / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
+            if self.use_mask:
+                score = tf.multiply(score, causal_mask)
+            score = tf.nn.softmax(score, axis=1)
+
+            context_vector = tf.matmul(score, value)
+     
+        # context_vector shape after sum == (batch_size, hidden_size)
+        if self.context_mode == 'force singular step':
+            context_vector = tf.reduce_sum(context_vector, axis=1)
+
+        if self.only_context:
+            return context_vector
+        else:
+            return context_vector, attention_weights
+
+class Conv_Attention(tf.keras.Model):
+    def __init__(self, units, kernel_size=1, mode='Transformer',
+                 only_context=True, context_mode='timeseries-like'):
+        super(Conv_Attention, self).__init__()
+
+        self.context_mode = context_mode
+        self.only_context = only_context
+
+        self.W_Q = tf.keras.layers.Conv1D(filters=units,
+                                        kernel_size=kernel_size,
+                                        dilation_rate=1,
+                                        padding='causal')
+        self.W_K = tf.keras.layers.Conv1D(filters=units,
+                                        kernel_size=kernel_size,
+                                        dilation_rate=1,
+                                        padding='causal')
+        self.W_V = tf.keras.layers.Conv1D(filters=units,
+                                        kernel_size=kernel_size,
+                                        dilation_rate=1,
+                                        padding='causal')
+
+    
+    def call(self, query, value=None, key=None):
+        # hidden shape == (batch_size, hidden size)
+        # hidden_with_time_axis shape == (batch_size, 1, hidden size)
+        # we are doing this to perform addition to calculate the score
+        if value is None:
+            value = query
+        if key is None:
+            key = value
+        key = self.W_K(key)
+        query = self.W_Q(query)
+        value = self.W_V(value)
+
+        # Trasformer style attention: score=Q*K/sqrt(dk)
+        # in this case keys = values
+        if len(query.shape) < len(key.shape):
+            query = tf.expand_dims(query,1)
+        score = tf.matmul(query, key, transpose_b=True)
+        # scale score
+        score = score / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
+        score = tf.nn.softmax(score, axis=1)
+
+        context_vector = tf.matmul(score, value)
+     
+        # context_vector shape after sum == (batch_size, hidden_size)
+        if self.context_mode == 'force singular step':
+            context_vector = tf.reduce_sum(context_vector, axis=1)
+
+        if self.only_context:
+            return context_vector
+        else:
+            return context_vector, score
+
+class multihead_attentive_layer(tf.keras.layers.Layer):
+    def __init__(self, num_heads, num_units_per_head=80):
+        super(multihead_attentive_layer, self).__init__()
+        # units is a list of lists, containing the numbers of units in the attention head
+        self.num_heads = num_heads
+        self.projection = False
+
+        self.multihead_attention = []
+        for head in range(self.num_heads):
+            attention = Attention(num_units_per_head,
+                                  mode='Transformer',
+                                  only_context=True)
+            self.multihead_attention.append(attention)
+
+    def call(self,query, value):
+        multihead_out = [head(query, value) for head in self.multihead_attention]
+        return tf.concat(multihead_out, axis=-1)
+
+class multihead_conv_attentive_layer(tf.keras.layers.Layer):
+    def __init__(self, num_heads, num_units_per_head=80, kernel_sizes=[1,3,9]):
+        super(multihead_conv_attentive_layer, self).__init__()
+        # units is a list of lists, containing the numbers of units in the attention head
+        self.num_heads = num_heads
+        self.projection = False
+
+        self.multihead_attention = []
+        for head in range(self.num_heads):
+            attention = Conv_Attention(num_units_per_head,
+                                        kernel_size=kernel_sizes[head],
+                                        mode='Transformer',
+                                        only_context=True)
+            self.multihead_attention.append(attention)
+
+    def call(self,query, value=None):
+        multihead_out = [head(query, value) for head in self.multihead_attention]
+        return tf.concat(multihead_out, axis=-1)
+
+########################################################################################################################
+
 class MultiLayer_LSTM(tf.keras.layers.Layer):
+    '''
+    this builds the wrapper class for the multilayer LSTM
+    in addition to the multiple LSTM layers it adds dropout
+    layer norm (or maybe recurrent layer norm, whatever feels best)
+    inits are the num_layers, num_units per layer and dropout rate
+    call needs the inputs and the initial state
+    it gives the outputs of all RNN layers (or should it be just one?)
+    and the states at the last step
+    '''
     def __init__(self, units=[[20, 20], [20,20]], use_dropout=True, dropout_rate=0.0, use_norm=True, use_hw=True, use_quasi_dense=True):
         super(MultiLayer_LSTM, self).__init__()
 
@@ -213,81 +401,6 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
 
             states_list_o_lists.append(states_list)
         return all_out, states_list_o_lists
-
-class Attention(tf.keras.Model):
-    def __init__(self, units, mode='Transformer',
-                 only_context=True, context_mode='timeseries-like'):
-        super(Attention, self).__init__()
-        self.W1 = tf.keras.layers.Dense(units, kernel_initializer='glorot_uniform', use_bias=False)
-        #self.W1 = tf.keras.layers.TimeDistributed(self.W1)
-
-        self.W2 = tf.keras.layers.Dense(units, kernel_initializer='glorot_uniform', use_bias=False)
-        #self.W2 = tf.keras.layers.TimeDistributed(self.W2)
-
-        # if use_norm:
-        #     self.W1 = Norm_wrapper(self.W1)
-        #     self.W2 = Norm_wrapper(self.W2)
-        # if use_dropout:
-        #     self.W1 = Dropout_wrapper(self.W1, dropout_rate=dropout_rate)
-        #     self.W2 = Dropout_wrapper(self.W2, dropout_rate=dropout_rate)
-
-        self.context_mode = context_mode
-        self.mode = mode
-        if self.mode == 'Bahdanau':
-            self.V = tf.keras.layers.Dense(1)
-        elif self.mode == 'Transformer':
-            self.W3 = tf.keras.layers.Dense(units,kernel_initializer='glorot_uniform', use_bias=False)
-            #self.W3 = tf.keras.layers.TimeDistributed(self.W3)
-
-            # if use_norm:
-            #     self.W3 = Norm_wrapper(self.W3)
-            # if use_dropout:
-            #     self.W3 = Dropout_wrapper(self.W3, dropout_rate=dropout_rate)
-
-        self.only_context = only_context
-    
-    def call(self, query, value=None, key=None):
-        # hidden shape == (batch_size, hidden size)
-        # hidden_with_time_axis shape == (batch_size, 1, hidden size)
-        # we are doing this to perform addition to calculate the score
-        if value is None:
-            value = query
-        if key is None:
-            key = value
-        key = self.W2(key)
-        query = self.W1(query)
-
-        if self.mode == 'Bahdanau':
-            # Bahdaau style attention: score = tanh(Q + V)
-            # score shape == (batch_size, max_length, 1)
-            # we get 1 at the last axis because we are applying score to self.V
-            # the shape of the tensor before applying self.V is (batch_size, max_length, units)
-            # attention_weights shape == (batch_size, max_length, 1)
-            attention_weights = tf.nn.softmax(self.V(tf.nn.tanh(query + key)), axis=1)
-            context_vector = attention_weights * value
-
-        elif self.mode == 'Transformer':
-            value = self.W3(value)
-
-            # Trasformer style attention: score=Q*K/sqrt(dk)
-            # in this case keys = values
-            if len(query.shape) < len(key.shape):
-                query = tf.expand_dims(query,1)
-            score = tf.matmul(query, key, transpose_b=True)
-            # scale score
-            score = score / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
-            score = tf.nn.softmax(score, axis=1)
-
-            context_vector = tf.matmul(score, value)
-     
-        # context_vector shape after sum == (batch_size, hidden_size)
-        if self.context_mode == 'force singular step':
-            context_vector = tf.reduce_sum(context_vector, axis=1)
-
-        if self.only_context:
-            return context_vector
-        else:
-            return context_vector, attention_weights
 
 class block_LSTM(tf.keras.layers.Layer):
     def __init__(self, units=[[20, 20], [20,20]],
@@ -471,6 +584,17 @@ class Multilayer_CNN(tf.keras.layers.Layer):
             all_out.append(out)
         return all_out
 
+class encoder_CNN(tf.keras.layers.Layer):
+    def __init__(self, num_layers, num_units, use_dropout=True, dropout_rate=0.0):
+        super(encoder_CNN, self).__init__()
+        self.layers = num_layers
+        self.units = num_units
+        self.encoder = Multilayer_CNN(num_layers, num_units, use_dropout, dropout_rate)
+
+    def call(self, encoder_inputs, initial_states=None):
+        encoder_outputs = self.encoder(encoder_inputs)
+
+        return encoder_outputs
 
 class DenseTCN(tf.keras.layers.Layer):
     """
@@ -696,58 +820,89 @@ class attentive_TCN(tf.keras.layers.Layer):
                 inputs = out
         return out
 
+class whatever(tf.keras.layers.Layer):
+    '''
+    Decoder block
+    Input: historical load data, encoder features for context
+    Output: prediction
+    TCN block processes the raw input and creates features 
+    Context block uses the features from TCN block, performs self-attention, 
+    then performs attention on the input and the context received from the encoder,
+    then applies TCN on the output to transform the features.
+    '''
+    def __init__(self, units=None,
+                use_dropout=False,
+                dropout_rate=0.15, 
+                use_norm=False,
+                 ):
+        super(whatever, self).__init__()
 
-class encoder_CNN(tf.keras.layers.Layer):
-    def __init__(self, num_layers, num_units, use_dropout=True, dropout_rate=0.0):
-        super(encoder_CNN, self).__init__()
-        self.layers = num_layers
-        self.units = num_units
-        self.encoder = Multilayer_CNN(num_layers, num_units, use_dropout, dropout_rate)
+        if units is None:
+            units = {'units_tcn': [[10,10,10,10],[10,10,10,10]],
+                    'units_context_tcn': [[10, 10],[10, 10]],
+                    'num_context_blocks': 1,
+                    'attention_units': [[20,20],[20, 20]],
+                     }
+        self.units_tcn = units['units_tcn']
+        self.units_context_tcn = units['units_context_tcn']
+        self.num_context_blocks = units['num_context_blocks']
+        self.attention_units = units['attention_units']
+        self.use_dropout = use_dropout
+        self.dropout_rate = dropout_rate
+        self.use_norm = use_norm
+        self.context_built = False
 
-    def call(self, encoder_inputs, initial_states=None):
-        encoder_outputs = self.encoder(encoder_inputs)
+        self.tcn_block = DenseTCN(num_blocks=len(self.units_tcn),
+                                            num_layers_per_block=len(self.units_tcn[0]), 
+                                            growth_rate=self.units_tcn[0][0],
+                                            squeeze_factor=0.5, 
+                                            use_dropout = use_dropout,
+                                            dropout_rate=dropout_rate,
+                                            use_norm=use_norm,
+                                            kernel_sizes=[3])
 
-        return encoder_outputs
 
-class Norm_wrapper(tf.keras.layers.Wrapper):
-    def __init__(self, layer, norm='layer'):
-        super(Norm_wrapper, self).__init__(layer)
+    def build_context_block(self):
+        self.context_block = []
+        for block in range(self.num_context_blocks):
+            one_block = []
+            one_block.append(multihead_attentive_layer(num_heads=len(self.attention_units[0]), num_units_per_head=self.attention_units[0][0]))
+            one_block.append(multihead_attentive_layer(num_heads=len(self.attention_units[1]), num_units_per_head=self.attention_units[1][0]))
+            one_block.append(DenseTCN(num_blocks=len(self.units_context_tcn),
+                                            num_layers_per_block=len(self.units_context_tcn[0]), 
+                                            growth_rate=self.units_context_tcn[0][0],
+                                            squeeze_factor=0.5, 
+                                            use_dropout = self.use_dropout,
+                                            dropout_rate=self.dropout_rate,
+                                            use_norm= self.use_norm,
+                                            kernel_sizes=[3]))
+            self.context_block.append(one_block)
+        self.context_built = True
+        return None
 
-        if norm == 'layer':
-            self.norm = tf.keras.layers.LayerNormalization(axis=-1,
-                                                           center=True,
-                                                           scale=True,)
-        else:
-            print('norm type', norm, 'not found, check the code to see if it is a typo')
+    def run_context(self, decoder_inputs, encoder_features):
+        out = decoder_inputs
+        for block in range(self.num_context_blocks):
+            # Do the attention steps
+            out_SA = self.context_block[block][0](out, value=out)
+            out_A = self.context_block[block][1](out, value=encoder_features)
+            out = tf.concat([out_SA, out_A], -1)
 
-    def call(self, inputs):
-        return self.norm(self.layer(inputs))
+            # do the transformation step
+            out = self.context_block[block][2](out)
 
-class Dropout_wrapper(tf.keras.layers.Wrapper):
-    def __init__(self, layer, dropout_rate):
-        super(Dropout_wrapper, self).__init__(layer)
-        self.dropout = tf.keras.layers.Dropout(rate=dropout_rate)
+        return out
 
-    def call(self, inputs):
-        return self.dropout(self.layer(inputs), training=tf.keras.backend.learning_phase())
+    def call(self, decoder_inputs, attention_value=None):
+        if not self.context_built:
+            self.build_context_block()
 
-class multihead_attentive_layer(tf.keras.layers.Layer):
-    def __init__(self, num_heads, num_units_per_head=80):
-        super(multihead_attentive_layer, self).__init__()
-        # units is a list of lists, containing the numbers of units in the attention head
-        self.num_heads = num_heads
-        self.projection = False
+        out = decoder_inputs
 
-        self.multihead_attention = []
-        for head in range(self.num_heads):
-            attention = Attention(num_units_per_head,
-                                  mode='Transformer',
-                                  only_context=True)
-            self.multihead_attention.append(attention)
+        out = self.tcn_block(out)
+        out = self.run_context(out, encoder_features=attention_value)
 
-    def call(self,query, value):
-        multihead_out = [head(query, value) for head in self.multihead_attention]
-        return tf.concat(multihead_out, axis=-1)
+        return out
 
 class TCN_Transformer(tf.keras.layers.Layer):
     def __init__(self,

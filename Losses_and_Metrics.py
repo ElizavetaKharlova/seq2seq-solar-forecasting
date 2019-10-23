@@ -120,7 +120,7 @@ def calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size):
         tile_loss = 0.0
         for target_tile in range(last_output_dim_size):
             tile_distance_sq = tf.cast(target_tile - prediction_tile, dtype=tf.float32)
-            tile_distance_sq = tf.square(tile_distance_sq)
+            tile_distance_sq = tf.abs(tile_distance_sq)
 
             tile_tile_loss = tf.multiply(target[:, :, target_tile],
                                          inverse_log_probability_error[:, :, prediction_tile])

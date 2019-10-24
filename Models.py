@@ -46,7 +46,7 @@ class Forecaster(tf.keras.Model):
 
             return forecast
 
-def forecaster_model(encoder_block, decoder_block, projection_block,
+def forecaster_model(encoder_block, decoder_block,
                      history_shape, support_shape, output_shape,
                      use_teacher=True, #dont be stupid and dont
                      ):
@@ -71,36 +71,16 @@ def forecaster_model(encoder_block, decoder_block, projection_block,
     print(history_input)
 
     encoder_features = encoder_block(support_input)
+    print(encoder_features)
     # If we are training and using teacher forcing, do one step faaaaaaast
     # else do recurrent decoding
     teacher = tf.keras.layers.Input(shape=(out_steps, out_dims), name='teacher_input')
+    print('removing 0th step to prevent overlap between history and teacher!!')
 
-    def teacher_one_step_forecast():
-
-        decoder_input = tf.concat([history_input, teacher], axis=1)
-        print(decoder_input, 'as decoder input')
-
-        decoder_signal = decoder_block(decoder_input, attention_value=encoder_features, forecast_timestep=out_steps)
-        relevant_decoder_signal = decoder_signal[:,-out_steps:, :]
-        print('train phase, ', relevant_decoder_signal)
-        forecast = projection_block(relevant_decoder_signal)
-        print('train phase, ', forecast)
-        return forecast
-
-    def recurrent_forecast():
-        decoder_input = history_input
-        for timestep in range(out_steps):
-            decoder_signal = decoder_block(decoder_input, attention_value=encoder_features, forecast_timestep=timestep)
-            relevant_decoder_signal = decoder_signal[:,-1,:]
-            relevant_decoder_signal = tf.expand_dims(relevant_decoder_signal, axis=1)
-            forecast_step = projection_block(relevant_decoder_signal)
-            decoder_input = tf.concat([decoder_input, forecast_step], axis=1)
-
-        forecast = decoder_input[:, -out_steps:, :]
-        print(forecast)
-        return forecast
-
-    forecast = tf.keras.backend.in_train_phase(teacher_one_step_forecast(), alt=recurrent_forecast(), training=istraining)
+    forecast = tf.keras.backend.in_train_phase(decoder_block(history_input, attention_value=encoder_features, forecast_timesteps=out_steps, teacher=teacher[:,1:,:]),
+                                               alt=decoder_block(history_input, attention_value=encoder_features, forecast_timesteps=out_steps, teacher=None),
+                                               training=istraining)
+    print(forecast)
     return tf.keras.Model([support_input, history_input, teacher], forecast)
 
 

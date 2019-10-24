@@ -38,9 +38,18 @@ class Model_Container():
         self.target_shape = [self.fc_steps, self.fc_tiles]
         self.raw_nwp_shape = [int( (self.sw_len_samples + self.fc_len_samples)/self.nwp_downsampling_rate ), self.nwp_dims]
         self.pdf_history_shape = [int(self.sw_len_samples/(self.fc_len_samples/self.fc_steps)), self.fc_tiles]
-        self.actual_input_shape = [int( self.sw_len_samples/self.nwp_downsampling_rate ), self.raw_nwp_shape[1] + self.nwp_downsampling_rate]
 
-        model_kwargs['input_shape'] = self.actual_input_shape
+        if model_kwargs['model_type'] == 'Encoder-Decoder' or model_kwargs['model_type'] == 'E-D' or 'MiMo' in model_kwargs['model_type']:
+            self.actual_input_shape = [int(self.sw_len_samples / self.nwp_downsampling_rate),
+                                       self.raw_nwp_shape[1] + 1]
+            model_kwargs['input_shape'] = self.actual_input_shape
+        elif 'MiMo' in model_kwargs['model_type']:
+            self.actual_input_shape = [int(self.sw_len_samples / self.nwp_downsampling_rate),
+                                       self.raw_nwp_shape[1] + 1]
+            model_kwargs['input_shape'] = self.actual_input_shape
+        elif 'generator' in model_kwargs['model_type']:
+            model_kwargs['input_shape'] = 7
+
         model_kwargs['out_shape'] = self.target_shape
         model_kwargs['normalizer_value'] = 1.0
         # self.dataset_info['normalizer_value']
@@ -56,9 +65,12 @@ class Model_Container():
         # strategy = tf.distribute.experimental.CentralStorageStrategy()
         # with strategy.scope():
         # make sure we are working clean
-        self.__create_datasets()
-
+        strategy = tf.distribute.MirroredStrategy()
+        # strategy = tf.distribute.experimental.CentralStorageStrategy()
+        # with strategy.scope():
         self.__build_model(**self.model_kwargs)
+
+        self.__create_datasets()
 
         self.__train_model(**self.train_kwargs)
         del self.train_kwargs
@@ -106,14 +118,11 @@ class Model_Container():
 
             target = tf.reshape(tensor=unadjusted_example['pdf_target'], shape=[output_shape[0], output_shape[1]])
 
-            if 'MiMo' in self.model_kwargs['model_type']:
-                history_pv = tf.reshape(tensor=unadjusted_example['raw_historical_input'], shape=[self.nwp_downsampling_rate, int(self.sw_len_samples/self.nwp_downsampling_rate)])
-                history_pv = tf.transpose(history_pv, [1,0])
-                nwp_inputs = nwp_inputs[(self.fc_len_samples/self.nwp_downsampling_rate):,:]
-                inputs = tf.concat([nwp_inputs, history_pv], axis=-1)
-                return inputs, target
-            elif 'whatcouldgowrong' in self.model_kwargs['model_type']:
-                print('yaaay', self.model_kwargs['model_type'])
+
+            # ToDo: Current Dev Stack
+            if 'generator' in self.model_kwargs['model_type']:
+                print('yaaay', self.model_kwargs['model_type'], 'time!!!!')
+
                 history_pdf = tf.reshape(tensor=unadjusted_example['pdf_historical_input'],
                                          shape=[self.pdf_history_shape[0], self.pdf_history_shape[1]])
                 teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
@@ -121,14 +130,19 @@ class Model_Container():
                 return{'support_input': nwp_inputs,
                        'history_input': history_pdf,
                        'teacher_input': teacher}, target
-            else:
+
+            elif self.model_kwargs['model_type'] == 'Encoder-Decoder' or self.model_kwargs['model_type'] == 'E-D' or 'MiMo' in self.model_kwargs['model_type']:
                 history_pv = tf.reshape(tensor=unadjusted_example['raw_historical_input'], shape=[self.nwp_downsampling_rate, int(self.sw_len_samples/self.nwp_downsampling_rate)])
                 history_pv = tf.transpose(history_pv, [1,0])
+                history_pv = tf.reduce_mean(history_pv, axis=-1, keepdims=True)
                 nwp_inputs = nwp_inputs[int(self.fc_len_samples/self.nwp_downsampling_rate):,:]
-                inputs = tf.concat([nwp_inputs, history_pv], axis=-1)
-                teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
-                                     shape=[output_shape[0], output_shape[1]])
-                return {'inputs_input': inputs, 'teacher_input': teacher}, target
+                inputs =tf.concat([nwp_inputs, history_pv], axis=-1)
+                if 'MiMo' in self.model_kwargs['model_type']:
+                    return inputs, target
+                else:
+                    teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
+                                         shape=[output_shape[0], output_shape[1]])
+                    return {'inputs_input': inputs, 'teacher_input': teacher}, target
 
         def get_batched_dataset(file_list, batch_size):
             option_no_order = tf.data.Options()
@@ -378,6 +392,36 @@ class Model_Container():
 
             from Models import encoder_decoder_model
             self.model = encoder_decoder_model(**model_kwargs)
+
+        elif model_type == 'generator' or model_type == 'Generator':
+            print('building E-D')
+            common_specs = {'units': units,
+                            'use_dropout': use_dropout,
+                            'dropout_rate': dropout_rate,
+                            'use_norm': use_norm,
+                            'use_hw': use_hw,
+                            'use_quasi_dense': use_quasi_dense,
+                            'only_last_layer_output': True}
+
+            encoder_specs = copy.deepcopy(common_specs)
+            encoder_specs['return_state'] = False
+            decoder_specs = copy.deepcopy(common_specs)
+
+            decoder_specs['projection'] = tf.keras.layers.Conv1D(filters=out_shape[-1],
+                                                kernel_size=1,
+                                                strides=1,
+                                                padding='causal',
+                                                activation=tf.keras.layers.Softmax(axis=-1),
+                                                kernel_initializer='glorot_uniform')
+
+            from Building_Blocks import block_LSTM, generator_LSTM_block
+            from Models import forecaster_model
+            self.model = forecaster_model(encoder_block=block_LSTM(**encoder_specs),
+                                     decoder_block=generator_LSTM_block(**decoder_specs),
+                                    use_teacher=True,
+                                     output_shape=out_shape,
+                                     support_shape=self.raw_nwp_shape,
+                                     history_shape=self.pdf_history_shape)
 
         else:
             print('trying to build with', model_size, model_type, 'but failed')

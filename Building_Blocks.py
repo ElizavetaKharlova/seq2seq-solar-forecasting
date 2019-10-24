@@ -3,6 +3,17 @@
 
 
 import tensorflow as tf
+import numpy as np
+# this builds a basic encoder decoder model with:
+# encoder layers / units == decoder layers / units
+# output shape is the desired shape of the output [timesteps, dimensions]
+# input shape is the supplied encoder input shape [inp_tmesteps, input_dimensions]
+# the model will have three inputs:
+# the encoder input [inp_tmesteps, input_dimensions]
+# the decoder input  [timesteps, dimensions](for teacher forcing and blending to non-teacher forcing)
+# the blend factor between decoder model output and real target out
+# the model will have one output
+# output [timesteps, dimensions]
 
 class DropoutWrapper(tf.keras.layers.Wrapper):
     '''
@@ -402,6 +413,138 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
             states_list_o_lists.append(states_list)
         return all_out, states_list_o_lists
 
+class Attention(tf.keras.layers.Layer):
+    '''
+    Implements an attention layer.
+    Implemented are Bahdanau and Transformer style attention.
+    If query/key kernel and strides are supplied this mimics the proposed convolutional attention mechanism.
+    '''
+    def __init__(self, units,
+                 mode='Transformer',
+                 causal_attention=False,
+                 only_context=True,
+                 query_kernel=1,
+                 query_stride=1,
+                 key_kernel=1,
+                 key_stride=1,
+                 ):
+        super(Attention, self).__init__()
+        self.mode = mode
+        self.only_context = only_context
+        self.causal_attention = causal_attention
+        self.W_query = tf.keras.layers.Conv1D(units,
+                                         strides=query_stride,
+                                         kernel_size=query_kernel,
+                                         padding='causal',
+                                         kernel_initializer='glorot_uniform',
+                                         use_bias=False)
+
+        self.W_value = tf.keras.layers.Conv1D(units,
+                                         strides=1,
+                                         kernel_size=1,
+                                         padding='causal',
+                                         kernel_initializer='glorot_uniform',
+                                         use_bias=False)
+
+        if mode == 'Bahdanau':
+            self.V = tf.keras.layers.Dense(1)
+        elif mode == 'Transformer':
+            self.W_key = tf.keras.layers.Conv1D(units,
+                                         strides=key_stride,
+                                         kernel_size=key_kernel,
+                                         padding='causal',
+                                         kernel_initializer='glorot_uniform',
+                                         use_bias=False)
+
+    # ToDo: is this properly done? We should mask the query, not the value nor the key, right??
+    def __build_causal_mask(self, len_query):
+        list_of_rows = []
+        for timestep in range(len_query):
+            allowed = [1]*(timestep+1) # those are allowed
+            not_allowed = [-tf.inf]*(len_query-(timestep+1)) # those are not allowed
+            timestep_mask = tf.concat([allowed, not_allowed], axis=0) # here the full mask, (len_value)
+            list_of_rows.append(tf.expand_dims(timestep_mask, axis=1)) # expand the last dim, (len_value,1)
+        self.causal_mask = tf.concat(list_of_rows, axis=1) # shape now (len_value, len_value)
+        self.mask_built = True
+
+    def call(self, query, value=None, key=None):
+        # If value is none, we assume self attention and set value = query
+        # if key is none we assume standard usage and set key = value
+
+        if value is None:
+            value = query
+        if key is None:
+            key = value
+        #
+        # if self.causal_attention and not self.mask_built:
+        #     self.__build_causal_mask(len_value=query.shape[1])
+        # query = self.W_query(query)
+
+        # if self.causal_attention:
+        #     query = query * self.causal_mask
+
+        if self.mode == 'Bahdanau':
+            # Bahdaau style attention: score = tanh(Q + V)
+            # score shape == (batch_size, max_length, 1)
+            # we get 1 at the last axis because we are applying score to self.V
+            # the shape of the tensor before applying self.V is (batch_size, max_length, units)
+            # attention_weights shape == (batch_size, max_length, 1)
+            attention_weights = tf.nn.softmax(self.V(tf.nn.tanh(self.W_query(query) + self.W_value(key))), axis=1)
+            context_vector = attention_weights * value
+
+        elif self.mode == 'Transformer':
+
+            # Trasformer style attention: score=Q*K/sqrt(dk)
+            # in this case keys = values
+            if len(query.shape) < len(key.shape):
+                query = tf.expand_dims(query,1)
+            # ToDo: add mask matrix?
+            # (len_query, dims_query) matmul (dims_value, len_value) = (len_query, len_value)
+            score = tf.matmul(self.W_query(query), self.W_value(key), transpose_b=True)
+            score = score / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
+
+            score = tf.nn.softmax(score, axis=1)
+
+            context_vector = tf.matmul(score, self.W_key(value))
+
+        if self.only_context:
+            return context_vector
+        else:
+            return context_vector, attention_weights
+
+class multihead_attentive_layer(tf.keras.layers.Layer):
+    def __init__(self, units_per_head=[80, 80], kernel_size=[3, 8], use_norm=True):
+        super(multihead_attentive_layer, self).__init__()
+        # units is a list of lists, containing the numbers of units in the attention head
+        self.num_heads = len(units_per_head)
+        self.projection = False
+        self.use_norm = use_norm
+
+        self.multihead_attention = []
+        if self.use_norm:
+            self.norm = []
+            for head in range(self.num_heads):
+                norm = tf.keras.layers.LayerNormalization(axis=-1,
+                                                          center=True,
+                                                          scale=False)
+                self.norm.append(norm)
+
+        for head in range(self.num_heads):
+            attention = Attention(units_per_head[head],
+                                  mode='Transformer',
+                                query_kernel=kernel_size[head],
+                                  key_kernel=kernel_size[head],
+                                  only_context=True)
+            self.multihead_attention.append(attention)
+
+    def call(self, query, value):
+        multihead_out = [head(query, value) for head in self.multihead_attention]
+        if self.use_norm:
+            for head in range(len(multihead_out)):
+                multihead_out[head] = self.norm[head](multihead_out[head])
+
+        return tf.concat(multihead_out, axis=-1)
+
 class block_LSTM(tf.keras.layers.Layer):
     def __init__(self, units=[[20, 20], [20,20]],
                  use_dropout=False,
@@ -485,7 +628,12 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                     self.c_attention.append(self.c_attn_list)
 
             else:
-                self.attention = Attention(self.units[-1][-1], mode='Transformer') # choose the attention style (Bahdanau, Transformer)
+                units = units[-1][-1]
+                heads=2
+                self.attention = multihead_attentive_layer(units_per_head=[int(units/heads)]*heads,
+                                                           kernel_size=[1,1],
+                                                           use_norm=use_norm,
+                                                           ) # choose the attention style (Bahdanau, Transformer)
             if self.self_recurrent:
                 self.self_attention = Attention(self.units[0][0], mode='Transformer')
         self.decoder = MultiLayer_LSTM(**self.ml_LSTM_params)
@@ -546,6 +694,75 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
 
         return decoder_out, decoder_state
 
+class generator_LSTM_block(tf.keras.layers.Layer):
+    def __init__(self,
+                 units=[[20, 20], [20,20]],
+                 use_dropout=False,
+                 dropout_rate=0.0,
+                 use_hw=True,
+                 use_norm=True,
+                 use_quasi_dense=True,
+                 use_attention=False,
+                 only_last_layer_output= True,
+                 projection=tf.keras.layers.Dense(20)):
+        super(generator_LSTM_block, self).__init__()
+
+        self.ml_LSTM_params = {'units': units,
+                        'use_dropout': use_dropout,
+                        'dropout_rate': dropout_rate,
+                        'use_norm': use_norm,
+                        'use_hw': use_hw,
+                        'use_quasi_dense': use_quasi_dense,
+                        }
+        self.LSTM = MultiLayer_LSTM(**self.ml_LSTM_params)
+        self.projection = projection
+
+        units = units[-1][-1]
+        heads = 2
+        kernel_sizes = [1, 1]
+        self.max_kernel_size = np.amax(kernel_sizes)
+        self.attention = multihead_attentive_layer(units_per_head=[int(units / heads)] * heads,
+                                                   kernel_size=kernel_sizes,
+                                                   use_norm=use_norm
+                                                   )  # choose the attention style (Bahdanau, Transformer)
+
+
+    def call(self, decoder_input, attention_value, forecast_timesteps=12, teacher=None):
+
+        forecast = []
+        attention_features = self.attention(decoder_input, attention_value)
+        LSTM_inputs = tf.concat([decoder_input, attention_features], axis=-1)
+        LSTM_out, LSTM_states = self.LSTM(LSTM_inputs, initial_states=None)
+
+        for step in range(forecast_timesteps):
+            attention_features = self.attention(decoder_input, attention_value)
+            LSTM_inputs = tf.concat([decoder_input[:,-1:,:], attention_features[:,-1:,:]], axis=-1)
+            LSTM_out, LSTM_states = self.LSTM(LSTM_inputs, initial_states=LSTM_states)
+            next_out = self.projection(LSTM_out[-1][:,-1:,:])
+
+            if step == 0:
+                forecast = next_out
+            else:
+                forecast = tf.concat([forecast, next_out], axis=1)
+
+            if step+1 < forecast_timesteps:
+                if teacher is None:  # do rolling forecast
+                    decoder_input = tf.concat([decoder_input, next_out], axis=1)
+                else:
+                    teacher_next_step = teacher[:,step,:]
+                    teacher_next_step = tf.expand_dims(teacher_next_step, axis=1)
+                    decoder_input = tf.concat([decoder_input, teacher_next_step], axis=1)
+
+        return tf.cast(forecast, dtype=tf.float32)
+
+        # else: # do one step forecast
+        #     decoder_input = tf.concat([decoder_input, teacher], axis=1)
+        #     attention_features = self.attention(decoder_input, attention_value)
+        #     LSTM_inputs = tf.concat([decoder_input, attention_features], axis=1)
+        #     LSTM_out = self.LSTM(LSTM_inputs)
+        #     LSTM_out = LSTM_out[:,-forecast_timesteps:,:]
+        #
+        #     return self.projection(LSTM_out)
 ########################################################################################################################
 class Multilayer_CNN(tf.keras.layers.Layer):
     def __init__(self, num_layers, num_units, use_dropout=True, dropout_rate=0.0, kernel_size=3, strides=1):
@@ -583,18 +800,6 @@ class Multilayer_CNN(tf.keras.layers.Layer):
                 out = tf.nn.dropout(out, self.dropout_rate)
             all_out.append(out)
         return all_out
-
-class encoder_CNN(tf.keras.layers.Layer):
-    def __init__(self, num_layers, num_units, use_dropout=True, dropout_rate=0.0):
-        super(encoder_CNN, self).__init__()
-        self.layers = num_layers
-        self.units = num_units
-        self.encoder = Multilayer_CNN(num_layers, num_units, use_dropout, dropout_rate)
-
-    def call(self, encoder_inputs, initial_states=None):
-        encoder_outputs = self.encoder(encoder_inputs)
-
-        return encoder_outputs
 
 class DenseTCN(tf.keras.layers.Layer):
     """
@@ -753,13 +958,14 @@ class DenseTCN(tf.keras.layers.Layer):
         # iterate through blocks
         for block in range(self.num_blocks):
             out = self.run_block(block, out)
-            # apply squeeze after each block except last
+
             out = self.squeeze[block](out)
             if self.downsample_rate >1:
                 out = self.pool(out)
         return out
 
 ########################################################################################################################
+
 class attentive_TCN(tf.keras.layers.Layer):
     '''
     Encoder consisting of alternating self-attention and Desne TCN blocks
@@ -820,65 +1026,10 @@ class attentive_TCN(tf.keras.layers.Layer):
                 inputs = out
         return out
 
-class whatever(tf.keras.layers.Layer):
-    '''
-    Decoder block
-    Input: historical load data, encoder features for context
-    Output: prediction
-    TCN block processes the raw input and creates features 
-    Context block uses the features from TCN block, performs self-attention, 
-    then performs attention on the input and the context received from the encoder,
-    then applies TCN on the output to transform the features.
-    '''
-    def __init__(self, units=None,
-                use_dropout=False,
-                dropout_rate=0.15, 
-                use_norm=False,
-                 ):
-        super(whatever, self).__init__()
 
-        if units is None:
-            units = {'units_tcn': [[10,10,10,10],[10,10,10,10]],
-                    'units_context_tcn': [[10, 10],[10, 10]],
-                    'num_context_blocks': 1,
-                    'attention_units': [[20,20],[20, 20]],
-                     }
-        self.units_tcn = units['units_tcn']
-        self.units_context_tcn = units['units_context_tcn']
-        self.num_context_blocks = units['num_context_blocks']
-        self.attention_units = units['attention_units']
-        self.use_dropout = use_dropout
-        self.dropout_rate = dropout_rate
-        self.use_norm = use_norm
-        self.context_built = False
-
-        self.tcn_block = DenseTCN(num_blocks=len(self.units_tcn),
-                                            num_layers_per_block=len(self.units_tcn[0]), 
-                                            growth_rate=self.units_tcn[0][0],
-                                            squeeze_factor=0.5, 
-                                            use_dropout = use_dropout,
-                                            dropout_rate=dropout_rate,
-                                            use_norm=use_norm,
-                                            kernel_sizes=[3])
-
-
-    def build_context_block(self):
-        self.context_block = []
-        for block in range(self.num_context_blocks):
-            one_block = []
-            one_block.append(multihead_attentive_layer(num_heads=len(self.attention_units[0]), num_units_per_head=self.attention_units[0][0]))
-            one_block.append(multihead_attentive_layer(num_heads=len(self.attention_units[1]), num_units_per_head=self.attention_units[1][0]))
-            one_block.append(DenseTCN(num_blocks=len(self.units_context_tcn),
-                                            num_layers_per_block=len(self.units_context_tcn[0]), 
-                                            growth_rate=self.units_context_tcn[0][0],
-                                            squeeze_factor=0.5, 
-                                            use_dropout = self.use_dropout,
-                                            dropout_rate=self.dropout_rate,
-                                            use_norm= self.use_norm,
-                                            kernel_sizes=[3]))
-            self.context_block.append(one_block)
-        self.context_built = True
-        return None
+class Norm_wrapper(tf.keras.layers.Wrapper):
+    def __init__(self, layer, norm='layer'):
+        super(Norm_wrapper, self).__init__(layer)
 
     def run_context(self, decoder_inputs, encoder_features):
         out = decoder_inputs
@@ -896,13 +1047,6 @@ class whatever(tf.keras.layers.Layer):
     def call(self, decoder_inputs, attention_value=None):
         if not self.context_built:
             self.build_context_block()
-
-        out = decoder_inputs
-
-        out = self.tcn_block(out)
-        out = self.run_context(out, encoder_features=attention_value)
-
-        return out
 
 class TCN_Transformer(tf.keras.layers.Layer):
     def __init__(self,
@@ -995,45 +1139,6 @@ class TCN_Transformer(tf.keras.layers.Layer):
                 out = self.all_layers[num_block][-1](out)
 
         return out
-
-class SelfAttentiveSelfRecurrent_Decoder(tf.keras.layers.Layer):
-    def __init__(self,
-                 units=[[20, 20], [20,20]],
-                 use_dropout=False,
-                 dropout_rate=0.0,
-                 use_hw=True,
-                 use_norm=True,
-                 use_quasi_dense=True,
-                 return_state=True,
-                 attention_hidden=False,
-                 only_last_layer_output=True):
-        super(SelfAttentiveSelfRecurrent_Decoder, self).__init__()
-
-        self.self_attention = multihead_attentive_layer(num_heads=len(units[0]),
-                                                        num_units_per_head=units[0][0],
-                                                        num_units_projection=False)
-        self.non_self_attention = multihead_attentive_layer(num_heads=len(units[0]),
-                                                        num_units_per_head=units[0][0],
-                                                        num_units_projection=False)
-        ml_LSTM_params = {'units': units,
-                        'use_dropout': use_dropout,
-                        'dropout_rate': dropout_rate,
-                        'use_norm': use_norm,
-                        'use_hw': use_hw,
-                        'use_quasi_dense': use_quasi_dense
-                        }
-        self.LSTM = MultiLayer_LSTM(**ml_LSTM_params)
-
-    def __build(self, inp_shape):
-        pass
-
-    def call(self, decoder_input, decoder_init_state, attention_query=None, attention_value=None):
-        self_attention_out = self.self_attention(attention_query, value=attention_query)
-        attention_out = self.non_self_attention(self_attention_out, value=attention_value)
-        decoder_input = tf.concat([decoder_input, attention_out], axis=1)
-
-        out_values, out_state = self.LSTM()
-        pass
 
 class WeightNormalization(tf.keras.layers.Wrapper):
     """This wrapper reparameterizes a layer by decoupling the weight's

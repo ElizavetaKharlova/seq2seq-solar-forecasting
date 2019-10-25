@@ -287,10 +287,11 @@ class Attention(tf.keras.layers.Layer):
     def build_mask(self, input_shape):
         # create mask to wipe out the future timesteps
         fill = tf.ones(shape=[input_shape[1],input_shape[1]], dtype=tf.float32)
-        upper_triangular = (tf.linalg.band_part(fill, 0, -1) - tf.linalg.band_part(fill, 0, 0) )
-        upper_triangular = tf.where(upper_triangular > 0, x=float('-inf'), y=1.0)
+        fill = float('-inf') * fill
+        # upper_triangular = (tf.linalg.band_part(fill, 0, -1) - tf.linalg.band_part(fill, 0, 0) )
+        lower_triangular = tf.linalg.band_part(fill, -1, 0)
         # upper triangular matrix with -inf values, and 1s on the diagonal
-        return upper_triangular
+        return lower_triangular
 
     def call(self, query, value=None, key=None):
         # If value is none, we assume self attention and set value = query
@@ -333,8 +334,9 @@ class Attention(tf.keras.layers.Layer):
             score = score / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
 
             score = tf.nn.softmax(score, axis=1)
+
             if self_attention:
-                score = tf.multiply(score, mask)
+                score = tf.add(score, mask)
 
             context_vector = tf.matmul(score, self.W_key(value))
 
@@ -395,7 +397,6 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
             multihead_out = self.projection_layer(multihead_out)
 
         return multihead_out
-
 
 ########################################################################################################################
 class DenseTCN(tf.keras.layers.Layer):
@@ -562,7 +563,6 @@ class DenseTCN(tf.keras.layers.Layer):
         return out
 
 ########################################################################################################################
-
 
 class block_LSTM(tf.keras.layers.Layer):
     def __init__(self, units=[[20, 20], [20,20]],
@@ -862,7 +862,6 @@ class attentive_TCN(tf.keras.layers.Layer):
                 out = self.block_stack[block](inputs)
                 inputs = out
         return out
-
 
 class Norm_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, norm='layer'):

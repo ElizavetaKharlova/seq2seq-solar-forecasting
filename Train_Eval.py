@@ -203,6 +203,8 @@ class Model_Container():
             units = [[128, 128, 128]]
         elif model_size == 'large':
             units = [[256, 256]]
+        elif model_size == 'generator':
+            units = [[186]]
 
         if model_type == 'MiMo-LSTM':
             print('building a', model_size, model_type)

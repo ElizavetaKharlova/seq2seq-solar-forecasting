@@ -116,181 +116,6 @@ class Dropout_wrapper(tf.keras.layers.Wrapper):
     def call(self, inputs):
         return self.dropout(self.layer(inputs), training=tf.keras.backend.learning_phase())
 
-########################################################################################################################
-
-class Attention(tf.keras.Model):
-    '''
-    Attention class
-    '''
-    def __init__(self, units, mode='Transformer',
-                 only_context=True, context_mode='timeseries-like'):
-        super(Attention, self).__init__()
-
-        self.context_mode = context_mode
-        self.mode = mode
-        self.only_context = only_context
-        self.use_mask = False
-
-        self.W1 = tf.keras.layers.Dense(units, kernel_initializer='glorot_uniform', use_bias=False)
-        self.W2 = tf.keras.layers.Dense(units, kernel_initializer='glorot_uniform', use_bias=False)
-        if self.mode == 'Bahdanau':
-            self.V = tf.keras.layers.Dense(1)
-        elif self.mode == 'Transformer':
-            self.W3 = tf.keras.layers.Dense(units,kernel_initializer='glorot_uniform', use_bias=False)
-
-    def build_mask(self, input_shape):
-        # create mask to wipe out the future timesteps
-        causal_mask = tf.Variable(tf.ones(shape=[input_shape[0],input_shape[0]], dtype=tf.dtypes.float32))
-        fill = tf.constant(float('-inf'), shape=[input_shape[0]-1,input_shape[0]-1])
-        fill = tf.linalg.band_part(fill, 0, -1) + 1.0
-        # upper triangular matrix with -inf values, and 1s on the diagonal
-        causal_mask = causal_mask[:-1,1:].assign(fill)
-
-        return causal_mask
-
-    
-    def call(self, query, value=None, key=None):
-        # hidden shape == (batch_size, hidden size)
-        # hidden_with_time_axis shape == (batch_size, 1, hidden size)
-        # we are doing this to perform addition to calculate the score
-
-        if value is None:
-            value = query
-            self.use_mask = True
-            causal_mask = self.build_mask(input_shape=query.shape)
-        if key is None:
-            key = value
-        print(key, query, value)
-        key = self.W2(key)
-        query = self.W1(query)
-
-        if self.mode == 'Bahdanau':
-            # Bahdaau style attention: score = tanh(Q + V)
-            # score shape == (batch_size, max_length, 1)
-            # we get 1 at the last axis because we are applying score to self.V
-            # the shape of the tensor before applying self.V is (batch_size, max_length, units)
-            # attention_weights shape == (batch_size, max_length, 1)
-            attention_weights = tf.nn.softmax(self.V(tf.nn.tanh(query + key)), axis=1)
-            context_vector = attention_weights * value
-
-        elif self.mode == 'Transformer':
-            value = self.W3(value)
-
-            # Trasformer style attention: score=Q*K/sqrt(dk)
-            # in this case keys = values
-            if len(query.shape) < len(key.shape):
-                query = tf.expand_dims(query,1)
-            score = tf.matmul(query, key, transpose_b=True)
-            # scale score
-            score = score / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
-            if self.use_mask:
-                score = tf.multiply(score, causal_mask)
-            score = tf.nn.softmax(score, axis=1)
-
-            context_vector = tf.matmul(score, value)
-     
-        # context_vector shape after sum == (batch_size, hidden_size)
-        if self.context_mode == 'force singular step':
-            context_vector = tf.reduce_sum(context_vector, axis=1)
-
-        if self.only_context:
-            return context_vector
-        else:
-            return context_vector, attention_weights
-
-class Conv_Attention(tf.keras.Model):
-    def __init__(self, units, kernel_size=1, mode='Transformer',
-                 only_context=True, context_mode='timeseries-like'):
-        super(Conv_Attention, self).__init__()
-
-        self.context_mode = context_mode
-        self.only_context = only_context
-
-        self.W_Q = tf.keras.layers.Conv1D(filters=units,
-                                        kernel_size=kernel_size,
-                                        dilation_rate=1,
-                                        padding='causal')
-        self.W_K = tf.keras.layers.Conv1D(filters=units,
-                                        kernel_size=kernel_size,
-                                        dilation_rate=1,
-                                        padding='causal')
-        self.W_V = tf.keras.layers.Conv1D(filters=units,
-                                        kernel_size=kernel_size,
-                                        dilation_rate=1,
-                                        padding='causal')
-
-    
-    def call(self, query, value=None, key=None):
-        # hidden shape == (batch_size, hidden size)
-        # hidden_with_time_axis shape == (batch_size, 1, hidden size)
-        # we are doing this to perform addition to calculate the score
-        if value is None:
-            value = query
-        if key is None:
-            key = value
-        key = self.W_K(key)
-        query = self.W_Q(query)
-        value = self.W_V(value)
-
-        # Trasformer style attention: score=Q*K/sqrt(dk)
-        # in this case keys = values
-        if len(query.shape) < len(key.shape):
-            query = tf.expand_dims(query,1)
-        score = tf.matmul(query, key, transpose_b=True)
-        # scale score
-        score = score / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
-        score = tf.nn.softmax(score, axis=1)
-
-        context_vector = tf.matmul(score, value)
-     
-        # context_vector shape after sum == (batch_size, hidden_size)
-        if self.context_mode == 'force singular step':
-            context_vector = tf.reduce_sum(context_vector, axis=1)
-
-        if self.only_context:
-            return context_vector
-        else:
-            return context_vector, score
-
-class multihead_attentive_layer(tf.keras.layers.Layer):
-    def __init__(self, num_heads, num_units_per_head=80):
-        super(multihead_attentive_layer, self).__init__()
-        # units is a list of lists, containing the numbers of units in the attention head
-        self.num_heads = num_heads
-        self.projection = False
-
-        self.multihead_attention = []
-        for head in range(self.num_heads):
-            attention = Attention(num_units_per_head,
-                                  mode='Transformer',
-                                  only_context=True)
-            self.multihead_attention.append(attention)
-
-    def call(self,query, value):
-        multihead_out = [head(query, value) for head in self.multihead_attention]
-        return tf.concat(multihead_out, axis=-1)
-
-class multihead_conv_attentive_layer(tf.keras.layers.Layer):
-    def __init__(self, num_heads, num_units_per_head=80, kernel_sizes=[1,3,9]):
-        super(multihead_conv_attentive_layer, self).__init__()
-        # units is a list of lists, containing the numbers of units in the attention head
-        self.num_heads = num_heads
-        self.projection = False
-
-        self.multihead_attention = []
-        for head in range(self.num_heads):
-            attention = Conv_Attention(num_units_per_head,
-                                        kernel_size=kernel_sizes[head],
-                                        mode='Transformer',
-                                        only_context=True)
-            self.multihead_attention.append(attention)
-
-    def call(self,query, value=None):
-        multihead_out = [head(query, value) for head in self.multihead_attention]
-        return tf.concat(multihead_out, axis=-1)
-
-########################################################################################################################
-
 class MultiLayer_LSTM(tf.keras.layers.Layer):
     '''
     this builds the wrapper class for the multilayer LSTM
@@ -398,7 +223,8 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                     t_x = self.T_x_list_o_lists[block][layer](inputs_next_layer)
                     layer_out = t_x*layer_out + (1.0-t_x)*inputs_next_layer
 
-                if self.use_norm:
+                if self.use_norm and layer<len(self.units[block])-1 and block < len(self.units)-1:
+                    print('norming')
                     layer_out = self.LSTM_norm_list_o_lists[block][layer](layer_out)
 
                 if layer == len(self.units[block])-1 and self.use_quasi_dense:
@@ -412,6 +238,8 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
 
             states_list_o_lists.append(states_list)
         return all_out, states_list_o_lists
+
+########################################################################################################################
 
 class Attention(tf.keras.layers.Layer):
     '''
@@ -456,16 +284,13 @@ class Attention(tf.keras.layers.Layer):
                                          kernel_initializer='glorot_uniform',
                                          use_bias=False)
 
-    # ToDo: is this properly done? We should mask the query, not the value nor the key, right??
-    def __build_causal_mask(self, len_query):
-        list_of_rows = []
-        for timestep in range(len_query):
-            allowed = [1]*(timestep+1) # those are allowed
-            not_allowed = [-tf.inf]*(len_query-(timestep+1)) # those are not allowed
-            timestep_mask = tf.concat([allowed, not_allowed], axis=0) # here the full mask, (len_value)
-            list_of_rows.append(tf.expand_dims(timestep_mask, axis=1)) # expand the last dim, (len_value,1)
-        self.causal_mask = tf.concat(list_of_rows, axis=1) # shape now (len_value, len_value)
-        self.mask_built = True
+    def build_mask(self, input_shape):
+        # create mask to wipe out the future timesteps
+        fill = tf.ones(shape=[input_shape[1],input_shape[1]], dtype=tf.float32)
+        upper_triangular = (tf.linalg.band_part(fill, 0, -1) - tf.linalg.band_part(fill, 0, 0) )
+        upper_triangular = tf.where(upper_triangular > 0, x=float('-inf'), y=1.0)
+        # upper triangular matrix with -inf values, and 1s on the diagonal
+        return upper_triangular
 
     def call(self, query, value=None, key=None):
         # If value is none, we assume self attention and set value = query
@@ -473,6 +298,10 @@ class Attention(tf.keras.layers.Layer):
 
         if value is None:
             value = query
+            mask = self.build_mask(query.shape)
+            self_attention = True
+        else:
+            self_attention = False
         if key is None:
             key = value
         #
@@ -504,6 +333,8 @@ class Attention(tf.keras.layers.Layer):
             score = score / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
 
             score = tf.nn.softmax(score, axis=1)
+            if self_attention:
+                score = tf.multiply(score, mask)
 
             context_vector = tf.matmul(score, self.W_key(value))
 
@@ -513,37 +344,225 @@ class Attention(tf.keras.layers.Layer):
             return context_vector, attention_weights
 
 class multihead_attentive_layer(tf.keras.layers.Layer):
-    def __init__(self, units_per_head=[80, 80], kernel_size=[3, 8], use_norm=True):
+    def __init__(self, units_per_head=[80, 80], kernel_size=None,
+                 project_to_units=None,
+                 use_norm=True,
+                 use_dropout=True, dropout_rate=0.2):
         super(multihead_attentive_layer, self).__init__()
         # units is a list of lists, containing the numbers of units in the attention head
         self.num_heads = len(units_per_head)
-        self.projection = False
+        if project_to_units is None:
+            self.projection = False
+        else:
+            self.projection = True
+            self.projection_layer = tf.keras.layers.Conv1D(project_to_units,
+                                         strides=1,
+                                         kernel_size=1,
+                                         padding='causal',
+                                         kernel_initializer='glorot_uniform',
+                                         use_bias=False)
         self.use_norm = use_norm
+        self.use_dropout = use_dropout
 
         self.multihead_attention = []
         if self.use_norm:
-            self.norm = []
-            for head in range(self.num_heads):
-                norm = tf.keras.layers.LayerNormalization(axis=-1,
+            self.norm = tf.keras.layers.LayerNormalization(axis=-1,
                                                           center=True,
                                                           scale=False)
-                self.norm.append(norm)
+        if self.use_dropout:
+            self.dropout = tf.keras.layers.Dropout(dropout_rate, noise_shape=(1, int(np.sum(units_per_head))))
 
         for head in range(self.num_heads):
             attention = Attention(units_per_head[head],
                                   mode='Transformer',
-                                query_kernel=kernel_size[head],
-                                  key_kernel=kernel_size[head],
+                                query_kernel= 1 if kernel_size==None else kernel_size[head],
+                                  key_kernel=1 if kernel_size==None else kernel_size[head],
                                   only_context=True)
             self.multihead_attention.append(attention)
 
-    def call(self, query, value):
-        multihead_out = [head(query, value) for head in self.multihead_attention]
-        if self.use_norm:
-            for head in range(len(multihead_out)):
-                multihead_out[head] = self.norm[head](multihead_out[head])
+    def call(self, query, value=None):
+        if value is None: #Self Attention
+            multihead_out = [head(query) for head in self.multihead_attention]
+        else:
+            multihead_out = [head(query, value) for head in self.multihead_attention]
 
-        return tf.concat(multihead_out, axis=-1)
+        multihead_out = tf.concat(multihead_out, axis=-1)
+        if self.use_norm:
+            multihead_out = self.norm(multihead_out)
+        if self.use_dropout:
+            multihead_out = self.dropout(multihead_out, training=tf.keras.backend.learning_phase())
+        if self.projection:
+            multihead_out = self.projection_layer(multihead_out)
+
+        return multihead_out
+
+
+########################################################################################################################
+class DenseTCN(tf.keras.layers.Layer):
+    """
+    Dense temporal convolutional network
+    requires number of block and layers within a block to initialize
+    can change growth rate, squeeze factor, kernel sizes, strides, dropout and norm parameters
+    requires inputs to run
+    can have an arbitrary number of streams determined by the size of the kernel array
+    outputs the raw network output in size [Batches, Timesteps, Features]
+    requires a MIMO or a recursive wrapper to output predictions
+    """
+    def __init__(self, num_blocks, num_layers_per_block,
+                growth_rate=12,
+                squeeze_factor=0.5,
+                use_dropout=False,
+                dropout_rate=0.0,
+                use_norm=False,
+                downsample_rate=1,
+                kernel_sizes=[3, 5]):
+        super(DenseTCN, self).__init__()
+
+        self.num_blocks = num_blocks
+        self.num_layers_per_block = num_layers_per_block
+        self.growth_rate = growth_rate
+        # bottleneck features are the 1x1 conv size for each layer
+        self.bottleneck_features = 4*growth_rate
+        # squeeze factor is the percentage of features passed from one block to the next
+        self.squeeze_factor = squeeze_factor
+        self.use_dropout = use_dropout
+        self.dropout_rate = dropout_rate
+        self.downsample_rate = downsample_rate
+        self.kernel_sizes = kernel_sizes
+        self.use_norm = use_norm
+        # build flag
+        self.already_built = False
+
+        if self.use_norm:
+            self.norm = []
+        # create a stack of squeeze layers to be used between blocks (is not used after the last block)
+        self.squeeze = []
+
+    # initialize one CNN layer with arbitrary parameters
+    def cnn_layer(self, num_features, kernel_size, dilation_rate, stride=1):
+        return tf.keras.layers.Conv1D(filters=num_features,
+                                        kernel_size=kernel_size,
+                                        dilation_rate=dilation_rate,
+                                        strides=stride,
+                                        padding='causal')
+
+    # build a stack for one layer of the network
+    def build_layer(self, num_layer, kernel_size):
+        layer = []
+        #Bottleneck features
+        if self.use_norm:
+            layer.append(tf.keras.layers.BatchNormalization(axis=-1, center=True))
+        else:
+            layer.append([])
+        layer.append(self.cnn_layer(self.bottleneck_features, kernel_size=1, dilation_rate=1))
+        if self.use_dropout:
+            layer.append(tf.keras.layers.Dropout(rate=self.dropout_rate, noise_shape=(1,self.bottleneck_features)))
+        else:
+            layer.append([])
+        # Growth feature layer
+        if self.use_norm:
+            layer.append(tf.keras.layers.BatchNormalization(axis=-1, center=True))
+        else:
+            layer.append([])
+        #ToDo: Fix this thing pltz!!
+        layer.append(self.cnn_layer(self.growth_rate, [int(kernel_size)*(num_layer+1)], dilation_rate=1))
+        if self.use_dropout:
+            layer.append(tf.keras.layers.Dropout(rate=self.dropout_rate, noise_shape=(1,self.growth_rate)))
+        else:
+            layer.append([])
+        return layer
+
+    # stack the network layers within a stream
+    def build_stream(self, kernel_size):
+        stream = []
+        for num_layer in range(self.num_layers_per_block):
+            stream.append(self.build_layer(num_layer, kernel_size))
+        return stream
+
+    # build a stack of blocks which includes several streams with different kernel sizes
+    def build_block(self, in_shape):
+        self.blocks = []
+        for block in range(self.num_blocks):
+            all_streams = []
+            for kernel_size in self.kernel_sizes:
+                all_streams.append(self.build_stream(kernel_size))
+            self.blocks.append(all_streams)
+            # calculate the number of features in the squeeze layer
+            # shape of input to the block + growth rate for all layers in the block
+            if block == 0:
+                num_features = int(self.squeeze_factor*(in_shape+self.num_layers_per_block*self.growth_rate))
+            else:
+                num_features = int(self.squeeze_factor*(num_features + self.num_layers_per_block*self.growth_rate))
+            # create stack of squeeze layers
+            self.squeeze.append(self.cnn_layer(num_features, kernel_size=1, dilation_rate=1, stride=1))
+            if self.downsample_rate > 1:
+                self.pool = tf.keras.layers.AvgPool1D(pool_size=self.downsample_rate,
+                                                      strides=self.downsample_rate)
+        # update build flag
+        self.already_built = True
+        return None
+
+    # run one basic dense network layer
+    # return output concatednated with input
+    def run_layer(self, block, num_layer, num_stream, inputs):
+        out = inputs
+        # self.blocks[block][num_stream][num_layer] = [Bottleneck_norm, Bottleneck_features, bottleneck_dropout,
+        #                                              growth_norm, growth_layer, growth_dropout]
+        # Bottleneck section
+        if self.use_norm:
+            out = self.blocks[block][num_stream][num_layer][0](out)
+        out = tf.keras.activations.relu(out)
+        out = self.blocks[block][num_stream][num_layer][1](out)
+        if self.use_dropout:
+            out = self.blocks[block][num_stream][num_layer][2](out, training=tf.keras.backend.learning_phase())
+        # growth section
+        if self.use_norm:
+            out = self.blocks[block][num_stream][num_layer][3](out)
+
+        out = self.blocks[block][num_stream][num_layer][4](out)
+        out = tf.keras.activations.relu(out)
+        if self.use_dropout:
+            out = self.blocks[block][num_stream][num_layer][5](out, training=tf.keras.backend.learning_phase())
+
+        return tf.concat([out, inputs], axis=-1)
+
+    # run output through one stream
+    def run_stream(self, block, num_stream, inputs):
+        out = inputs
+        for num_layer in range(self.num_layers_per_block):
+            out = self.run_layer(block, num_layer, num_stream, out)
+        return out
+
+    # run the output through blocks
+    # within the block run through several streams according to size of the kernel array
+    def run_block(self, block, inputs):
+        out = []
+        for num_stream in range(len(self.blocks[block])):
+            # concatenate the outputs of several streams
+            if num_stream == 0:
+                out = self.run_stream(block, num_stream, inputs)
+            else:
+                out = tf.concat([out, self.run_stream(block, num_stream, inputs)], -1)
+        # return output concatednated with input
+        return out
+
+
+    def call(self, inputs):
+        out = inputs
+        # call the init function upon first call
+        if not self.already_built:
+            self.build_block(inputs.shape[-1])
+        # iterate through blocks
+        for block in range(self.num_blocks):
+            out = self.run_block(block, out)
+
+            out = self.squeeze[block](out)
+            if self.downsample_rate >1:
+                out = self.pool(out)
+        return out
+
+########################################################################################################################
+
 
 class block_LSTM(tf.keras.layers.Layer):
     def __init__(self, units=[[20, 20], [20,20]],
@@ -565,10 +584,15 @@ class block_LSTM(tf.keras.layers.Layer):
                         'use_quasi_dense': use_quasi_dense,
                         }
         self.multilayer_LSTMs = MultiLayer_LSTM(**ml_LSTM_params)
+        if use_norm:
+            self.use_norm = use_norm
+            self.last_layer_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
 
     def call(self, encoder_inputs, initial_states=None):
         block_output, block_states = self.multilayer_LSTMs(encoder_inputs, initial_states=initial_states)
 
+        if self.use_norm:
+            block_output[-1] = self.last_layer_norm(block_output[-1])
         if self.only_last_layer_output:
             block_output =  block_output[-1]
 
@@ -706,7 +730,7 @@ class generator_LSTM_block(tf.keras.layers.Layer):
                  only_last_layer_output= True,
                  projection=tf.keras.layers.Dense(20)):
         super(generator_LSTM_block, self).__init__()
-
+        self.use_norm = use_norm
         self.ml_LSTM_params = {'units': units,
                         'use_dropout': use_dropout,
                         'dropout_rate': dropout_rate,
@@ -714,256 +738,69 @@ class generator_LSTM_block(tf.keras.layers.Layer):
                         'use_hw': use_hw,
                         'use_quasi_dense': use_quasi_dense,
                         }
-        self.LSTM = MultiLayer_LSTM(**self.ml_LSTM_params)
+        self.LSTM_history = MultiLayer_LSTM(**self.ml_LSTM_params)
+        self.LSTM_post_attn = MultiLayer_LSTM(**self.ml_LSTM_params)
         self.projection = projection
 
         units = units[-1][-1]
         heads = 2
         kernel_sizes = [1, 1]
         self.max_kernel_size = np.amax(kernel_sizes)
-        self.attention = multihead_attentive_layer(units_per_head=[int(units / heads)] * heads,
-                                                   kernel_size=kernel_sizes,
-                                                   use_norm=use_norm
-                                                   )  # choose the attention style (Bahdanau, Transformer)
+        self.attention = multihead_attentive_layer(units_per_head=[int(units)] * heads,
+                                                   use_norm=False,
+                                                   project_to_units=units,
+                                                   use_dropout=use_dropout, dropout_rate=dropout_rate)  # choose the attention style (Bahdanau, Transformer
+        if self.use_norm:
+            self.attn_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
+            self.LSTM1_output_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
+            self.LSTM2_output_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
 
+    def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
 
-    def call(self, decoder_input, attention_value, forecast_timesteps=12, teacher=None):
+        # Process the history, this also creates the first forecast
+        LSTM1_out_history, LSTM1_last_states = self.LSTM_history(history, initial_states=None)
+        LSTM1_out_history = LSTM1_out_history[-1]
+        if self.use_norm:
+            LSTM1_out_history = self.LSTM1_output_norm(LSTM1_out_history)
 
-        forecast = []
-        attention_features = self.attention(decoder_input, attention_value)
-        LSTM_inputs = tf.concat([decoder_input, attention_features], axis=-1)
-        LSTM_out, LSTM_states = self.LSTM(LSTM_inputs, initial_states=None)
+        attention_features = self.attention(LSTM1_out_history, attention_value)
+        LSTM2_inputs = LSTM1_out_history + attention_features
+        if self.use_norm:
+            LSTM2_inputs = self.attn_norm(LSTM2_inputs)
 
-        for step in range(forecast_timesteps):
-            attention_features = self.attention(decoder_input, attention_value)
-            LSTM_inputs = tf.concat([decoder_input[:,-1:,:], attention_features[:,-1:,:]], axis=-1)
-            LSTM_out, LSTM_states = self.LSTM(LSTM_inputs, initial_states=LSTM_states)
-            next_out = self.projection(LSTM_out[-1][:,-1:,:])
+        LSTM2_out, LSTM2_last_states = self.LSTM_post_attn(LSTM2_inputs, initial_states=None)
+        LSTM2_out = LSTM2_out + LSTM2_inputs
+        if self.use_norm:
+            LSTM2_out = self.LSTM2_output_norm(LSTM2_out)
 
-            if step == 0:
-                forecast = next_out
+        forecast = self.projection(LSTM2_out[-1][:, -1:, :])
+
+        for step in range(forecast_timesteps-1):
+            if teacher is None:
+                next_LSTM1_input = forecast[:,-1:,:]
             else:
-                forecast = tf.concat([forecast, next_out], axis=1)
+                next_LSTM1_input = tf.expand_dims(teacher[:,step,:], axis=1)
 
-            if step+1 < forecast_timesteps:
-                if teacher is None:  # do rolling forecast
-                    decoder_input = tf.concat([decoder_input, next_out], axis=1)
-                else:
-                    teacher_next_step = teacher[:,step,:]
-                    teacher_next_step = tf.expand_dims(teacher_next_step, axis=1)
-                    decoder_input = tf.concat([decoder_input, teacher_next_step], axis=1)
+            LSTM1_out_step, LSTM1_last_states = self.LSTM_history(next_LSTM1_input, initial_states=LSTM1_last_states)
+            LSTM1_out_step = LSTM1_out_step[-1]
+            if self.use_norm:
+                LSTM1_out_step = self.LSTM1_output_norm(LSTM1_out_step)
 
-        return tf.cast(forecast, dtype=tf.float32)
+            LSTM1_out_history = tf.concat([LSTM1_out_history, LSTM1_out_step], axis=1)
+            attention_features = self.attention(LSTM1_out_history, attention_value)
+            LSTM2_input_step = LSTM1_out_step + attention_features[:,-1:,:]
+            if self.use_norm:
+                LSTM2_input_step = self.attn_norm(LSTM2_input_step)
 
-        # else: # do one step forecast
-        #     decoder_input = tf.concat([decoder_input, teacher], axis=1)
-        #     attention_features = self.attention(decoder_input, attention_value)
-        #     LSTM_inputs = tf.concat([decoder_input, attention_features], axis=1)
-        #     LSTM_out = self.LSTM(LSTM_inputs)
-        #     LSTM_out = LSTM_out[:,-forecast_timesteps:,:]
-        #
-        #     return self.projection(LSTM_out)
-########################################################################################################################
-class Multilayer_CNN(tf.keras.layers.Layer):
-    def __init__(self, num_layers, num_units, use_dropout=True, dropout_rate=0.0, kernel_size=3, strides=1):
-        super(Multilayer_CNN, self).__init__()
+            LSTM2_out_step, LSTM2_last_states = self.LSTM_post_attn(LSTM2_input_step, initial_states=LSTM2_last_states)
+            LSTM2_out_step = LSTM2_out_step + LSTM2_input_step
+            if self.use_norm:
+                LSTM2_out_step = self.LSTM2_output_norm(LSTM2_out_step)
 
-        self.num_layers = num_layers
-        self.num_units = num_units
-        self.dropout_rate = dropout_rate
-        self.use_dropout = use_dropout
-        self.kernel_size = kernel_size
-        self.strides = strides
+            forecast_step = self.projection(LSTM2_out_step[-1])
+            forecast = tf.concat([forecast, forecast_step], axis=1)
 
-        self.CNN = []
-        self.dropout = []
-
-        for layer in range(self.num_layers):
-            one_CNN_layer = tf.keras.layers.Conv1D(self.num_units,
-                                                   kernel_size=self.kernel_size,
-                                                   strides=self.strides,
-                                                   padding='causal',
-                                                   dilation_rate=2 ** layer)  # increase dilation rate each layer (1,2,4,8...)
-
-            self.CNN.append(one_CNN_layer)
-            # if self.use_dropout:
-            # self.dropout.append(tf.keras.layers.Dropout(self.dropout_rate))
-
-    def call(self, inputs):
-        all_out = []
-        out = inputs
-        isTraining = tf.keras.backend.learning_phase()
-        for layer in range(self.num_layers):
-            out = self.CNN[layer](out)
-            if self.use_dropout and isTraining:
-                # out = self.dropout[layer](out, training=isTraining)
-                out = tf.nn.dropout(out, self.dropout_rate)
-            all_out.append(out)
-        return all_out
-
-class DenseTCN(tf.keras.layers.Layer):
-    """
-    Dense temporal convolutional network
-    requires number of block and layers within a block to initialize
-    can change growth rate, squeeze factor, kernel sizes, strides, dropout and norm parameters
-    requires inputs to run
-    can have an arbitrary number of streams determined by the size of the kernel array
-    outputs the raw network output in size [Batches, Timesteps, Features]
-    requires a MIMO or a recursive wrapper to output predictions
-    """
-    def __init__(self, num_blocks, num_layers_per_block,
-                growth_rate=12, 
-                squeeze_factor=0.5, 
-                use_dropout=False, 
-                dropout_rate=0.0, 
-                use_norm=False,
-                downsample_rate=1,
-                kernel_sizes=[3, 5]):
-        super(DenseTCN, self).__init__()
-        
-        self.num_blocks = num_blocks
-        self.num_layers_per_block = num_layers_per_block
-        self.growth_rate = growth_rate
-        # bottleneck features are the 1x1 conv size for each layer
-        self.bottleneck_features = 4*growth_rate
-        # squeeze factor is the percentage of features passed from one block to the next
-        self.squeeze_factor = squeeze_factor
-        self.use_dropout = use_dropout
-        self.dropout_rate = dropout_rate
-        self.downsample_rate = downsample_rate
-        self.kernel_sizes = kernel_sizes
-        self.use_norm = use_norm
-        # build flag
-        self.already_built = False
-        
-        if self.use_norm:
-            self.norm = []
-        # create a stack of squeeze layers to be used between blocks (is not used after the last block)
-        self.squeeze = []
-
-    # initialize one CNN layer with arbitrary parameters
-    def cnn_layer(self, num_features, kernel_size, dilation_rate, stride=1):
-        return tf.keras.layers.Conv1D(filters=num_features,
-                                        kernel_size=kernel_size,
-                                        dilation_rate=dilation_rate,
-                                        strides=stride,
-                                        padding='causal')
-                                        
-    # build a stack for one layer of the network
-    def build_layer(self, num_layer, kernel_size):
-        layer = []
-        #Bottleneck features
-        if self.use_norm:
-            layer.append(tf.keras.layers.BatchNormalization(axis=-1, center=True))
-        else:
-            layer.append([])
-        layer.append(self.cnn_layer(self.bottleneck_features, kernel_size=1, dilation_rate=1))
-        if self.use_dropout:
-            layer.append(tf.keras.layers.Dropout(rate=self.dropout_rate, noise_shape=(1,self.bottleneck_features)))
-        else:
-            layer.append([])
-        # Growth feature layer
-        if self.use_norm:
-            layer.append(tf.keras.layers.BatchNormalization(axis=-1, center=True))
-        else:
-            layer.append([])
-        #ToDo: Fix this thing pltz!!
-        layer.append(self.cnn_layer(self.growth_rate, [int(kernel_size)*(num_layer+1)], dilation_rate=1))
-        if self.use_dropout:
-            layer.append(tf.keras.layers.Dropout(rate=self.dropout_rate, noise_shape=(1,self.growth_rate)))
-        else:
-            layer.append([])
-        return layer
-
-    # stack the network layers within a stream 
-    def build_stream(self, kernel_size):
-        stream = []
-        for num_layer in range(self.num_layers_per_block):
-            stream.append(self.build_layer(num_layer, kernel_size))
-        return stream
-
-    # build a stack of blocks which includes several streams with different kernel sizes
-    def build_block(self, in_shape):
-        self.blocks = []
-        for block in range(self.num_blocks):
-            all_streams = []
-            for kernel_size in self.kernel_sizes:
-                all_streams.append(self.build_stream(kernel_size))
-            self.blocks.append(all_streams)
-            # calculate the number of features in the squeeze layer
-            # shape of input to the block + growth rate for all layers in the block
-            if block == 0:
-                num_features = int(self.squeeze_factor*(in_shape+self.num_layers_per_block*self.growth_rate))
-            else: 
-                num_features = int(self.squeeze_factor*(num_features + self.num_layers_per_block*self.growth_rate))
-            # create stack of squeeze layers
-            self.squeeze.append(self.cnn_layer(num_features, kernel_size=1, dilation_rate=1, stride=1))
-            if self.downsample_rate > 1:
-                self.pool = tf.keras.layers.AvgPool1D(pool_size=self.downsample_rate,
-                                                      strides=self.downsample_rate)
-        # update build flag
-        self.already_built = True
-        return None
-
-    # run one basic dense network layer
-    # return output concatednated with input
-    def run_layer(self, block, num_layer, num_stream, inputs):
-        out = inputs
-        # self.blocks[block][num_stream][num_layer] = [Bottleneck_norm, Bottleneck_features, bottleneck_dropout,
-        #                                              growth_norm, growth_layer, growth_dropout]
-        # Bottleneck section
-        if self.use_norm:
-            out = self.blocks[block][num_stream][num_layer][0](out)
-        out = tf.keras.activations.relu(out)
-        out = self.blocks[block][num_stream][num_layer][1](out)
-        if self.use_dropout:
-            out = self.blocks[block][num_stream][num_layer][2](out, training=tf.keras.backend.learning_phase())
-        # growth section
-        if self.use_norm:
-            out = self.blocks[block][num_stream][num_layer][3](out)
-
-        out = self.blocks[block][num_stream][num_layer][4](out)
-        out = tf.keras.activations.relu(out)
-        if self.use_dropout:
-            out = self.blocks[block][num_stream][num_layer][5](out, training=tf.keras.backend.learning_phase())
-
-        return tf.concat([out, inputs], axis=-1)
-    
-    # run output through one stream
-    def run_stream(self, block, num_stream, inputs):
-        out = inputs
-        for num_layer in range(self.num_layers_per_block):
-            out = self.run_layer(block, num_layer, num_stream, out)
-        return out
-
-    # run the output through blocks
-    # within the block run through several streams according to size of the kernel array
-    def run_block(self, block, inputs):
-        out = []
-        for num_stream in range(len(self.blocks[block])):
-            # concatenate the outputs of several streams
-            if num_stream == 0:
-                out = self.run_stream(block, num_stream, inputs)
-            else:
-                out = tf.concat([out, self.run_stream(block, num_stream, inputs)], -1)
-        # return output concatednated with input
-        return out
-
-
-    def call(self, inputs):
-        out = inputs
-        # call the init function upon first call
-        if not self.already_built:
-            self.build_block(inputs.shape[-1])
-        # iterate through blocks
-        for block in range(self.num_blocks):
-            out = self.run_block(block, out)
-
-            out = self.squeeze[block](out)
-            if self.downsample_rate >1:
-                out = self.pool(out)
-        return out
-
+        return forecast
 ########################################################################################################################
 
 class attentive_TCN(tf.keras.layers.Layer):

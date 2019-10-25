@@ -333,11 +333,10 @@ class Attention(tf.keras.layers.Layer):
             score = tf.matmul(self.W_query(query), self.W_value(key), transpose_b=True)
             score = score / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
 
-            score = tf.nn.softmax(score, axis=1)
-
             if self_attention:
                 score = tf.add(score, mask)
-
+            score = tf.nn.softmax(score, axis=1)
+            
             context_vector = tf.matmul(score, self.W_key(value))
 
         if self.only_context:

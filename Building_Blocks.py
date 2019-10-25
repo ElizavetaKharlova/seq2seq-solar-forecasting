@@ -336,7 +336,7 @@ class Attention(tf.keras.layers.Layer):
             if self_attention:
                 score = tf.add(score, mask)
             score = tf.nn.softmax(score, axis=1)
-            
+
             context_vector = tf.matmul(score, self.W_key(value))
 
         if self.only_context:
@@ -729,7 +729,9 @@ class generator_LSTM_block(tf.keras.layers.Layer):
                  only_last_layer_output= True,
                  projection=tf.keras.layers.Dense(20)):
         super(generator_LSTM_block, self).__init__()
-        self.use_norm = use_norm
+        #ToDo: Figure out how we want to do the parameter growth thingie
+
+        # LSTMs / transformation layers
         self.ml_LSTM_params = {'units': units,
                         'use_dropout': use_dropout,
                         'dropout_rate': dropout_rate,
@@ -741,16 +743,26 @@ class generator_LSTM_block(tf.keras.layers.Layer):
         self.LSTM_post_attn = MultiLayer_LSTM(**self.ml_LSTM_params)
         self.projection = projection
 
+        # Self attention and attention layers
         units = units[-1][-1]
         heads = 2
         kernel_sizes = [1, 1]
         self.max_kernel_size = np.amax(kernel_sizes)
-        self.attention = multihead_attentive_layer(units_per_head=[int(units)] * heads,
+        self.self_attention = multihead_attentive_layer(units_per_head=[int((2/3)*units)] * heads,
+                                                   use_norm=False,
+                                                   project_to_units=units,
+                                                   use_dropout=use_dropout, dropout_rate=dropout_rate)
+
+        self.attention = multihead_attentive_layer(units_per_head=[int((2/3)*units)] * heads,
                                                    use_norm=False,
                                                    project_to_units=units,
                                                    use_dropout=use_dropout, dropout_rate=dropout_rate)  # choose the attention style (Bahdanau, Transformer
+
+        # Norm layers for everything, so we can do residuals and then norm
+        self.use_norm = use_norm
         if self.use_norm:
             self.attn_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
+            self.self_attn_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
             self.LSTM1_output_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
             self.LSTM2_output_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
 
@@ -762,13 +774,18 @@ class generator_LSTM_block(tf.keras.layers.Layer):
         if self.use_norm:
             LSTM1_out_history = self.LSTM1_output_norm(LSTM1_out_history)
 
-        attention_features = self.attention(LSTM1_out_history, attention_value)
-        LSTM2_inputs = LSTM1_out_history + attention_features
+        self_attention_out = self.self_attention(LSTM1_out_history)
+        self_attention_out = self_attention_out + LSTM1_out_history
         if self.use_norm:
-            LSTM2_inputs = self.attn_norm(LSTM2_inputs)
+            self_attention_out = self.self_attn_norm(self_attention_out)
 
-        LSTM2_out, LSTM2_last_states = self.LSTM_post_attn(LSTM2_inputs, initial_states=None)
-        LSTM2_out = LSTM2_out + LSTM2_inputs
+        attention_features = self.attention(self_attention_out, attention_value)
+        attention_features = attention_features + self_attention_out
+        if self.use_norm:
+            attention_features = self.attn_norm(attention_features)
+
+        LSTM2_out, LSTM2_last_states = self.LSTM_post_attn(attention_features, initial_states=None)
+        LSTM2_out = LSTM2_out + attention_features
         if self.use_norm:
             LSTM2_out = self.LSTM2_output_norm(LSTM2_out)
 
@@ -785,14 +802,20 @@ class generator_LSTM_block(tf.keras.layers.Layer):
             if self.use_norm:
                 LSTM1_out_step = self.LSTM1_output_norm(LSTM1_out_step)
 
+            # get the full LSTM1 output history for self-attention
             LSTM1_out_history = tf.concat([LSTM1_out_history, LSTM1_out_step], axis=1)
-            attention_features = self.attention(LSTM1_out_history, attention_value)
-            LSTM2_input_step = LSTM1_out_step + attention_features[:,-1:,:]
+            self_attention_out = self.self_attention(LSTM1_out_history)
+            self_attention_out = self_attention_out + LSTM1_out_history
             if self.use_norm:
-                LSTM2_input_step = self.attn_norm(LSTM2_input_step)
+                self_attention_out = self.self_attn_norm(self_attention_out)
 
-            LSTM2_out_step, LSTM2_last_states = self.LSTM_post_attn(LSTM2_input_step, initial_states=LSTM2_last_states)
-            LSTM2_out_step = LSTM2_out_step + LSTM2_input_step
+            attention_features = self.attention(self_attention_out, attention_value)
+            attention_features = attention_features + self_attention_out
+            if self.use_norm:
+                attention_features = self.attn_norm(attention_features)
+
+            LSTM2_out_step, LSTM2_last_states = self.LSTM_post_attn(attention_features[:,-1:,:], initial_states=LSTM2_last_states)
+            LSTM2_out_step = LSTM2_out_step + attention_features[:,-1:,:]
             if self.use_norm:
                 LSTM2_out_step = self.LSTM2_output_norm(LSTM2_out_step)
 

@@ -8,6 +8,7 @@ import copy
 import glob
 import os
 import pickle
+from random import shuffle
 
 class Model_Container():
     def __init__(self,
@@ -65,12 +66,12 @@ class Model_Container():
         # strategy = tf.distribute.experimental.CentralStorageStrategy()
         # with strategy.scope():
         # make sure we are working clean
-        strategy = tf.distribute.MirroredStrategy()
-        # strategy = tf.distribute.experimental.CentralStorageStrategy()
+        self.__create_datasets()
+        # strategy = tf.distribute.MirroredStrategy()
+        # print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
+        # # strategy = tf.distribute.experimental.CentralStorageStrategy()
         # with strategy.scope():
         self.__build_model(**self.model_kwargs)
-
-        self.__create_datasets()
 
         self.__train_model(**self.train_kwargs)
         del self.train_kwargs
@@ -98,7 +99,48 @@ class Model_Container():
         for dimension_shape in output_shape:
             flattened_output_shape = flattened_output_shape * dimension_shape
 
-        def __read_and_process_tfrecord(example):
+        def __read_and_process_train_samples(example):
+
+            features = {'nwp_input': tf.io.FixedLenFeature(flattened_nwp_shape, tf.float32),
+                        'raw_historical_input': tf.io.FixedLenFeature(pv_input_shape, tf.float32),
+                        'pdf_historical_input': tf.io.FixedLenFeature(self.pdf_history_shape[0] * self.pdf_history_shape[1], tf.float32),
+                        'pdf_target': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),
+                        'pdf_teacher': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),
+                        }
+            unadjusted_example = tf.io.parse_single_example(example, features)
+            nwp_inputs = tf.reshape(tensor=unadjusted_example['nwp_input'], shape=[nwp_shape[0], nwp_shape[1]])
+
+            target = tf.reshape(tensor=unadjusted_example['pdf_target'], shape=[output_shape[0], output_shape[1]])
+
+
+            # ToDo: Current Dev Stack
+            if 'generator' in self.model_kwargs['model_type']:
+                print('yaaay', self.model_kwargs['model_type'], 'time!!!!')
+
+                history_pdf = tf.reshape(tensor=unadjusted_example['pdf_historical_input'],
+                                         shape=[self.pdf_history_shape[0], self.pdf_history_shape[1]])
+                teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
+                                     shape=[output_shape[0], output_shape[1]])
+                adjusted_train_target = tf.concat([history_pdf[1:, :], target], axis=0)
+                print(adjusted_train_target)
+                return{'support_input': nwp_inputs,
+                       'history_input': history_pdf,
+                       'teacher_input': teacher}, adjusted_train_target
+
+            elif self.model_kwargs['model_type'] == 'Encoder-Decoder' or self.model_kwargs['model_type'] == 'E-D' or 'MiMo' in self.model_kwargs['model_type']:
+                history_pv = tf.reshape(tensor=unadjusted_example['raw_historical_input'], shape=[self.nwp_downsampling_rate, int(self.sw_len_samples/self.nwp_downsampling_rate)])
+                history_pv = tf.transpose(history_pv, [1,0])
+                history_pv = tf.reduce_mean(history_pv, axis=-1, keepdims=True)
+                nwp_inputs = nwp_inputs[int(self.fc_len_samples/self.nwp_downsampling_rate):,:]
+                inputs =tf.concat([nwp_inputs, history_pv], axis=-1)
+                if 'MiMo' in self.model_kwargs['model_type']:
+                    return inputs, target
+                else:
+                    teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
+                                         shape=[output_shape[0], output_shape[1]])
+                    return {'inputs_input': inputs, 'teacher_input': teacher}, target
+
+        def __read_and_process_normal_samples(example):
             # 'nwp_input':
             # 'raw_historical_input':
             # 'raw_teacher':
@@ -144,7 +186,7 @@ class Model_Container():
                                          shape=[output_shape[0], output_shape[1]])
                     return {'inputs_input': inputs, 'teacher_input': teacher}, target
 
-        def get_batched_dataset(file_list, batch_size):
+        def get_batched_dataset(file_list, batch_size, train_mode=False):
             option_no_order = tf.data.Options()
             option_no_order.experimental_deterministic = False
 
@@ -155,10 +197,13 @@ class Model_Container():
             #                              num_parallel_calls=20)
 
             # does this order make any fucking sense at all?!?!?!?
-            dataset = dataset.map(__read_and_process_tfrecord, num_parallel_calls=10)
+            if train_mode:
+                dataset = dataset.map(__read_and_process_train_samples, num_parallel_calls=10)
+            else:
+                dataset = dataset.map(__read_and_process_normal_samples, num_parallel_calls=10)
             dataset = dataset.repeat()
             dataset = dataset.shuffle(4 * batch_size)
-            # dataset = dataset.prefetch(5 * batch_size)
+            dataset = dataset.prefetch(5 * batch_size)
             dataset = dataset.batch(batch_size, drop_remainder=False)
             return dataset
 
@@ -166,22 +211,25 @@ class Model_Container():
         # ToDo: change back to '/train'
         train_folder = self.dataset_path + '/train'
         train_list = __get_all_tfrecords_in_folder(train_folder)
+        shuffle(train_list)
         def get_training_dataset():
-            return get_batched_dataset(train_list, batch_size)
+            return get_batched_dataset(train_list, batch_size, train_mode=False)
         self.train_dataset_generator = get_training_dataset
         self.train_steps_epr_epoch = int(np.ceil(len(train_list)/batch_size))
 
         val_folder = self.dataset_path + '/validation'
         val_list = __get_all_tfrecords_in_folder(val_folder)
+        shuffle(val_list)
         def get_val_dataset():
-            return get_batched_dataset(val_list, batch_size)
+            return get_batched_dataset(val_list, batch_size, train_mode=False)
         self.val_dataset_generator = get_val_dataset
         self.val_steps_epr_epoch = int(np.ceil(len(val_list) / batch_size))
 
         test_folder = self.dataset_path + '/test'
         test_list = __get_all_tfrecords_in_folder(test_folder)
+        shuffle(test_list)
         def get_test_dataset():
-            return get_batched_dataset(test_list, batch_size)
+            return get_batched_dataset(test_list, batch_size, train_mode=False)
         self.test_dataset_generator = get_test_dataset
         self.test_steps_epr_epoch = int(np.ceil(len(test_list) / batch_size))
 
@@ -204,7 +252,7 @@ class Model_Container():
         elif model_size == 'large':
             units = [[256, 256]]
         elif model_size == 'generator':
-            units = [[189]]
+            units = [[256]]
 
         if model_type == 'MiMo-LSTM':
             print('building a', model_size, model_type)
@@ -245,11 +293,11 @@ class Model_Container():
         elif model_type == 'MiMo-just-tcn':
             print('building a', model_size, model_type)
             from Building_Blocks import DenseTCN
-            encoder_specs = {'num_blocks': 3, 
+            encoder_specs = {'num_blocks': 3,
                              'num_layers_per_block': 3,
-                            'growth_rate': 12, 
-                            'use_dropout': False, 
-                            'dropout_rate': 0.0, 
+                            'growth_rate': 12,
+                            'use_dropout': False,
+                            'dropout_rate': 0.0,
                             'use_norm': False,
                             'downsample_rate': 1}
 
@@ -261,7 +309,6 @@ class Model_Container():
                                downsample_input=False,
                                downsampling_rate=(60 / 5),
                                mode='project')
-
 
         elif model_type == 'Encoder-TCN' or model_type == 'E-TCN':
             common_specs = {'units': units,
@@ -427,10 +474,8 @@ class Model_Container():
 
         else:
             print('trying to build with', model_size, model_type, 'but failed')
-
-
         from Losses_and_Metrics import loss_wrapper
-        self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-3),
+        self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4, clipnorm=1.0),
                       loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='tile-to-forecast'),
                       metrics=[loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nME',
                                             normalizer_value=normalizer_value),
@@ -442,17 +487,17 @@ class Model_Container():
 
     def __train_model(self, batch_size=64):
         self.metrics = {}
-
-        early_stopping_callback = tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=10,
-                                                                   mode='min',
-                                                                   restore_best_weights=True)
-        reduce_lr_on_plateu_callback =tf.keras.callbacks.ReduceLROnPlateau(monitor='nRMSE',
-                                                                           factor=0.10,
-                                                                           patience=5,
-                                                                           verbose=True,
-                                                                           mode='min',
-                                                                           cooldown=5)
+        callbacks = []
+        # callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
+        #                                                            patience=10,
+        #                                                            mode='min',
+        #                                                            restore_best_weights=True))
+        # callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='loss',
+        #                                                                    factor=0.10,
+        #                                                                    patience=5,
+        #                                                                    verbose=True,
+        #                                                                    mode='min',
+        #                                                                    cooldown=5))
         print('starting to train model')
         train_history = self.model.fit(self.train_dataset_generator(),
                                        steps_per_epoch=self.train_steps_epr_epoch,
@@ -460,7 +505,7 @@ class Model_Container():
                                       verbose=2,
                                       validation_data=self.val_dataset_generator(),
                                        validation_steps=self.val_steps_epr_epoch,
-                                      callbacks=[early_stopping_callback, reduce_lr_on_plateu_callback])
+                                      callbacks=callbacks)
 
         train_history = train_history.history
         for key in train_history.keys():
@@ -478,10 +523,10 @@ class Model_Container():
 
     def __skill_metrics(self):
         saved_epoch = np.argmax(self.metrics['val_nRMSE'])
-        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_nRMSE'][saved_epoch] / self.dataset_info['val_persistency_baseline']['nRMSE'])
-        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_CRPS'][saved_epoch] / self.dataset_info['val_persistency_baseline']['CRPS'])
-        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['test_nRMSE'] / self.dataset_info['test_persistency_baseline']['nRMSE'])
-        self.metrics['test_CRPS_skill'] = 1 - (self.metrics['test_CRPS'] / self.dataset_info['test_persistency_baseline']['CRPS'])
+        # self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_nRMSE'][saved_epoch] / self.dataset_info['val_persistency_baseline']['nRMSE'])
+        # self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_CRPS'][saved_epoch] / self.dataset_info['val_persistency_baseline']['CRPS'])
+        # self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['test_nRMSE'] / self.dataset_info['test_persistency_baseline']['nRMSE'])
+        # self.metrics['test_CRPS_skill'] = 1 - (self.metrics['test_CRPS'] / self.dataset_info['test_persistency_baseline']['CRPS'])
 
 
 

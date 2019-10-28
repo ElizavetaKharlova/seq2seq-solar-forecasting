@@ -286,10 +286,9 @@ class Attention(tf.keras.layers.Layer):
 
     def build_mask(self, input_shape):
         # create mask to wipe out the future timesteps
-        fill = tf.ones(shape=[input_shape[1],input_shape[1]], dtype=tf.float32)
-        fill = float('-inf') * fill
+        neg_infinities = tf.constant(float('-inf'), shape=[input_shape[1],input_shape[1]], dtype=tf.float32)
         # upper_triangular = (tf.linalg.band_part(fill, 0, -1) - tf.linalg.band_part(fill, 0, 0) )
-        lower_triangular = tf.linalg.band_part(fill, -1, 0)
+        lower_triangular = tf.linalg.band_part(neg_infinities, -1, 0)
         # upper triangular matrix with -inf values, and 1s on the diagonal
         return lower_triangular
 
@@ -335,7 +334,8 @@ class Attention(tf.keras.layers.Layer):
 
             if self_attention:
                 score = tf.add(score, mask)
-            score = tf.nn.softmax(score, axis=1)
+
+            score = tf.nn.softmax(score, axis=-1) # Softmax over key dimension
 
             context_vector = tf.matmul(score, self.W_key(value))
 
@@ -774,28 +774,30 @@ class generator_LSTM_block(tf.keras.layers.Layer):
         if self.use_norm:
             LSTM1_out_history = self.LSTM1_output_norm(LSTM1_out_history)
 
-        self_attention_out = self.self_attention(LSTM1_out_history)
-        self_attention_out = self_attention_out + LSTM1_out_history
-        if self.use_norm:
-            self_attention_out = self.self_attn_norm(self_attention_out)
+        # self_attention_out = self.self_attention(LSTM1_out_history)
+        # self_attention_out = self_attention_out + LSTM1_out_history
+        # if self.use_norm:
+        #     self_attention_out = self.self_attn_norm(self_attention_out)
 
-        attention_features = self.attention(self_attention_out, attention_value)
-        attention_features = attention_features + self_attention_out
+        attention_features = self.attention(LSTM1_out_history, attention_value)
+        attention_features = attention_features + LSTM1_out_history
         if self.use_norm:
             attention_features = self.attn_norm(attention_features)
 
         LSTM2_out, LSTM2_last_states = self.LSTM_post_attn(attention_features, initial_states=None)
+        LSTM2_out = LSTM2_out[-1]
         LSTM2_out = LSTM2_out + attention_features
         if self.use_norm:
             LSTM2_out = self.LSTM2_output_norm(LSTM2_out)
 
-        forecast = self.projection(LSTM2_out[-1][:, -1:, :])
+        LSTM2_out_history = LSTM2_out
 
         for step in range(forecast_timesteps-1):
-            if teacher is None:
-                next_LSTM1_input = forecast[:,-1:,:]
-            else:
-                next_LSTM1_input = tf.expand_dims(teacher[:,step,:], axis=1)
+
+            next_LSTM1_input = tf.keras.backend.in_train_phase(tf.expand_dims(teacher[:, step, :], axis=1),
+                                                       alt=self.projection(LSTM2_out_history[:,-1:,:]),
+                                                       training=tf.keras.backend.learning_phase())
+
 
             LSTM1_out_step, LSTM1_last_states = self.LSTM_history(next_LSTM1_input, initial_states=LSTM1_last_states)
             LSTM1_out_step = LSTM1_out_step[-1]
@@ -804,25 +806,29 @@ class generator_LSTM_block(tf.keras.layers.Layer):
 
             # get the full LSTM1 output history for self-attention
             LSTM1_out_history = tf.concat([LSTM1_out_history, LSTM1_out_step], axis=1)
-            self_attention_out = self.self_attention(LSTM1_out_history)
-            self_attention_out = self_attention_out + LSTM1_out_history
-            if self.use_norm:
-                self_attention_out = self.self_attn_norm(self_attention_out)
+            # self_attention_out = self.self_attention(LSTM1_out_history)
+            # self_attention_out = self_attention_out + LSTM1_out_history
+            # if self.use_norm:
+            #     self_attention_out = self.self_attn_norm(self_attention_out)
 
-            attention_features = self.attention(self_attention_out, attention_value)
-            attention_features = attention_features + self_attention_out
+            attention_features = self.attention(LSTM1_out_history, attention_value)
+            attention_features = attention_features + LSTM1_out_history
             if self.use_norm:
                 attention_features = self.attn_norm(attention_features)
 
             LSTM2_out_step, LSTM2_last_states = self.LSTM_post_attn(attention_features[:,-1:,:], initial_states=LSTM2_last_states)
+            LSTM2_out_step = LSTM2_out_step[-1]
             LSTM2_out_step = LSTM2_out_step + attention_features[:,-1:,:]
             if self.use_norm:
                 LSTM2_out_step = self.LSTM2_output_norm(LSTM2_out_step)
 
-            forecast_step = self.projection(LSTM2_out_step[-1])
-            forecast = tf.concat([forecast, forecast_step], axis=1)
+            LSTM2_out_history = tf.concat([LSTM2_out_history, LSTM2_out_step], axis=1)
 
+        forecast = tf.keras.backend.in_train_phase(self.projection(LSTM2_out_history[:,-forecast_timesteps:,:]),
+            alt=self.projection(LSTM2_out_history[:,-forecast_timesteps:,:]),
+            training=tf.keras.backend.learning_phase())
         return forecast
+
 ########################################################################################################################
 
 class attentive_TCN(tf.keras.layers.Layer):

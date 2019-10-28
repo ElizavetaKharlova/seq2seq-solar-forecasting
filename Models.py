@@ -1,51 +1,5 @@
 import tensorflow as tf
 #ToDo: WE gotta change shit to keyword arguments for sanity's skae... jesus fuck
-class Forecaster(tf.keras.Model):
-
-    def __init__(self, encoder_block, decoder_block, projection_block,
-                 history_shape, support_shape, output_shape,
-                 use_teacher=True,  # dont be stupid and dont
-                 ):
-        super(Forecaster, self).__init__()
-        self.encoder = encoder_block
-        self.decoder = decoder_block
-        self.projection = projection_block
-
-        self.use_teacher = use_teacher
-
-        self.history_steps = history_shape[-2]
-        self.history_dims = history_shape[-1]
-        self.support_steps = support_shape[-2]
-        self.support_dims = support_shape[-1]
-        self.out_steps = output_shape[-2]
-        self.out_dims = output_shape[-1]
-
-    def call(self, history_signal, support_signal, teacher_signal=None):
-
-        istraining = tf.keras.backend.learning_phase()
-        encoder_features = self.encoder(support_signal)
-        if self.use_teacher and istraining:
-
-            decoder_input = tf.concat([history_signal, teacher_signal], axis=1)
-            print(decoder_input, 'as decoder input')
-
-            decoder_signal = self.decoder(decoder_input, support_features=encoder_features)
-            relevant_decoder_signal = decoder_signal[:, :-self.out_steps, :]
-            forecast = self.projection(relevant_decoder_signal)
-            return forecast
-
-        else:
-            decoder_input = history_signal
-            for timestep in range(self.out_steps):
-                decoder_signal = self.decoder(decoder_input, support_features=encoder_features)
-                relevant_decoder_signal = decoder_signal[:, -1, :]
-                forecast_step = self.projection(relevant_decoder_signal)
-                decoder_input = tf.concat([decoder_input, forecast_step])
-
-            forecast = decoder_input[:, :-self.out_steps, :]
-
-            return forecast
-
 def forecaster_model(encoder_block, decoder_block,
                      history_shape, support_shape, output_shape,
                      use_teacher=True, #dont be stupid and dont
@@ -60,7 +14,6 @@ def forecaster_model(encoder_block, decoder_block,
     print('num out steps', out_steps)
     out_dims = output_shape[-1]
 
-    istraining = tf.keras.backend.learning_phase()
 
     if history_dims != out_dims:
         print('encountered different dimensionality between the historical signal, (', history_dims, ') and the desired output (', out_dims, ')')
@@ -77,10 +30,10 @@ def forecaster_model(encoder_block, decoder_block,
     teacher = tf.keras.layers.Input(shape=(out_steps, out_dims), name='teacher_input')
     print('removing 0th step to prevent overlap between history and teacher!!')
 
-    forecast = tf.keras.backend.in_train_phase(decoder_block(history_input, attention_value=encoder_features, forecast_timesteps=out_steps, teacher=teacher[:,1:,:]),
-                                               alt=decoder_block(history_input, attention_value=encoder_features, forecast_timesteps=out_steps, teacher=None),
-                                               training=istraining)
-    print(forecast)
+    forecast = decoder_block(history_input, attention_value=encoder_features, forecast_timesteps=out_steps,
+                      teacher=teacher[:, 1:, :])
+
+    print('final forecast', forecast)
     return tf.keras.Model([support_input, history_input, teacher], forecast)
 
 

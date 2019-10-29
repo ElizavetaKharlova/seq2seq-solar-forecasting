@@ -252,7 +252,7 @@ class Model_Container():
         elif model_size == 'large':
             units = [[256, 256]]
         elif model_size == 'generator':
-            units = [[256]]
+            units = [[128]]
 
         if model_type == 'MiMo-LSTM':
             print('building a', model_size, model_type)
@@ -488,16 +488,16 @@ class Model_Container():
     def __train_model(self, batch_size=64):
         self.metrics = {}
         callbacks = []
-        # callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-        #                                                            patience=10,
-        #                                                            mode='min',
-        #                                                            restore_best_weights=True))
-        # callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='loss',
-        #                                                                    factor=0.10,
-        #                                                                    patience=5,
-        #                                                                    verbose=True,
-        #                                                                    mode='min',
-        #                                                                    cooldown=5))
+        callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
+                                                                   patience=10,
+                                                                   mode='min',
+                                                                   restore_best_weights=True))
+        callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='loss',
+                                                                           factor=0.10,
+                                                                           patience=5,
+                                                                           verbose=True,
+                                                                           mode='min',
+                                                                           cooldown=5))
         print('starting to train model')
         train_history = self.model.fit(self.train_dataset_generator(),
                                        steps_per_epoch=self.train_steps_epr_epoch,

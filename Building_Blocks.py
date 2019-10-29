@@ -21,18 +21,17 @@ class DropoutWrapper(tf.keras.layers.Wrapper):
     '''
     def __init__(self, layer, dropout_prob, units):
         super(DropoutWrapper, self).__init__(layer)
-        self.i_o_dropout_layer = tf.keras.layers.Dropout(rate=dropout_prob, noise_shape=(1,units))
+        self.o_dropout_layer = tf.keras.layers.Dropout(rate=dropout_prob, noise_shape=(1,units))
         self.state_dropout_layer = tf.keras.layers.Dropout(rate=dropout_prob)
 
     def call(self, inputs, initial_state):
         istraining = tf.keras.backend.learning_phase()
-        inputs = self.i_o_dropout_layer(inputs, training=istraining)
         # get the output and hidden states in one layer of the network
         output, state_h, state_c = self.layer(inputs, initial_state)
         # apply dropout to each state of an LSTM layer
         state_h = self.state_dropout_layer(state_h, training=istraining)
         state_c = self.state_dropout_layer(state_c, training=istraining)
-        output = self.i_o_dropout_layer(output, training=istraining)
+        output = self.o_dropout_layer(output, training=istraining)
         return output, state_h, state_c
 
 class ZoneoutWrapper(tf.keras.layers.Wrapper):
@@ -164,7 +163,7 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                                                       bias_initializer='zeros')
 
                 # if it is the first layer of we do not want to use dropout, we won't
-                if layer > 0 and self.use_dropout:
+                if self.use_dropout:
                     one_LSTM_layer = DropoutWrapper(one_LSTM_layer, dropout_prob=dropout_rate, units=self.units[block][layer])
 
                 # do we wanna norm
@@ -287,7 +286,6 @@ class Attention(tf.keras.layers.Layer):
     def build_mask(self, input_shape):
         # create mask to wipe out the future timesteps
         neg_infinities = tf.constant(float('-inf'), shape=[input_shape[1],input_shape[1]], dtype=tf.float32)
-        # upper_triangular = (tf.linalg.band_part(fill, 0, -1) - tf.linalg.band_part(fill, 0, 0) )
         lower_triangular = tf.linalg.band_part(neg_infinities, -1, 0)
         # upper triangular matrix with -inf values, and 1s on the diagonal
         return lower_triangular
@@ -352,6 +350,9 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         super(multihead_attentive_layer, self).__init__()
         # units is a list of lists, containing the numbers of units in the attention head
         self.num_heads = len(units_per_head)
+
+        self.use_norm = use_norm
+        self.use_dropout = use_dropout
         if project_to_units is None:
             self.projection = False
         else:
@@ -362,23 +363,24 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                                          padding='causal',
                                          kernel_initializer='glorot_uniform',
                                          use_bias=False)
-        self.use_norm = use_norm
-        self.use_dropout = use_dropout
+            if self.use_norm:
+                self.projection_norm = tf.keras.layers.LayerNormalization(axis=-1, center=True, scale=False)
+            if self.use_dropout:
+                self.projection_dropout = tf.keras.layers.Dropout(dropout_rate, noise_shape=(1, project_to_units))
 
         self.multihead_attention = []
         if self.use_norm:
-            self.norm = tf.keras.layers.LayerNormalization(axis=-1,
-                                                          center=True,
-                                                          scale=False)
+            self.norm = tf.keras.layers.LayerNormalization(axis=-1, center=True, scale=False)
         if self.use_dropout:
             self.dropout = tf.keras.layers.Dropout(dropout_rate, noise_shape=(1, int(np.sum(units_per_head))))
 
         for head in range(self.num_heads):
             attention = Attention(units_per_head[head],
                                   mode='Transformer',
-                                query_kernel= 1 if kernel_size==None else kernel_size[head],
+                                  query_kernel= 1 if kernel_size==None else kernel_size[head],
                                   key_kernel=1 if kernel_size==None else kernel_size[head],
                                   only_context=True)
+
             self.multihead_attention.append(attention)
 
     def call(self, query, value=None):
@@ -388,12 +390,18 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
             multihead_out = [head(query, value) for head in self.multihead_attention]
 
         multihead_out = tf.concat(multihead_out, axis=-1)
+
         if self.use_norm:
             multihead_out = self.norm(multihead_out)
         if self.use_dropout:
             multihead_out = self.dropout(multihead_out, training=tf.keras.backend.learning_phase())
+
         if self.projection:
             multihead_out = self.projection_layer(multihead_out)
+            if self.use_norm:
+                multihead_out = self.projection_norm(multihead_out)
+            if self.use_dropout:
+                multihead_out = self.projection_dropout(multihead_out, training=tf.keras.backend.learning_phase())
 
         return multihead_out
 
@@ -766,68 +774,83 @@ class generator_LSTM_block(tf.keras.layers.Layer):
             self.LSTM1_output_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
             self.LSTM2_output_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
 
-    def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
+    def process(self, input_steps):
 
-        # Process the history, this also creates the first forecast
-        LSTM1_out_history, LSTM1_last_states = self.LSTM_history(history, initial_states=None)
-        LSTM1_out_history = LSTM1_out_history[-1]
+        # Input to first transformation layer, assign last state and out
+        LSTM1_out, self.LSTM1_last_states = self.LSTM_history(input_steps, initial_states=self.LSTM1_last_states)
+        LSTM1_out = LSTM1_out[-1] #LSTM specific bcyz multilayerlstm
         if self.use_norm:
-            LSTM1_out_history = self.LSTM1_output_norm(LSTM1_out_history)
+            LSTM1_out = self.LSTM1_output_norm(LSTM1_out)
 
-        # self_attention_out = self.self_attention(LSTM1_out_history)
-        # self_attention_out = self_attention_out + LSTM1_out_history
+        # if we arent started yet we assign the history, otherwise we wont
+        # if not self.started:
+        #     self.LSTM1_history = LSTM1_out
+        # else:
+        #     self.LSTM1_history = tf.concat([self.LSTM1_history, LSTM1_out], axis=1)
+        #
+        # self_attention_out = self.self_attention(self.LSTM1_history)
+        # self_attention_out = self_attention_out + self.LSTM1_history
         # if self.use_norm:
         #     self_attention_out = self.self_attn_norm(self_attention_out)
 
-        attention_features = self.attention(LSTM1_out_history, attention_value)
-        attention_features = attention_features + LSTM1_out_history
+        # Attention on the current output, we confirmed this is equivalent and therfore the output here will always have the same length as the query
+        attention_features = self.attention(LSTM1_out, self.attention_value)
+        attention_features = attention_features + LSTM1_out
         if self.use_norm:
             attention_features = self.attn_norm(attention_features)
 
-        LSTM2_out, LSTM2_last_states = self.LSTM_post_attn(attention_features, initial_states=None)
+        # extract input depending on situation
+        # input --> TransformLayer --> out, state
+        # state to self.
+        # unlist lstm_out
+        # residual
+        # norm
+        # append to history or not
+        LSTM2_out, self.LSTM2_last_states = self.LSTM_post_attn(attention_features, initial_states=self.LSTM2_last_states)
         LSTM2_out = LSTM2_out[-1]
         LSTM2_out = LSTM2_out + attention_features
         if self.use_norm:
             LSTM2_out = self.LSTM2_output_norm(LSTM2_out)
 
-        LSTM2_out_history = LSTM2_out
+        #log the history
+        if not self.started:
+            self.LSTM2_history = LSTM2_out
+        else:
+            self.LSTM2_history = tf.concat([self.LSTM2_history, LSTM2_out], axis=1)
 
-        for step in range(forecast_timesteps-1):
+    def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
+        self.attention_value = attention_value
 
-            next_LSTM1_input = tf.keras.backend.in_train_phase(tf.expand_dims(teacher[:, step, :], axis=1),
-                                                       alt=self.projection(LSTM2_out_history[:,-1:,:]),
-                                                       training=tf.keras.backend.learning_phase())
+        forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
+                                        alt=self.validation_call(history, forecast_timesteps),
+                                        training=tf.keras.backend.learning_phase())
 
-
-            LSTM1_out_step, LSTM1_last_states = self.LSTM_history(next_LSTM1_input, initial_states=LSTM1_last_states)
-            LSTM1_out_step = LSTM1_out_step[-1]
-            if self.use_norm:
-                LSTM1_out_step = self.LSTM1_output_norm(LSTM1_out_step)
-
-            # get the full LSTM1 output history for self-attention
-            LSTM1_out_history = tf.concat([LSTM1_out_history, LSTM1_out_step], axis=1)
-            # self_attention_out = self.self_attention(LSTM1_out_history)
-            # self_attention_out = self_attention_out + LSTM1_out_history
-            # if self.use_norm:
-            #     self_attention_out = self.self_attn_norm(self_attention_out)
-
-            attention_features = self.attention(LSTM1_out_history, attention_value)
-            attention_features = attention_features + LSTM1_out_history
-            if self.use_norm:
-                attention_features = self.attn_norm(attention_features)
-
-            LSTM2_out_step, LSTM2_last_states = self.LSTM_post_attn(attention_features[:,-1:,:], initial_states=LSTM2_last_states)
-            LSTM2_out_step = LSTM2_out_step[-1]
-            LSTM2_out_step = LSTM2_out_step + attention_features[:,-1:,:]
-            if self.use_norm:
-                LSTM2_out_step = self.LSTM2_output_norm(LSTM2_out_step)
-
-            LSTM2_out_history = tf.concat([LSTM2_out_history, LSTM2_out_step], axis=1)
-
-        forecast = tf.keras.backend.in_train_phase(self.projection(LSTM2_out_history[:,-forecast_timesteps:,:]),
-            alt=self.projection(LSTM2_out_history[:,-forecast_timesteps:,:]),
-            training=tf.keras.backend.learning_phase())
         return forecast
+
+    def training_call(self, history_and_teacher, forecast_timesteps):
+        self.LSTM1_last_states = None
+        self.LSTM2_last_states = None
+        self.started = False
+        self.process(history_and_teacher)
+        self.started = True
+        return self.projection(self.LSTM2_history[:,-forecast_timesteps:,:])
+
+    def validation_call(self, history, forecast_timesteps):
+        self.LSTM1_last_states = None
+        self.LSTM2_last_states = None
+        self.started = False
+        self.process(history)
+        self.started = True
+
+        for step in range(forecast_timesteps - 1):
+            next_input = self.projection(self.LSTM2_history[:, -1:, :])
+            self.process(next_input)
+
+        return self.projection(self.LSTM2_history[:,-forecast_timesteps:,:])
+
+
+
+
 
 ########################################################################################################################
 

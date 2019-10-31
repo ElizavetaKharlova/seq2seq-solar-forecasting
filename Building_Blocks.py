@@ -423,7 +423,8 @@ class DenseTCN(tf.keras.layers.Layer):
                 dropout_rate=0.0,
                 use_norm=False,
                 downsample_rate=1,
-                kernel_sizes=[3, 5]):
+                kernel_sizes=[3, 5],
+                residual=False):
         super(DenseTCN, self).__init__()
 
         self.num_blocks = num_blocks
@@ -438,6 +439,7 @@ class DenseTCN(tf.keras.layers.Layer):
         self.downsample_rate = downsample_rate
         self.kernel_sizes = kernel_sizes
         self.use_norm = use_norm
+        self.residual = residual
         # build flag
         self.already_built = False
 
@@ -473,7 +475,7 @@ class DenseTCN(tf.keras.layers.Layer):
         else:
             layer.append([])
         #ToDo: Fix this thing pltz!!
-        layer.append(self.cnn_layer(self.growth_rate, [int(kernel_size)*(num_layer+1)], dilation_rate=1))
+        layer.append(self.cnn_layer(self.growth_rate, kernel_size=kernel_size, dilation_rate=1))
         if self.use_dropout:
             layer.append(tf.keras.layers.Dropout(rate=self.dropout_rate, noise_shape=(1,self.growth_rate)))
         else:
@@ -497,11 +499,18 @@ class DenseTCN(tf.keras.layers.Layer):
             self.blocks.append(all_streams)
             # calculate the number of features in the squeeze layer
             # shape of input to the block + growth rate for all layers in the block
-            if block == 0:
+            # if there are residual connections, the shape of output is equal to the shape of input (only at the last block)
+            if block == 0 and not self.residual:
                 num_features = int(self.squeeze_factor*(in_shape+self.num_layers_per_block*self.growth_rate))
+            elif block == 0 and self.residual:
+                num_features = in_shape
+            elif block == self.num_blocks-1 and self.residual:
+                num_features = in_shape
             else:
                 num_features = int(self.squeeze_factor*(num_features + self.num_layers_per_block*self.growth_rate))
             # create stack of squeeze layers
+            if self.use_norm:
+                self.norm.append(tf.keras.layers.BatchNormalization(axis=-1, center=True))
             self.squeeze.append(self.cnn_layer(num_features, kernel_size=1, dilation_rate=1, stride=1))
             if self.downsample_rate > 1:
                 self.pool = tf.keras.layers.AvgPool1D(pool_size=self.downsample_rate,
@@ -526,9 +535,8 @@ class DenseTCN(tf.keras.layers.Layer):
         # growth section
         if self.use_norm:
             out = self.blocks[block][num_stream][num_layer][3](out)
-
-        out = self.blocks[block][num_stream][num_layer][4](out)
         out = tf.keras.activations.relu(out)
+        out = self.blocks[block][num_stream][num_layer][4](out)
         if self.use_dropout:
             out = self.blocks[block][num_stream][num_layer][5](out, training=tf.keras.backend.learning_phase())
 
@@ -563,7 +571,8 @@ class DenseTCN(tf.keras.layers.Layer):
         # iterate through blocks
         for block in range(self.num_blocks):
             out = self.run_block(block, out)
-
+            if self.use_norm:
+                out = self.norm[block](out)
             out = self.squeeze[block](out)
             if self.downsample_rate >1:
                 out = self.pool(out)
@@ -861,37 +870,42 @@ class attentive_TCN(tf.keras.layers.Layer):
     the first block is always self-attention in order to get the most information from the input
     outputs after each block (dense tcn and self-attention) are concatenated
     '''
-    def __init__(self, units, use_dropout=False, dropout_rate=0.15, use_norm=False, mode='encoder', use_attention=True, self_recurrent=False):
+    def __init__(self, units = None, 
+                use_dropout=False, 
+                dropout_rate=0.15, 
+                use_norm=False, 
+                mode='encoder', 
+                use_attention=True, 
+                self_recurrent=False):
         # self_recurrent is a quick fix, change to exclude later
         super(attentive_TCN, self).__init__()
 
+        #TODO: change units so it's flexible but not too much
+        if units is None:
+            units = [[10,10],[20,20],[10,10]]
         self.units = units
         self.mode = mode
         self.use_attention = use_attention
         self.use_norm = use_norm
         self.block_stack = []
-        self.norm_stack = []
         for block in range(len(self.units)):
             # first block is always attention
-            if block%2 == 1:
+            if block%2 == 0:
                 # can accommodate several self-attention layers
                 attn_block = []
-                norm_block = []
                 for layer in range(len(self.units[block])):
-                    attn_block.append(Attention(self.units[block][layer], mode='Transformer'))
-                    norm_block.append(tf.keras.layers.LayerNormalization())
+                    attn_block.append(multihead_attentive_layer())
                 self.block_stack.append(attn_block)
-                self.norm_stack.append(norm_block)
             else:
                 self.block_stack.append(DenseTCN(num_blocks=1, 
                                             num_layers_per_block=len(self.units[block]), 
-                                            growth_rate=12,
+                                            growth_rate=self.units[block][0],
                                             squeeze_factor=0.5, 
                                             use_dropout = use_dropout,
                                             dropout_rate=dropout_rate,
                                             use_norm=use_norm,
-                                            kernel_sizes=[3]))
-                self.norm_stack.append([])
+                                            kernel_sizes=[3],
+                                            residual=True))
         if self.mode == 'decoder' and self.use_attention:
             self.attention_layer = Attention(self.units[-1][-1], mode='Transformer')
 
@@ -900,40 +914,18 @@ class attentive_TCN(tf.keras.layers.Layer):
         if self.mode=='decoder' and self.use_attention:
             context_vector = self.attention_layer(attention_query, value=attention_value)
             inputs = tf.concat([inputs,context_vector], axis=-1)
-        for block in range(len(self.block_stack)):
+        for block in range(len(self.units)):
             # for the first and later attention layers, concatenate the outputs
-            if block%2 == 1:
+            if block%2 == 0:
                 for layer in range(len(self.block_stack[block])):
                     out = self.block_stack[block][layer](inputs)
-                    out = self.norm_stack[block][layer](out)
-                    out = tf.concat([out,inputs],-1)
+                    # out = tf.concat([out,inputs],-1)
                     inputs = out
             else:
                 # dense tcn block concatenates the outputs automatically
                 out = self.block_stack[block](inputs)
                 inputs = out
         return out
-
-class Norm_wrapper(tf.keras.layers.Wrapper):
-    def __init__(self, layer, norm='layer'):
-        super(Norm_wrapper, self).__init__(layer)
-
-    def run_context(self, decoder_inputs, encoder_features):
-        out = decoder_inputs
-        for block in range(self.num_context_blocks):
-            # Do the attention steps
-            out_SA = self.context_block[block][0](out, value=out)
-            out_A = self.context_block[block][1](out, value=encoder_features)
-            out = tf.concat([out_SA, out_A], -1)
-
-            # do the transformation step
-            out = self.context_block[block][2](out)
-
-        return out
-
-    def call(self, decoder_inputs, attention_value=None):
-        if not self.context_built:
-            self.build_context_block()
 
 class TCN_Transformer(tf.keras.layers.Layer):
     def __init__(self,

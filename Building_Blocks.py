@@ -15,12 +15,12 @@ import numpy as np
 # the model will have one output
 # output [timesteps, dimensions]
 
-class DropoutWrapper(tf.keras.layers.Wrapper):
+class LSTM_DropoutWrapper(tf.keras.layers.Wrapper):
     '''
     Application of feed-forward & recurrent dropout on encoder & decoder hidden states.
     '''
     def __init__(self, layer, dropout_prob, units):
-        super(DropoutWrapper, self).__init__(layer)
+        super(LSTM_DropoutWrapper, self).__init__(layer)
         self.o_dropout_layer = tf.keras.layers.Dropout(rate=dropout_prob, noise_shape=(1,units))
         self.state_dropout_layer = tf.keras.layers.Dropout(rate=dropout_prob)
 
@@ -66,6 +66,16 @@ class ZoneoutWrapper(tf.keras.layers.Wrapper):
         state_c = tf.keras.backend.in_train_phase(x=zone_state_c(), alt=no_zone_state_c())
         return output, state_h, state_c
 
+class Residual_LSTM_wrapper(tf.keras.layers.Wrapper):
+    def __init__(self, layer):
+        super(Residual_LSTM_wrapper, self).__init__(layer)
+        # self.transform_gate = tf.keras.layers.TimeDistributed(self.transform_gate )
+
+    def call(self, input, initial_states=None):
+        output, states = self.layer(input, initial_states)
+        output[-1] = output[-1]+input
+        return output, states
+
 class Highway_LSTM_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, units, iniital_bias):
         super(Highway_LSTM_wrapper, self).__init__(layer)
@@ -93,28 +103,6 @@ class Norm_LSTM_wrapper(tf.keras.layers.Wrapper):
         layer_out = self.norm(layer_out)
         return layer_out, state_h, state_c
 
-class Norm_wrapper(tf.keras.layers.Wrapper):
-    def __init__(self, layer, norm='layer'):
-        super(Norm_wrapper, self).__init__(layer)
-
-        if norm == 'layer':
-            self.norm = tf.keras.layers.LayerNormalization(axis=-1,
-                                                           center=True,
-                                                           scale=True,)
-        else:
-            print('norm type', norm, 'not found, check the code to see if it is a typo')
-
-    def call(self, inputs):
-        return self.norm(self.layer(inputs))
-
-class Dropout_wrapper(tf.keras.layers.Wrapper):
-    def __init__(self, layer, dropout_rate):
-        super(Dropout_wrapper, self).__init__(layer)
-        self.dropout = tf.keras.layers.Dropout(rate=dropout_rate)
-
-    def call(self, inputs):
-        return self.dropout(self.layer(inputs), training=tf.keras.backend.learning_phase())
-
 class MultiLayer_LSTM(tf.keras.layers.Layer):
     '''
     this builds the wrapper class for the multilayer LSTM
@@ -137,6 +125,8 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
         self.LSTM_list_o_lists = []  # Multiple layers work easiest as a list of layers, so here we start
         if self.use_norm:
             self.LSTM_norm_list_o_lists = []
+        if self.use_dropout:
+            self.LSTM_dropout_list_o_lists = []
         if self.use_hw:
             self.T_x_list_o_lists = []
         if self.use_quasi_dense:
@@ -145,6 +135,7 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
         for block in range(len(self.units)):
             LSTM_list = []
             LSTM_norm_list = []
+            LSTM_dropout_list = []
             T_x_list = []
             for layer in range(len(self.units[block])):
                 # get one LSTM layer per layer we speciefied, with the units we need
@@ -163,15 +154,22 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                                                       bias_initializer='zeros')
 
                 # if it is the first layer of we do not want to use dropout, we won't
-                if self.use_dropout:
-                    one_LSTM_layer = DropoutWrapper(one_LSTM_layer, dropout_prob=dropout_rate, units=self.units[block][layer])
+                # norm if norming and not the very last layer
+                if block < (len(self.units) + 1) or layer < (len(self.units[block])):
+                    very_last_layer = True
+                else:
+                    very_last_layer = False
 
                 # do we wanna norm
-                if self.use_norm and not (block == len(self.units) and layer == len(self.units[block])):
+                if self.use_norm and not very_last_layer:
                     LSTM_norm_list.append(tf.keras.layers.LayerNormalization(axis=-1,
                                                            center=True,
                                                            scale=True))
-                #     one_LSTM_layer = Norm_LSTM_wrapper(one_LSTM_layer, norm_type='Layer norm')
+
+                if self.use_dropout:
+                    LSTM_dropout_list.append(
+                        tf.keras.layers.Dropout(dropout_rate, noise_shape=(1, self.units[block][layer]))
+                    )
 
                 # do we wanna highway
                 if self.use_hw:
@@ -191,6 +189,8 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
             self.LSTM_list_o_lists.append(LSTM_list)
             if self.use_norm:
                 self.LSTM_norm_list_o_lists.append(LSTM_norm_list)
+            if self.use_dropout:
+                self.LSTM_dropout_list_o_lists.append(LSTM_dropout_list)
             if self.use_hw:
                 self.T_x_list_o_lists.append(T_x_list)
 
@@ -222,7 +222,16 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                     t_x = self.T_x_list_o_lists[block][layer](inputs_next_layer)
                     layer_out = t_x*layer_out + (1.0-t_x)*inputs_next_layer
 
-                if self.use_norm and layer<len(self.units[block])-1 and block < len(self.units)-1:
+                # norm if norming and not the very last layer
+                if block < (len(self.units) + 1) or layer < (len(self.units[block])):
+                    very_last_layer = True
+                else:
+                    very_last_layer = False
+
+                if self.use_dropout:
+                    layer_out = self.LSTM_dropout_list_o_lists[block][layer](layer_out, training=tf.keras.backend.learning_phase())
+
+                if self.use_norm and not very_last_layer:
                     print('norming')
                     layer_out = self.LSTM_norm_list_o_lists[block][layer](layer_out)
 
@@ -285,10 +294,10 @@ class Attention(tf.keras.layers.Layer):
 
     def build_mask(self, input_shape):
         # create mask to wipe out the future timesteps
-        neg_infinities = tf.constant(float('-inf'), shape=[input_shape[1],input_shape[1]], dtype=tf.float32)
-        lower_triangular = tf.linalg.band_part(neg_infinities, -1, 0)
+        neg_infinities = tf.constant(-np.inf, shape=[input_shape[1],input_shape[1]], dtype=tf.float32)
+        upper_triangular = tf.linalg.band_part(neg_infinities, 0, -1)
         # upper triangular matrix with -inf values, and 1s on the diagonal
-        return lower_triangular
+        return upper_triangular
 
     def call(self, query, value=None, key=None):
         # If value is none, we assume self attention and set value = query
@@ -363,10 +372,8 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                                          padding='causal',
                                          kernel_initializer='glorot_uniform',
                                          use_bias=False)
-            if self.use_norm:
-                self.projection_norm = tf.keras.layers.LayerNormalization(axis=-1, center=True, scale=False)
             if self.use_dropout:
-                self.projection_dropout = tf.keras.layers.Dropout(dropout_rate, noise_shape=(1, project_to_units))
+                self.projection_layer = Dropout_wrapper(self.projection_layer, dropout_rate=dropout_rate, units=project_to_units)
 
         self.multihead_attention = []
         if self.use_norm:
@@ -391,21 +398,103 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
 
         multihead_out = tf.concat(multihead_out, axis=-1)
 
-        if self.use_norm:
-            multihead_out = self.norm(multihead_out)
-        if self.use_dropout:
-            multihead_out = self.dropout(multihead_out, training=tf.keras.backend.learning_phase())
-
         if self.projection:
-            multihead_out = self.projection_layer(multihead_out)
             if self.use_norm:
-                multihead_out = self.projection_norm(multihead_out)
+                multihead_out = self.norm(multihead_out)
             if self.use_dropout:
-                multihead_out = self.projection_dropout(multihead_out, training=tf.keras.backend.learning_phase())
+                multihead_out = self.dropout(multihead_out, training=tf.keras.backend.learning_phase())
+
+            multihead_out = self.projection_layer(multihead_out)
 
         return multihead_out
 
 ########################################################################################################################
+
+class Dropout_wrapper(tf.keras.layers.Wrapper):
+    def __init__(self, layer, dropout_rate, units):
+        super(Dropout_wrapper, self).__init__(layer)
+        self.dropout = tf.keras.layers.Dropout(rate=dropout_rate, noise_shape=(1, units))
+
+    def call(self, inputs, value=None):
+        if value is None:
+            return self.dropout(self.layer(inputs), training=tf.keras.backend.learning_phase())
+        else:
+            return self.dropout(self.layer(inputs, value), training=tf.keras.backend.learning_phase())
+
+class Norm_wrapper(tf.keras.layers.Wrapper):
+    def __init__(self, layer, norm='layer'):
+        super(Norm_wrapper, self).__init__(layer)
+
+        if norm == 'layer':
+            self.norm = tf.keras.layers.LayerNormalization(axis=-1,
+                                                           center=True,
+                                                           scale=True, )
+        else:
+            print('norm type', norm, 'not found, check the code to see if it is a typo')
+
+    def call(self, inputs, value=None):
+        if value is None:
+            return self.norm(self.layer(inputs))
+        else:
+            return self.norm(self.layer(inputs, value))
+
+class Residual_wrapper(tf.keras.layers.Wrapper):
+    def __init__(self, layer):
+        super(Residual_wrapper, self).__init__(layer)
+
+    def call(self, inputs, value=None):
+        if value is None:
+            return inputs + self.layer(inputs)
+        else:
+            return inputs + self.layer(inputs, value=value)
+
+class FFW_block(tf.keras.layers.Layer):
+    def __init__(self,
+                 units=[[96,96]],
+                 use_dropout=True,
+                 dropout_rate=0.2,
+                 use_norm=True,
+                 ):
+        super(FFW_block, self).__init__()
+
+        self.layers = []
+        self.residuals=False
+        for block in range(len(units)):
+            for layer_num in range(len(units[block])):
+                layer = tf.keras.layers.Dense(units[block][layer_num],
+                                              activation=tf.nn.elu,
+                                              use_bias=True,
+                                              kernel_initializer='glorot_uniform',
+                                              bias_initializer='zeros',
+                                              kernel_regularizer=None,
+                                              bias_regularizer=None,
+                                              activity_regularizer=None,
+                                              kernel_constraint=None,
+                                              bias_constraint=None)
+                if use_dropout:
+                    layer = Dropout_wrapper(layer, dropout_rate, units[block][layer_num])
+
+                # if layer_num > 0: #can we even residuals
+                #     if self.residuals and units[block][layer_num-1] == units[block][layer_num]:
+                #         layer = Residual_wrapper(layer)
+
+                # norm if norming and not the very last layer
+                if block < (len(units) + 1) or layer < (len(units[block])):
+                    very_last_layer = True
+                else:
+                    very_last_layer = False
+
+                if use_norm and not very_last_layer:
+                    layer = Norm_wrapper(layer)
+
+                self.layers.append(layer)
+
+    def call(self, input):
+        out = input
+        for layer in self.layers:
+            out = layer(out)
+        return out
+
 class DenseTCN(tf.keras.layers.Layer):
     """
     Dense temporal convolutional network
@@ -737,6 +826,8 @@ class generator_LSTM_block(tf.keras.layers.Layer):
                  only_last_layer_output= True,
                  projection=tf.keras.layers.Dense(20)):
         super(generator_LSTM_block, self).__init__()
+        self.use_norm = use_norm
+        self.use_dropout = use_dropout
         #ToDo: Figure out how we want to do the parameter growth thingie
 
         # LSTMs / transformation layers
@@ -749,6 +840,7 @@ class generator_LSTM_block(tf.keras.layers.Layer):
                         }
         self.LSTM_history = MultiLayer_LSTM(**self.ml_LSTM_params)
         self.LSTM_post_attn = MultiLayer_LSTM(**self.ml_LSTM_params)
+        self.LSTM_post_attn = Residual_LSTM_wrapper(self.LSTM_post_attn)
         self.projection = projection
 
         # Self attention and attention layers
@@ -756,23 +848,20 @@ class generator_LSTM_block(tf.keras.layers.Layer):
         heads = 2
         kernel_sizes = [1, 1]
         self.max_kernel_size = np.amax(kernel_sizes)
-        self.self_attention = multihead_attentive_layer(units_per_head=[int((2/3)*units)] * heads,
-                                                   use_norm=False,
-                                                   project_to_units=units,
-                                                   use_dropout=use_dropout, dropout_rate=dropout_rate)
 
         self.attention = multihead_attentive_layer(units_per_head=[int((2/3)*units)] * heads,
                                                    use_norm=False,
                                                    project_to_units=units,
                                                    use_dropout=use_dropout, dropout_rate=dropout_rate)  # choose the attention style (Bahdanau, Transformer
+        self.attention = Residual_wrapper(self.attention)
 
         # Norm layers for everything, so we can do residuals and then norm
-        self.use_norm = use_norm
         if self.use_norm:
             self.attn_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
             self.self_attn_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
             self.LSTM1_output_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
             self.LSTM2_output_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
+
 
     def process(self, input_steps):
 
@@ -782,33 +871,13 @@ class generator_LSTM_block(tf.keras.layers.Layer):
         if self.use_norm:
             LSTM1_out = self.LSTM1_output_norm(LSTM1_out)
 
-        # if we arent started yet we assign the history, otherwise we wont
-        # if not self.started:
-        #     self.LSTM1_history = LSTM1_out
-        # else:
-        #     self.LSTM1_history = tf.concat([self.LSTM1_history, LSTM1_out], axis=1)
-        #
-        # self_attention_out = self.self_attention(self.LSTM1_history)
-        # self_attention_out = self_attention_out + self.LSTM1_history
-        # if self.use_norm:
-        #     self_attention_out = self.self_attn_norm(self_attention_out)
-
-        # Attention on the current output, we confirmed this is equivalent and therfore the output here will always have the same length as the query
-        attention_features = self.attention(LSTM1_out, self.attention_value)
-        attention_features = attention_features + LSTM1_out
+        attention_in = LSTM1_out
+        attention_features = self.attention(attention_in, value=self.attention_value)
         if self.use_norm:
             attention_features = self.attn_norm(attention_features)
 
-        # extract input depending on situation
-        # input --> TransformLayer --> out, state
-        # state to self.
-        # unlist lstm_out
-        # residual
-        # norm
-        # append to history or not
         LSTM2_out, self.LSTM2_last_states = self.LSTM_post_attn(attention_features, initial_states=self.LSTM2_last_states)
         LSTM2_out = LSTM2_out[-1]
-        LSTM2_out = LSTM2_out + attention_features
         if self.use_norm:
             LSTM2_out = self.LSTM2_output_norm(LSTM2_out)
 
@@ -848,7 +917,139 @@ class generator_LSTM_block(tf.keras.layers.Layer):
 
         return self.projection(self.LSTM2_history[:,-forecast_timesteps:,:])
 
+########################################################################################################################
 
+class FFW_encoder(tf.keras.layers.Layer):
+    def __init__(self,
+                 units=[[96, 96]],
+                 use_dropout=True,
+                 dropout_rate=0.2,
+                 use_norm=True,
+                 ):
+        super(FFW_encoder, self).__init__()
+        block_kwargs = {'units': units,
+                        'use_dropout': use_dropout,
+                        'dropout_rate': dropout_rate,
+                        'use_norm': use_norm,
+                        }
+
+        attention_kwargs = {'units_per_head': [int(units[-1][-1]/3)] * 2,
+                            'project_to_units': units[-1][-1],
+                            'use_norm': use_norm,
+                            'use_dropout': use_dropout,
+                            'dropout_rate': dropout_rate}
+        self.encoder = FFW_block(**block_kwargs)
+
+        self.self_attention=multihead_attentive_layer(**attention_kwargs)
+        self.self_attention=Residual_wrapper(self.self_attention)
+        if use_norm:
+            self.self_attention=Norm_wrapper(self.self_attention)
+
+    def call(self, inputs):
+        outputs = self.encoder(inputs)
+        return self.self_attention(outputs)
+
+
+class FFW_generator(tf.keras.layers.Layer):
+
+    def __init__(self,
+                 units=[[96,96]],
+                 use_dropout=True,
+                 dropout_rate=0.2,
+                 use_norm=True,
+                 projection=tf.keras.layers.Dense(20)
+                 ):
+        super(FFW_generator, self).__init__()
+        block_kwargs = {'units': units,
+                        'use_dropout': use_dropout,
+                        'dropout_rate': dropout_rate,
+                        'use_norm': use_norm,
+                        }
+
+        attention_kwargs = {'units_per_head': [int(units[-1][-1]/3)] * 2,
+                            'project_to_units': units[-1][-1],
+                            'use_norm': use_norm,
+                            'use_dropout': use_dropout,
+                            'dropout_rate': dropout_rate}
+
+        self.transform_in = FFW_block(**block_kwargs)
+        if use_norm:
+            self.transform_in = Norm_wrapper(self.transform_in)
+        self.after_transform_in_history = None
+
+        self.self_attention=multihead_attentive_layer(**attention_kwargs)
+        self.self_attention=Residual_wrapper(self.self_attention)
+        if use_norm:
+            self.self_attention=Norm_wrapper(self.self_attention)
+
+        self.attention = multihead_attentive_layer(**attention_kwargs)
+        self.attention = Residual_wrapper(self.attention)
+        if use_norm:
+            self.attention=Norm_wrapper(self.attention)
+
+        self.transform_out = FFW_block(**block_kwargs)
+        self.transform_out = Residual_wrapper(self.transform_out)
+        if use_norm:
+            self.transform_out=Norm_wrapper(self.transform_out)
+        self.pre_projection_history = None
+
+        self.projection = projection
+
+
+    def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
+        self.attention_value = attention_value
+        self.previous_history_exists = False
+
+        forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
+                                        alt=self.validation_call(history, forecast_timesteps),
+                                        training=tf.keras.backend.learning_phase())
+
+        return forecast
+
+    # helper function to keep history if signals that we need to attend to
+    def keep_history(self, addendum, history):
+        if not self.previous_history_exists:
+            return addendum
+        else:
+            return tf.concat([history, addendum], axis=1)
+
+    # information flow for a single processing step,
+    def process_inputs(self, inputs):
+        # transform the raw input signal
+        after_transform_in = self.transform_in(inputs)
+        if not self.previous_history_exists:
+            self.after_transform_in_history = after_transform_in
+        else:
+            self.after_transform_in_history = tf.concat([self.after_transform_in_history, after_transform_in], axis=1)
+
+        # create temporal context, residual, norm
+        after_self_attention = self.self_attention(self.after_transform_in_history)
+        relevant_self_attention_steps = after_self_attention[:,-inputs.shape[1]:,:]
+
+        # create context with encoder thing, residual, norm
+        after_attention = self.attention(relevant_self_attention_steps, value=self.attention_value)
+
+        after_transform_out = self.transform_out(after_attention)
+        if not self.previous_history_exists:
+            self.pre_projection_history = after_transform_out
+        else:
+            self.pre_projection_history = tf.concat([self.pre_projection_history, after_transform_out], axis=1)
+
+    def training_call(self, history_and_teacher, forecast_timesteps):
+        self.process_inputs(history_and_teacher)
+        self.previous_history_exists = True
+         #technically not needed, since we dont have any followup calls anymore
+        return self.projection(self.pre_projection_history[:,-forecast_timesteps:,:])
+
+    def validation_call(self, history, forecast_timesteps):
+        self.process_inputs(history)
+        self.previous_history_exists = True
+
+        for step in range(forecast_timesteps - 1):
+            next_input = self.projection(self.pre_projection_history[:, -1:, :])
+            self.process_inputs(next_input)
+
+        return self.projection(self.pre_projection_history[:,-forecast_timesteps:,:])
 
 
 
@@ -913,27 +1114,6 @@ class attentive_TCN(tf.keras.layers.Layer):
                 out = self.block_stack[block](inputs)
                 inputs = out
         return out
-
-class Norm_wrapper(tf.keras.layers.Wrapper):
-    def __init__(self, layer, norm='layer'):
-        super(Norm_wrapper, self).__init__(layer)
-
-    def run_context(self, decoder_inputs, encoder_features):
-        out = decoder_inputs
-        for block in range(self.num_context_blocks):
-            # Do the attention steps
-            out_SA = self.context_block[block][0](out, value=out)
-            out_A = self.context_block[block][1](out, value=encoder_features)
-            out = tf.concat([out_SA, out_A], -1)
-
-            # do the transformation step
-            out = self.context_block[block][2](out)
-
-        return out
-
-    def call(self, decoder_inputs, attention_value=None):
-        if not self.context_built:
-            self.build_context_block()
 
 class TCN_Transformer(tf.keras.layers.Layer):
     def __init__(self,
@@ -1183,3 +1363,5 @@ class WeightNormalization(tf.keras.layers.Wrapper):
         base_config = super(WeightNormalization, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
+
+########################################################################################################################

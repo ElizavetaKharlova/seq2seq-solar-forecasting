@@ -470,36 +470,33 @@ def _get_weather_data(weather_data_folder):
         buffer = pd.read_csv(file)
         read_csv.append(buffer)
 
+    def __nan_helper(y):
+        return np.isnan(y), lambda z: np.nonzero(z)[0]
 
     'Saving it all to a numpy array'
     # this is just for putting several csv weather files together
     weather_mvts = read_csv[0]
     weather_mvts = weather_mvts.drop(['MW1U', 'Pool_price', 'ANC1', 'Interchange', 'Calgary_hmdx', 'Calgary_wind_chill', 'Calgary_weather', 
                                     'Edmonton_hmdx', 'Edmonton_wind_chill', 'Edmonton_weather', 'McMurray_hmdx', 'McMurray_wind_chill', 'McMurray_weather'], axis=1)
-    col_names = weather_mvts.columns
-    for i in range(1,len(col_names)):
-        y = weather_mvts[col_names[i]]
-        nans, x= __nan_helper(y)
-        y[nans]= np.interp(x(nans), x(~nans), y[~nans])
-        weather_mvts[col_names[i]] = y
 
     X_old = weather_mvts[['Edmonton_temp', 'Edmonton_dew_point_temp', 'Edmonton_rel_hum', 'Edmonton_wind_spd', 'Edmonton_visibility', 'Edmonton_stn_press', 'Edmonton_wind_dir']]
-    s = pd.Series([float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN'),float('NaN')], 
-                    index=['Edmonton_temp', 'Edmonton_dew_point_temp', 'Edmonton_rel_hum', 'Edmonton_wind_spd', 'Edmonton_visibility', 'Edmonton_stn_press', 'Edmonton_wind_dir'])
+    X_old = np.asarray(X_old)
 
-    X_weather = []
-    for i in range(len(X_old)):
-        X_weather.append(X_old.iloc[i])
-        X_weather.append(s)
-        X_weather.append(s)
-        X_weather.append(s)
-    X_weather = np.array(X_weather)
-
-    for i in range(0,X_weather.shape[1]):
-        y = X_weather[:,i]
+    for i in range(X_old.shape[1]):
+        y = X_old[:,i]
         nans, x= __nan_helper(y)
         y[nans]= np.interp(x(nans), x(~nans), y[~nans])
-        X_weather[:,i] = y
+        X_old[:,i] = y
+
+    new_ind = np.arange(X_old.shape[0]*4)
+    old_ind = np.arange(0,X_old.shape[0]*4,4)
+    X_weather = np.zeros([X_old.shape[0]*4, X_old.shape[1]])
+
+    for i in range(X_old.shape[1]):
+        y = X_old[:,i]
+        new_array = np.interp(new_ind, old_ind, y)
+        X_weather[:,i] = new_array
+
 
     # buffer = []
     # for date, hour in zip(read_csv[0]['Date'], read_csv[0]['Hour']):
@@ -589,8 +586,6 @@ def _get_PV(path, start_end_date): #getting the PV data
 
     return X_load[:,3]
 
-def __nan_helper(y):
-        return np.isnan(y), lambda z: z.nonzero()[0]
 
 def __find_files(path_to_dir, suffix=".pickle"):
     filenames = os.listdir(path_to_dir)

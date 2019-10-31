@@ -502,8 +502,6 @@ class DenseTCN(tf.keras.layers.Layer):
             # if there are residual connections, the shape of output is equal to the shape of input (only at the last block)
             if block == 0 and not self.residual:
                 num_features = int(self.squeeze_factor*(in_shape+self.num_layers_per_block*self.growth_rate))
-            elif block == 0 and self.residual:
-                num_features = in_shape
             elif block == self.num_blocks-1 and self.residual:
                 num_features = in_shape
             else:

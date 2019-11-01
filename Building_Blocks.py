@@ -294,10 +294,9 @@ class Attention(tf.keras.layers.Layer):
 
     def build_mask(self, input_shape):
         # create mask to wipe out the future timesteps
-        neg_infinities = tf.constant(-np.inf, shape=[input_shape[1],input_shape[1]], dtype=tf.float32)
-        upper_triangular = tf.linalg.band_part(neg_infinities, 0, -1)
-        # upper triangular matrix with -inf values, and 1s on the diagonal
-        return upper_triangular
+        ones = tf.ones(shape=[input_shape[1],input_shape[1]], dtype=tf.float32)
+        upper_triangular_ones = tf.linalg.band_part(ones, 0, 1) #this is where we want to pass information through
+        return tf.where(upper_triangular_ones==1.0, x=0.0, y=-np.inf) #replace strictly lower part with -infs, upper part and diag with 0s
 
     def call(self, query, value=None, key=None):
         # If value is none, we assume self attention and set value = query
@@ -846,8 +845,6 @@ class generator_LSTM_block(tf.keras.layers.Layer):
                         'use_quasi_dense': use_quasi_dense,
                         }
         self.LSTM_history = MultiLayer_LSTM(**self.ml_LSTM_params)
-        self.LSTM_post_attn = MultiLayer_LSTM(**self.ml_LSTM_params)
-        self.LSTM_post_attn = Residual_LSTM_wrapper(self.LSTM_post_attn)
         self.projection = projection
 
         # Self attention and attention layers
@@ -861,6 +858,9 @@ class generator_LSTM_block(tf.keras.layers.Layer):
                                                    project_to_units=units,
                                                    use_dropout=use_dropout, dropout_rate=dropout_rate)  # choose the attention style (Bahdanau, Transformer
         self.attention = Residual_wrapper(self.attention)
+
+        self.LSTM_post_attn = MultiLayer_LSTM(**self.ml_LSTM_params)
+        self.LSTM_post_attn = Residual_LSTM_wrapper(self.LSTM_post_attn)
 
         # Norm layers for everything, so we can do residuals and then norm
         if self.use_norm:
@@ -919,8 +919,7 @@ class generator_LSTM_block(tf.keras.layers.Layer):
         self.started = True
 
         for step in range(forecast_timesteps - 1):
-            next_input = self.projection(self.LSTM2_history[:, -1:, :])
-            self.process(next_input)
+            self.process(self.projection(self.LSTM2_history[:, -1:, :]))
 
         return self.projection(self.LSTM2_history[:,-forecast_timesteps:,:])
 

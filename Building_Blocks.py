@@ -7,6 +7,7 @@ import numpy as np
 # this builds a basic encoder decoder model with:
 # encoder layers / units == decoder layers / units
 # output shape is the desired shape of the output [timesteps, dimensions]
+# output shape is the desired shape of the output [timesteps, dimensios]
 # input shape is the supplied encoder input shape [inp_tmesteps, input_dimensions]
 # the model will have three inputs:
 # the encoder input [inp_tmesteps, input_dimensions]
@@ -15,23 +16,31 @@ import numpy as np
 # the model will have one output
 # output [timesteps, dimensions]
 
+def drop_timeseries_signal(input, dropout_rate):
+    batch_dim = tf.shape(input)[0]
+    # if batch_dim is None:
+    #     batch_dim = 128
+    return tf.keras.backend.in_train_phase(
+                tf.nn.dropout(input, dropout_rate, noise_shape=(batch_dim, 1, input.shape[2])),
+                alt=input,
+                training=tf.keras.backend.learning_phase())
+
 class LSTM_DropoutWrapper(tf.keras.layers.Wrapper):
     '''
     Application of feed-forward & recurrent dropout on encoder & decoder hidden states.
     '''
     def __init__(self, layer, dropout_prob, units):
         super(LSTM_DropoutWrapper, self).__init__(layer)
-        self.o_dropout_layer = tf.keras.layers.Dropout(rate=dropout_prob, noise_shape=(1,units))
-        self.state_dropout_layer = tf.keras.layers.Dropout(rate=dropout_prob)
+        self.dropout_prob = dropout_prob
 
     def call(self, inputs, initial_state):
-        istraining = tf.keras.backend.learning_phase()
+        inputs = drop_timeseries_signal(inputs, self.dropout_prob)
         # get the output and hidden states in one layer of the network
         output, state_h, state_c = self.layer(inputs, initial_state)
+        outputs = drop_timeseries_signal(output)
         # apply dropout to each state of an LSTM layer
-        state_h = self.state_dropout_layer(state_h, training=istraining)
-        state_c = self.state_dropout_layer(state_c, training=istraining)
-        output = self.o_dropout_layer(output, training=istraining)
+        # state_h = self.state_dropout_layer(state_h, training=istraining)
+        # state_c = self.state_dropout_layer(state_c, training=istraining)
         return output, state_h, state_c
 
 class ZoneoutWrapper(tf.keras.layers.Wrapper):
@@ -118,6 +127,7 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
 
         self.units = units
         self.use_dropout = use_dropout
+        self.dropout_rate = dropout_rate
         self.use_norm = use_norm
         self.use_hw = use_hw
         self.use_quasi_dense = use_quasi_dense
@@ -166,11 +176,6 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                                                            center=True,
                                                            scale=True))
 
-                if self.use_dropout:
-                    LSTM_dropout_list.append(
-                        tf.keras.layers.Dropout(dropout_rate, noise_shape=(1, self.units[block][layer]))
-                    )
-
                 # do we wanna highway
                 if self.use_hw:
                     if layer == 0:
@@ -189,8 +194,6 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
             self.LSTM_list_o_lists.append(LSTM_list)
             if self.use_norm:
                 self.LSTM_norm_list_o_lists.append(LSTM_norm_list)
-            if self.use_dropout:
-                self.LSTM_dropout_list_o_lists.append(LSTM_dropout_list)
             if self.use_hw:
                 self.T_x_list_o_lists.append(T_x_list)
 
@@ -229,7 +232,7 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                     very_last_layer = False
 
                 if self.use_dropout:
-                    layer_out = self.LSTM_dropout_list_o_lists[block][layer](layer_out, training=tf.keras.backend.learning_phase())
+                    layer_out = drop_timeseries_signal(layer_out, self.dropout_rate)
 
                 if self.use_norm and not very_last_layer:
                     print('norming')
@@ -263,34 +266,47 @@ class Attention(tf.keras.layers.Layer):
                  query_stride=1,
                  key_kernel=1,
                  key_stride=1,
+                 use_dropout=True,
+                 dropout_rate=0.2,
                  ):
         super(Attention, self).__init__()
         self.mode = mode
+        self.use_dropout = use_dropout
+        self.dropout_rate = dropout_rate
         self.only_context = only_context
         self.causal_attention = causal_attention
         self.W_query = tf.keras.layers.Conv1D(units,
+                                         activation=tf.nn.sigmoid,
                                          strides=query_stride,
                                          kernel_size=query_kernel,
                                          padding='causal',
                                          kernel_initializer='glorot_uniform',
                                          use_bias=False)
+        if use_dropout:
+            self.W_query = Dropout_wrapper(self.W_query, dropout_rate=dropout_rate, units=units)
 
         self.W_value = tf.keras.layers.Conv1D(units,
+                                         activation=tf.nn.sigmoid,
                                          strides=1,
                                          kernel_size=1,
                                          padding='causal',
                                          kernel_initializer='glorot_uniform',
                                          use_bias=False)
+        if use_dropout:
+            self.W_value = Dropout_wrapper(self.W_value, dropout_rate=dropout_rate, units=units)
 
         if mode == 'Bahdanau':
             self.V = tf.keras.layers.Dense(1)
         elif mode == 'Transformer':
             self.W_key = tf.keras.layers.Conv1D(units,
+                                         activation=tf.nn.sigmoid,
                                          strides=key_stride,
                                          kernel_size=key_kernel,
                                          padding='causal',
                                          kernel_initializer='glorot_uniform',
                                          use_bias=False)
+            if use_dropout:
+                self.W_key = Dropout_wrapper(self.W_key, dropout_rate=dropout_rate, units=units)
 
     def build_mask(self, input_shape):
         # create mask to wipe out the future timesteps
@@ -342,6 +358,11 @@ class Attention(tf.keras.layers.Layer):
                 score = tf.add(score, mask)
 
             score = tf.nn.softmax(score, axis=-1) # Softmax over key dimension
+            if self.use_dropout:
+                score = tf.keras.backend.in_train_phase(
+                        tf.nn.dropout(score, self.dropout_rate, noise_shape=(tf.shape(score)[0], score.shape[1], 1)),
+                        alt=score,
+                        training=tf.keras.backend.learning_phase())
 
             context_vector = tf.matmul(score, self.W_key(value))
 
@@ -366,6 +387,7 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         else:
             self.projection = True
             self.projection_layer = tf.keras.layers.Conv1D(project_to_units,
+                                         activation=tf.nn.sigmoid,
                                          strides=1,
                                          kernel_size=1,
                                          padding='causal',
@@ -385,6 +407,8 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                                   mode='Transformer',
                                   query_kernel= 1 if kernel_size==None else kernel_size[head],
                                   key_kernel=1 if kernel_size==None else kernel_size[head],
+                                  use_dropout=use_dropout,
+                                  dropout_rate=dropout_rate,
                                   only_context=True)
 
             self.multihead_attention.append(attention)
@@ -412,13 +436,15 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
 class Dropout_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, dropout_rate, units):
         super(Dropout_wrapper, self).__init__(layer)
-        self.dropout = tf.keras.layers.Dropout(rate=dropout_rate, noise_shape=(1, units))
-
+        # self.dropout = tf.keras.layers.Dropout(rate=dropout_rate, noise_shape=(1, units))
+        self.dropout_rate = dropout_rate
     def call(self, inputs, value=None):
+
         if value is None:
-            return self.dropout(self.layer(inputs), training=tf.keras.backend.learning_phase())
+            return drop_timeseries_signal(self.layer(inputs), self.dropout_rate)
         else:
-            return self.dropout(self.layer(inputs, value), training=tf.keras.backend.learning_phase())
+            return drop_timeseries_signal(self.layer(inputs, value), self.dropout_rate)
+
 
 class Norm_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, norm='layer'):
@@ -927,7 +953,7 @@ class generator_LSTM_block(tf.keras.layers.Layer):
 
 class FFW_encoder(tf.keras.layers.Layer):
     def __init__(self,
-                 units=[[96, 96]],
+                 units=[[96], [96], [96]],
                  use_dropout=True,
                  dropout_rate=0.2,
                  use_norm=True,
@@ -944,22 +970,32 @@ class FFW_encoder(tf.keras.layers.Layer):
                             'use_norm': use_norm,
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate}
-        self.encoder = FFW_block(**block_kwargs)
+        self.tranform_in = FFW_block(**block_kwargs)
 
-        self.self_attention=multihead_attentive_layer(**attention_kwargs)
-        self.self_attention=Residual_wrapper(self.self_attention)
-        if use_norm:
-            self.self_attention=Norm_wrapper(self.self_attention)
+        self.self_attention = []
+        self.transform = []
+
+        for block in units:
+            self_attention=multihead_attentive_layer(**attention_kwargs)
+            self_attention=Residual_wrapper(self_attention)
+            if use_norm:
+                self_attention=Norm_wrapper(self_attention)
+            self.self_attention.append(self_attention)
+            self.transform.append(FFW_block(**block_kwargs))
 
     def call(self, inputs):
-        outputs = self.encoder(inputs)
-        return self.self_attention(outputs)
+        outputs = self.tranform_in(inputs)
+        for block in range(len(self.self_attention)):
+            outputs = self.self_attention[block](outputs)
+            outputs = self.transform[block](outputs)
+
+        return outputs
 
 
 class FFW_generator(tf.keras.layers.Layer):
 
     def __init__(self,
-                 units=[[96,96]],
+                 units=[[96], [96], [96]],
                  use_dropout=True,
                  dropout_rate=0.2,
                  use_norm=True,
@@ -978,25 +1014,34 @@ class FFW_generator(tf.keras.layers.Layer):
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate}
 
+        self.after_transform_in_history = []
+        self.self_attention = []
+        self.attention = []
+        self.transform_out = []
+
         self.transform_in = FFW_block(**block_kwargs)
         if use_norm:
             self.transform_in = Norm_wrapper(self.transform_in)
         self.after_transform_in_history = None
+        for block in units:
+            self_attention = multihead_attentive_layer(**attention_kwargs)
+            self_attention = Residual_wrapper(self_attention)
+            if use_norm:
+                self_attention=Norm_wrapper(self_attention)
+            self.self_attention.append(self_attention)
 
-        self.self_attention=multihead_attentive_layer(**attention_kwargs)
-        self.self_attention=Residual_wrapper(self.self_attention)
-        if use_norm:
-            self.self_attention=Norm_wrapper(self.self_attention)
+            attention = multihead_attentive_layer(**attention_kwargs)
+            attention = Residual_wrapper(attention)
+            if use_norm:
+                attention=Norm_wrapper(attention)
+            self.attention.append(attention)
 
-        self.attention = multihead_attentive_layer(**attention_kwargs)
-        self.attention = Residual_wrapper(self.attention)
-        if use_norm:
-            self.attention=Norm_wrapper(self.attention)
+            transform_out = FFW_block(**block_kwargs)
+            transform_out = Residual_wrapper(transform_out)
+            if use_norm:
+                transform_out=Norm_wrapper(transform_out)
+            self.transform_out.append(transform_out)
 
-        self.transform_out = FFW_block(**block_kwargs)
-        self.transform_out = Residual_wrapper(self.transform_out)
-        if use_norm:
-            self.transform_out=Norm_wrapper(self.transform_out)
         self.pre_projection_history = None
 
         self.projection = projection
@@ -1004,20 +1049,11 @@ class FFW_generator(tf.keras.layers.Layer):
 
     def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
         self.attention_value = attention_value
-        self.previous_history_exists = False
 
         forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
                                         alt=self.validation_call(history, forecast_timesteps),
                                         training=tf.keras.backend.learning_phase())
-
         return forecast
-
-    # helper function to keep history if signals that we need to attend to
-    def keep_history(self, addendum, history):
-        if not self.previous_history_exists:
-            return addendum
-        else:
-            return tf.concat([history, addendum], axis=1)
 
     # information flow for a single processing step,
     def process_inputs(self, inputs):
@@ -1027,27 +1063,29 @@ class FFW_generator(tf.keras.layers.Layer):
             self.after_transform_in_history = after_transform_in
         else:
             self.after_transform_in_history = tf.concat([self.after_transform_in_history, after_transform_in], axis=1)
-
+        out = self.after_transform_in_history
         # create temporal context, residual, norm
-        after_self_attention = self.self_attention(self.after_transform_in_history)
-        relevant_self_attention_steps = after_self_attention[:,-inputs.shape[1]:,:]
+        for block in range(len(self.self_attention)):
+            out = self.self_attention[block](out)
+            #relevant_self_attention_steps = after_self_attention[:,-inputs.shape[1]:,:]
+            # create context with encoder thing, residual, norm
+            out = self.attention[block](out, value=self.attention_value)
+            out = self.transform_out[block](out)
 
-        # create context with encoder thing, residual, norm
-        after_attention = self.attention(relevant_self_attention_steps, value=self.attention_value)
-
-        after_transform_out = self.transform_out(after_attention)
         if not self.previous_history_exists:
-            self.pre_projection_history = after_transform_out
+            self.pre_projection_history = out
         else:
-            self.pre_projection_history = tf.concat([self.pre_projection_history, after_transform_out], axis=1)
+            self.pre_projection_history = tf.concat([self.pre_projection_history, out[:,-inputs.shape[1]:,:]], axis=1)
 
     def training_call(self, history_and_teacher, forecast_timesteps):
+        self.previous_history_exists = False
         self.process_inputs(history_and_teacher)
         self.previous_history_exists = True
          #technically not needed, since we dont have any followup calls anymore
         return self.projection(self.pre_projection_history[:,-forecast_timesteps:,:])
 
     def validation_call(self, history, forecast_timesteps):
+        self.previous_history_exists = False
         self.process_inputs(history)
         self.previous_history_exists = True
 

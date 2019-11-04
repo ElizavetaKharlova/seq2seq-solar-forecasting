@@ -530,7 +530,7 @@ class DenseTCN(tf.keras.layers.Layer):
     outputs the raw network output in size [Batches, Timesteps, Features]
     requires a MIMO or a recursive wrapper to output predictions
     """
-    def __init__(self, num_blocks, num_layers_per_block,
+    def __init__(self, units=[[12,12,12]],
                 growth_rate=12,
                 squeeze_factor=0.5,
                 use_dropout=False,
@@ -538,11 +538,12 @@ class DenseTCN(tf.keras.layers.Layer):
                 use_norm=False,
                 downsample_rate=1,
                 kernel_sizes=[3, 5],
-                residual=False):
+                residual=False,
+                project_to_features=None):
         super(DenseTCN, self).__init__()
 
-        self.num_blocks = num_blocks
-        self.num_layers_per_block = num_layers_per_block
+        self.units = units
+        self.num_blocks = len(units)
         self.growth_rate = growth_rate
         # bottleneck features are the 1x1 conv size for each layer
         self.bottleneck_features = 4*growth_rate
@@ -554,6 +555,7 @@ class DenseTCN(tf.keras.layers.Layer):
         self.kernel_sizes = kernel_sizes
         self.use_norm = use_norm
         self.residual = residual
+        self.project_to_features = project_to_features
         # build flag
         self.already_built = False
 
@@ -607,6 +609,7 @@ class DenseTCN(tf.keras.layers.Layer):
     def build_block(self, in_shape):
         self.blocks = []
         for block in range(self.num_blocks):
+            self.num_layers_per_block = len(self.units[block])
             all_streams = []
             for kernel_size in self.kernel_sizes:
                 all_streams.append(self.build_stream(kernel_size))
@@ -616,8 +619,12 @@ class DenseTCN(tf.keras.layers.Layer):
             # if there are residual connections, the shape of output is equal to the shape of input (only at the last block)
             if block == 0 and not self.residual:
                 num_features = int(self.squeeze_factor*(in_shape+self.num_layers_per_block*self.growth_rate))
+            # If Dense block is first, we don't want the same shape as input, so an additional parameter is required
             elif block == self.num_blocks-1 and self.residual:
-                num_features = in_shape
+                if self.project_to_features is None:
+                    num_features = in_shape
+                else:
+                    num_features = self.project_to_features
             else:
                 num_features = int(self.squeeze_factor*(num_features + self.num_layers_per_block*self.growth_rate))
             # create stack of squeeze layers
@@ -651,7 +658,6 @@ class DenseTCN(tf.keras.layers.Layer):
         out = self.blocks[block][num_stream][num_layer][4](out)
         if self.use_dropout:
             out = self.blocks[block][num_stream][num_layer][5](out, training=tf.keras.backend.learning_phase())
-
         return tf.concat([out, inputs], axis=-1)
 
     # run output through one stream
@@ -991,7 +997,6 @@ class FFW_encoder(tf.keras.layers.Layer):
 
         return outputs
 
-
 class FFW_generator(tf.keras.layers.Layer):
 
     def __init__(self,
@@ -1095,7 +1100,113 @@ class FFW_generator(tf.keras.layers.Layer):
 
         return self.projection(self.pre_projection_history[:,-forecast_timesteps:,:])
 
+########################################################################################################################
 
+class Dense_generator(tf.keras.layers.Layer):
+
+    def __init__(self,
+                 units=[[96,96]],
+                 use_dropout=True,
+                 dropout_rate=0.2,
+                 use_norm=True,
+                 projection=tf.keras.layers.Dense(20)
+                 ):
+        super(Dense_generator, self).__init__()
+        block_kwargs = {'units': units,
+                        'growth_rate': 12,
+                        'use_dropout': use_dropout,
+                        'dropout_rate': dropout_rate,
+                        'use_norm': use_norm,
+                        'kernel_sizes': [3],
+                        'residual': True,
+                        }
+
+        attention_kwargs = {'units_per_head': [int(units[-1][-1]/3)] * 2,
+                            'project_to_units': units[-1][-1],
+                            'use_norm': use_norm,
+                            'use_dropout': use_dropout,
+                            'dropout_rate': dropout_rate}
+
+        block_kwargs['project_to_features']=units[-1][-1]
+        self.transform_in = DenseTCN(**block_kwargs)
+        if use_norm:
+            self.transform_in = Norm_wrapper(self.transform_in)
+        self.after_transform_in_history = None
+
+        self.self_attention=multihead_attentive_layer(**attention_kwargs)
+        self.self_attention=Residual_wrapper(self.self_attention)
+        if use_norm:
+            self.self_attention=Norm_wrapper(self.self_attention)
+
+        self.attention = multihead_attentive_layer(**attention_kwargs)
+        self.attention = Residual_wrapper(self.attention)
+        if use_norm:
+            self.attention=Norm_wrapper(self.attention)
+
+        block_kwargs['project_to_features']=None
+        self.transform_out = DenseTCN(**block_kwargs)
+        self.transform_out = Residual_wrapper(self.transform_out)
+        if use_norm:
+            self.transform_out=Norm_wrapper(self.transform_out)
+        self.pre_projection_history = None
+
+        self.projection = projection
+
+
+    def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
+        self.attention_value = attention_value
+        self.previous_history_exists = False
+
+        forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
+                                        alt=self.validation_call(history, forecast_timesteps),
+                                        training=tf.keras.backend.learning_phase())
+
+        return forecast
+
+    # helper function to keep history if signals that we need to attend to
+    def keep_history(self, addendum, history):
+        if not self.previous_history_exists:
+            return addendum
+        else:
+            return tf.concat([history, addendum], axis=1)
+
+    # information flow for a single processing step,
+    def process_inputs(self, inputs):
+        # transform the raw input signal
+        after_transform_in = self.transform_in(inputs)
+        if not self.previous_history_exists:
+            self.after_transform_in_history = after_transform_in
+        else:
+            self.after_transform_in_history = tf.concat([self.after_transform_in_history, after_transform_in], axis=1)
+
+        # create temporal context, residual, norm
+        after_self_attention = self.self_attention(self.after_transform_in_history)
+        relevant_self_attention_steps = after_self_attention[:,-inputs.shape[1]:,:]
+
+        # create context with encoder thing, residual, norm
+        after_attention = self.attention(relevant_self_attention_steps, value=self.attention_value)
+
+        after_transform_out = self.transform_out(after_attention)
+        if not self.previous_history_exists:
+            self.pre_projection_history = after_transform_out
+        else:
+            self.pre_projection_history = tf.concat([self.pre_projection_history, after_transform_out], axis=1)
+
+    def training_call(self, history_and_teacher, forecast_timesteps):
+        self.process_inputs(history_and_teacher)
+        self.previous_history_exists = True
+         #technically not needed, since we dont have any followup calls anymore
+        return self.projection(self.pre_projection_history[:,-forecast_timesteps:,:])
+
+    def validation_call(self, history, forecast_timesteps):
+        self.process_inputs(history)
+        self.previous_history_exists = True
+
+        for step in range(forecast_timesteps - 1):
+            next_input = self.projection(self.pre_projection_history[:, -1:, :])
+            self.process_inputs(next_input)
+
+        return self.projection(self.pre_projection_history[:,-forecast_timesteps:,:])
 
 ########################################################################################################################
 
@@ -1118,7 +1229,7 @@ class attentive_TCN(tf.keras.layers.Layer):
 
         #TODO: change units so it's flexible but not too much
         if units is None:
-            units = [[10,10],[20,20],[10,10]]
+            units = [[12,12,12,12,12],[20,20],[12,12,12]]
         self.units = units
         self.mode = mode
         self.use_attention = use_attention
@@ -1126,22 +1237,21 @@ class attentive_TCN(tf.keras.layers.Layer):
         self.block_stack = []
         for block in range(len(self.units)):
             # first block is always attention
-            if block%2 == 0:
+            if block%2 == 1:
                 # can accommodate several self-attention layers
                 attn_block = []
-                for layer in range(len(self.units[block])):
+                for layer in range(1):
                     attn_block.append(multihead_attentive_layer())
                 self.block_stack.append(attn_block)
             else:
-                self.block_stack.append(DenseTCN(num_blocks=1, 
-                                            num_layers_per_block=len(self.units[block]), 
+                self.block_stack.append(DenseTCN(units=[self.units[block]], 
                                             growth_rate=self.units[block][0],
                                             squeeze_factor=0.5, 
                                             use_dropout = use_dropout,
                                             dropout_rate=dropout_rate,
                                             use_norm=use_norm,
                                             kernel_sizes=[3],
-                                            residual=True))
+                                            residual=False))
         if self.mode == 'decoder' and self.use_attention:
             self.attention_layer = Attention(self.units[-1][-1], mode='Transformer')
 
@@ -1152,7 +1262,7 @@ class attentive_TCN(tf.keras.layers.Layer):
             inputs = tf.concat([inputs,context_vector], axis=-1)
         for block in range(len(self.units)):
             # for the first and later attention layers, concatenate the outputs
-            if block%2 == 0:
+            if block%2 == 1:
                 for layer in range(len(self.block_stack[block])):
                     out = self.block_stack[block][layer](inputs)
                     # out = tf.concat([out,inputs],-1)

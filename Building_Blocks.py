@@ -4,19 +4,10 @@
 
 import tensorflow as tf
 import numpy as np
-# this builds a basic encoder decoder model with:
-# encoder layers / units == decoder layers / units
-# output shape is the desired shape of the output [timesteps, dimensions]
-# output shape is the desired shape of the output [timesteps, dimensios]
-# input shape is the supplied encoder input shape [inp_tmesteps, input_dimensions]
-# the model will have three inputs:
-# the encoder input [inp_tmesteps, input_dimensions]
-# the decoder input  [timesteps, dimensions](for teacher forcing and blending to non-teacher forcing)
-# the blend factor between decoder model output and real target out
-# the model will have one output
-# output [timesteps, dimensions]
+########################################################################################################################
+'''General help functions, lowest level'''
 
-def drop_timeseries_signal(input, dropout_rate):
+def drop_features_of_signal(input, dropout_rate):
     batch_dim = tf.shape(input)[0]
     # if batch_dim is None:
     #     batch_dim = 128
@@ -25,7 +16,7 @@ def drop_timeseries_signal(input, dropout_rate):
                 alt=input,
                 training=tf.keras.backend.learning_phase())
 
-def drop_timesteps_signal(input, dropout_rate):
+def drop_timesteps_of_signal(input, dropout_rate):
     batch_dim = tf.shape(input)[0]
     # if batch_dim is None:
     #     batch_dim = 128
@@ -33,7 +24,52 @@ def drop_timesteps_signal(input, dropout_rate):
                 tf.nn.dropout(input, dropout_rate, noise_shape=(batch_dim, input.shape[1], 1)),
                 alt=input,
                 training=tf.keras.backend.learning_phase())
+########################################################################################################################
+'''Wrappers for feedforward architectures'''
+# important to note that all wrappers have to be compatible with both, attention(query, value) and self_attention(query)
 
+class Dropout_wrapper(tf.keras.layers.Wrapper):
+    def __init__(self, layer, dropout_rate, units):
+        super(Dropout_wrapper, self).__init__(layer)
+        # self.dropout = tf.keras.layers.Dropout(rate=dropout_rate, noise_shape=(1, units))
+        self.dropout_rate = dropout_rate
+    def call(self, inputs, value=None):
+
+        if value is None:
+            return drop_features_of_signal(self.layer(inputs), self.dropout_rate)
+        else:
+            return drop_features_of_signal(self.layer(inputs, value), self.dropout_rate)
+
+class Norm_wrapper(tf.keras.layers.Wrapper):
+    def __init__(self, layer, norm='layer'):
+        super(Norm_wrapper, self).__init__(layer)
+
+        if norm == 'layer':
+            self.norm = tf.keras.layers.LayerNormalization(axis=-1,
+                                                           center=True,
+                                                           scale=True, )
+        else:
+            print('norm type', norm, 'not found, check the code to see if it is a typo')
+
+    def call(self, inputs, value=None):
+        if value is None:
+            return self.norm(self.layer(inputs))
+        else:
+            return self.norm(self.layer(inputs, value))
+
+class Residual_wrapper(tf.keras.layers.Wrapper):
+    def __init__(self, layer):
+        super(Residual_wrapper, self).__init__(layer)
+
+    def call(self, inputs, value=None):
+        if value is None:
+            return inputs + self.layer(inputs)
+        else:
+            return inputs + self.layer(inputs, value=value)
+
+########################################################################################################################
+'''LSTM wrappers'''
+#
 class LSTM_DropoutWrapper(tf.keras.layers.Wrapper):
     '''
     Application of feed-forward & recurrent dropout on encoder & decoder hidden states.
@@ -43,10 +79,10 @@ class LSTM_DropoutWrapper(tf.keras.layers.Wrapper):
         self.dropout_prob = dropout_prob
 
     def call(self, inputs, initial_state):
-        inputs = drop_timeseries_signal(inputs, self.dropout_prob)
+        inputs = drop_features_of_signal(inputs, self.dropout_prob)
         # get the output and hidden states in one layer of the network
         output, state_h, state_c = self.layer(inputs, initial_state)
-        outputs = drop_timeseries_signal(output)
+        outputs = drop_features_of_signal(output)
         # apply dropout to each state of an LSTM layer
         # state_h = self.state_dropout_layer(state_h, training=istraining)
         # state_c = self.state_dropout_layer(state_c, training=istraining)
@@ -120,6 +156,8 @@ class Norm_LSTM_wrapper(tf.keras.layers.Wrapper):
         layer_out, state_h, state_c = self.layer(input, initial_state)
         layer_out = self.norm(layer_out)
         return layer_out, state_h, state_c
+
+########################################################################################################################
 
 class MultiLayer_LSTM(tf.keras.layers.Layer):
     '''
@@ -241,7 +279,7 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                     very_last_layer = False
 
                 if self.use_dropout:
-                    layer_out = drop_timeseries_signal(layer_out, self.dropout_rate)
+                    layer_out = drop_features_of_signal(layer_out, self.dropout_rate)
 
                 if self.use_norm and not very_last_layer:
                     print('norming')
@@ -323,8 +361,7 @@ class Attention(tf.keras.layers.Layer):
         # upper_triangular_ones = tf.linalg.band_part(ones, 0, -1) #this is where we want to pass information through
         # return tf.where(upper_triangular_ones==1.0, x=0.0, y=-np.inf) #replace strictly lower part with -infs, upper part and diag with 0s
         #alternative, strictlu upper_triangular:
-        upper_triangular_mask = tf.linalg.band_part(triangular_mask, 0, -1)
-                                # - tf.linalg.band_part(triangular_mask, -1, 0)
+        upper_triangular_mask = tf.linalg.band_part(triangular_mask, 0, -1) #upper triangular ones, INCLUDING diagonal
         mask = tf.where(upper_triangular_mask==1.0,
                         x=-np.inf,
                         y=0.0)
@@ -373,14 +410,11 @@ class Attention(tf.keras.layers.Layer):
             if self_attention:
                 score = tf.add(score, mask)
                 #print(score.shape)
-                first_row_replacement = tf.zeros(shape=[tf.shape(score)[0], 1, score.shape[-1]])
+                zeroth_row_replacement = tf.zeros(shape=[tf.shape(score)[0], 1, score.shape[-1]])
                 rest_context = tf.nn.softmax(score[:,1:,:], axis=-1)
-                score = tf.concat([first_row_replacement, rest_context], axis=1)
-                #print(score.shape)
-                    # Softmax over key dimension
-                # print(score, score[:,1:,:])
-                # score = tf.concat([tf.zeros(shape=[tf.shape(score)[0],1,score.shape[2]]), score[:,1:,:]], axis=1)
-                # print(score)
+                score = tf.concat([zeroth_row_replacement, rest_context], axis=1)
+
+                # score =tf.nn.softmax(score, axis=-1)
                 # score = tf.where(tf.math.is_nan(score),
                 #                  x=0.0,
                 #                  y=score)
@@ -388,7 +422,7 @@ class Attention(tf.keras.layers.Layer):
                 score = tf.nn.softmax(score, axis=-1)
 
             if self.use_dropout:
-                score = drop_timesteps_signal(score, self.dropout_rate)
+                score = drop_timesteps_of_signal(score, self.dropout_rate)
 
             context_vector = tf.matmul(score, self.W_key(value))
 
@@ -458,45 +492,6 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         return multihead_out
 
 ########################################################################################################################
-
-class Dropout_wrapper(tf.keras.layers.Wrapper):
-    def __init__(self, layer, dropout_rate, units):
-        super(Dropout_wrapper, self).__init__(layer)
-        # self.dropout = tf.keras.layers.Dropout(rate=dropout_rate, noise_shape=(1, units))
-        self.dropout_rate = dropout_rate
-    def call(self, inputs, value=None):
-
-        if value is None:
-            return drop_timeseries_signal(self.layer(inputs), self.dropout_rate)
-        else:
-            return drop_timeseries_signal(self.layer(inputs, value), self.dropout_rate)
-
-class Norm_wrapper(tf.keras.layers.Wrapper):
-    def __init__(self, layer, norm='layer'):
-        super(Norm_wrapper, self).__init__(layer)
-
-        if norm == 'layer':
-            self.norm = tf.keras.layers.LayerNormalization(axis=-1,
-                                                           center=True,
-                                                           scale=True, )
-        else:
-            print('norm type', norm, 'not found, check the code to see if it is a typo')
-
-    def call(self, inputs, value=None):
-        if value is None:
-            return self.norm(self.layer(inputs))
-        else:
-            return self.norm(self.layer(inputs, value))
-
-class Residual_wrapper(tf.keras.layers.Wrapper):
-    def __init__(self, layer):
-        super(Residual_wrapper, self).__init__(layer)
-
-    def call(self, inputs, value=None):
-        if value is None:
-            return inputs + self.layer(inputs)
-        else:
-            return inputs + self.layer(inputs, value=value)
 
 class FFW_block(tf.keras.layers.Layer):
     def __init__(self,
@@ -966,7 +961,7 @@ class generator_LSTM_block(tf.keras.layers.Layer):
         self.LSTM2_last_states = None
         self.started = False
         if self.use_dropout:
-            history_and_teacher = drop_timesteps_signal(history_and_teacher, self.dropout_rate)
+            history_and_teacher = drop_timesteps_of_signal(history_and_teacher, self.dropout_rate)
         self.process(history_and_teacher)
         self.started = True
         return self.projection(self.LSTM2_history[:,-forecast_timesteps:,:])
@@ -1114,8 +1109,8 @@ class FFW_generator(tf.keras.layers.Layer):
 
     def training_call(self, history_and_teacher, forecast_timesteps):
         # if self.use_dropout:
-        #    history_and_teacher = drop_timesteps_signal(history_and_teacher, self.dropout_rate)
-        #    history_and_teacher = drop_timeseries_signal(history_and_teacher, self.dropout_rate)
+        #    history_and_teacher = drop_timesteps_of_signal(history_and_teacher, self.dropout_rate)
+        #    history_and_teacher = drop_features_of_signal(history_and_teacher, self.dropout_rate)
 
         self.previous_history_exists = False
         self.process_inputs(history_and_teacher)

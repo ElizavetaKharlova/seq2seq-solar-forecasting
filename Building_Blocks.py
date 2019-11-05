@@ -25,6 +25,15 @@ def drop_timeseries_signal(input, dropout_rate):
                 alt=input,
                 training=tf.keras.backend.learning_phase())
 
+def drop_timesteps_signal(input, dropout_rate):
+    batch_dim = tf.shape(input)[0]
+    # if batch_dim is None:
+    #     batch_dim = 128
+    return tf.keras.backend.in_train_phase(
+                tf.nn.dropout(input, dropout_rate, noise_shape=(batch_dim, input.shape[1], 1)),
+                alt=input,
+                training=tf.keras.backend.learning_phase())
+
 class LSTM_DropoutWrapper(tf.keras.layers.Wrapper):
     '''
     Application of feed-forward & recurrent dropout on encoder & decoder hidden states.
@@ -310,9 +319,16 @@ class Attention(tf.keras.layers.Layer):
 
     def build_mask(self, input_shape):
         # create mask to wipe out the future timesteps
-        ones = tf.ones(shape=[input_shape[1],input_shape[1]], dtype=tf.float32)
-        upper_triangular_ones = tf.linalg.band_part(ones, 0, 1) #this is where we want to pass information through
-        return tf.where(upper_triangular_ones==1.0, x=0.0, y=-np.inf) #replace strictly lower part with -infs, upper part and diag with 0s
+        triangular_mask = tf.ones(shape=[input_shape[1],input_shape[1]], dtype=tf.float32)
+        # upper_triangular_ones = tf.linalg.band_part(ones, 0, -1) #this is where we want to pass information through
+        # return tf.where(upper_triangular_ones==1.0, x=0.0, y=-np.inf) #replace strictly lower part with -infs, upper part and diag with 0s
+        #alternative, strictlu upper_triangular:
+        upper_triangular_mask = tf.linalg.band_part(triangular_mask, 0, -1)
+                                # - tf.linalg.band_part(triangular_mask, -1, 0)
+        mask = tf.where(upper_triangular_mask==1.0,
+                        x=-np.inf,
+                        y=0.0)
+        return mask
 
     def call(self, query, value=None, key=None):
         # If value is none, we assume self attention and set value = query
@@ -356,13 +372,23 @@ class Attention(tf.keras.layers.Layer):
 
             if self_attention:
                 score = tf.add(score, mask)
+                #print(score.shape)
+                first_row_replacement = tf.zeros(shape=[tf.shape(score)[0], 1, score.shape[-1]])
+                rest_context = tf.nn.softmax(score[:,1:,:], axis=-1)
+                score = tf.concat([first_row_replacement, rest_context], axis=1)
+                #print(score.shape)
+                    # Softmax over key dimension
+                # print(score, score[:,1:,:])
+                # score = tf.concat([tf.zeros(shape=[tf.shape(score)[0],1,score.shape[2]]), score[:,1:,:]], axis=1)
+                # print(score)
+                # score = tf.where(tf.math.is_nan(score),
+                #                  x=0.0,
+                #                  y=score)
+            else:
+                score = tf.nn.softmax(score, axis=-1)
 
-            score = tf.nn.softmax(score, axis=-1) # Softmax over key dimension
             if self.use_dropout:
-                score = tf.keras.backend.in_train_phase(
-                        tf.nn.dropout(score, self.dropout_rate, noise_shape=(tf.shape(score)[0], score.shape[1], 1)),
-                        alt=score,
-                        training=tf.keras.backend.learning_phase())
+                score = drop_timesteps_signal(score, self.dropout_rate)
 
             context_vector = tf.matmul(score, self.W_key(value))
 
@@ -444,7 +470,6 @@ class Dropout_wrapper(tf.keras.layers.Wrapper):
             return drop_timeseries_signal(self.layer(inputs), self.dropout_rate)
         else:
             return drop_timeseries_signal(self.layer(inputs, value), self.dropout_rate)
-
 
 class Norm_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, norm='layer'):
@@ -866,6 +891,7 @@ class generator_LSTM_block(tf.keras.layers.Layer):
         super(generator_LSTM_block, self).__init__()
         self.use_norm = use_norm
         self.use_dropout = use_dropout
+        self.dropout_rate = dropout_rate
         #ToDo: Figure out how we want to do the parameter growth thingie
 
         # LSTMs / transformation layers
@@ -939,6 +965,8 @@ class generator_LSTM_block(tf.keras.layers.Layer):
         self.LSTM1_last_states = None
         self.LSTM2_last_states = None
         self.started = False
+        if self.use_dropout:
+            history_and_teacher = drop_timesteps_signal(history_and_teacher, self.dropout_rate)
         self.process(history_and_teacher)
         self.started = True
         return self.projection(self.LSTM2_history[:,-forecast_timesteps:,:])
@@ -959,7 +987,7 @@ class generator_LSTM_block(tf.keras.layers.Layer):
 
 class FFW_encoder(tf.keras.layers.Layer):
     def __init__(self,
-                 units=[[96], [96], [96]],
+                 units=[[128], [128]],
                  use_dropout=True,
                  dropout_rate=0.2,
                  use_norm=True,
@@ -1000,13 +1028,15 @@ class FFW_encoder(tf.keras.layers.Layer):
 class FFW_generator(tf.keras.layers.Layer):
 
     def __init__(self,
-                 units=[[96], [96], [96]],
+                 units=[[128], [128]],
                  use_dropout=True,
                  dropout_rate=0.2,
                  use_norm=True,
                  projection=tf.keras.layers.Dense(20)
                  ):
         super(FFW_generator, self).__init__()
+        self.dropout_rate = dropout_rate
+        self.use_dropout = use_dropout
         block_kwargs = {'units': units,
                         'use_dropout': use_dropout,
                         'dropout_rate': dropout_rate,
@@ -1053,8 +1083,8 @@ class FFW_generator(tf.keras.layers.Layer):
 
 
     def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
-        self.attention_value = attention_value
 
+        self.attention_value = attention_value
         forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
                                         alt=self.validation_call(history, forecast_timesteps),
                                         training=tf.keras.backend.learning_phase())
@@ -1083,6 +1113,10 @@ class FFW_generator(tf.keras.layers.Layer):
             self.pre_projection_history = tf.concat([self.pre_projection_history, out[:,-inputs.shape[1]:,:]], axis=1)
 
     def training_call(self, history_and_teacher, forecast_timesteps):
+        # if self.use_dropout:
+        #    history_and_teacher = drop_timesteps_signal(history_and_teacher, self.dropout_rate)
+        #    history_and_teacher = drop_timeseries_signal(history_and_teacher, self.dropout_rate)
+
         self.previous_history_exists = False
         self.process_inputs(history_and_teacher)
         self.previous_history_exists = True

@@ -36,7 +36,19 @@ def loss_wrapper(last_output_dim_size, loss_type='nME', normalizer_value=1.0):
             prediction = tf.cast(prediction, dtype=tf.float32)
             return calculate_CRPS(target, prediction, last_output_dim_size)
         return CRPS
+    elif loss_type=='log-K-S':
+        def log_KS_test(target, prediction):
+            target = tf.cast(target, dtype=tf.float32)
+            prediction = tf.cast(prediction, dtype=tf.float32)
+            return calculate_KS(target, prediction, last_output_dim_size)
+        return log_KS_test
 
+    elif loss_type=='KS_weighted_KL':
+        def KS_weighted_KL(target,prediction):
+            target = tf.cast(target, dtype=tf.float32)
+            prediction = tf.cast(prediction, dtype=tf.float32)
+            return calculate_KS_weighted_KL(target, prediction, last_output_dim_size)
+        return KS_weighted_KL
     elif loss_type == 'tile-to-forecast':
         def designed(target, prediction):
             target = tf.cast(target, dtype=tf.float32)
@@ -58,7 +70,9 @@ def __pdf_to_cdf(pdf, last_output_dim_size):
         if tile == 0:
             cdf = tf.expand_dims(pdf[:,:, tile], axis=-1)
         else:
-            cdf = tf.concat([cdf, tf.reduce_sum(pdf[:,:, :tile], axis=-1, keepdims=True)], axis=-1)
+            new = cdf[:,:,-1:] + tf.expand_dims(pdf[:,:,tile], axis=-1)
+            cdf = tf.concat([cdf, new], axis=-1)
+
     return cdf
 
 def calculate_E_MSE(target, prediction, last_output_dim_size):
@@ -70,7 +84,26 @@ def calculate_E_MSE(target, prediction, last_output_dim_size):
 
     return tf.reduce_mean(expected_nMSE)
 
+def calculate_KS_weighted_KL(target, prediction, last_output_dim_size):
+    KL_non_weighted = tf.maximum(prediction, 1e-7) / tf.maximum(target, 1e-7)
+    KL_non_weighted = tf.math.log(KL_non_weighted)
+    KL_non_weighted = tf.abs(KL_non_weighted)
 
+    KS_diff = __pdf_to_cdf(prediction, last_output_dim_size) - __pdf_to_cdf(target, last_output_dim_size)
+    KS_diff = tf.abs(KS_diff)
+    KS_weighted_KL_loss = KS_diff * KL_non_weighted
+    return tf.reduce_mean(KS_weighted_KL_loss, axis=-1)
+
+def calculate_KS(target, prediction, last_output_dim_size):
+
+    # KS_diff = __pdf_to_cdf(KS_diff, last_output_dim_size)
+    target_cdf = __pdf_to_cdf(target, last_output_dim_size)
+    prediction_cdf = __pdf_to_cdf(prediction, last_output_dim_size)
+    KS_diff = tf.math.abs(target_cdf - prediction_cdf)
+    KS_diff = tf.reduce_sum(KS_diff, axis=-1)
+
+    KS_diff = tf.square(KS_diff)
+    return tf.reduce_mean(KS_diff)
 
 def calculate_CRPS(target, prediction, last_output_dim_size):
     forecast_cdf = __pdf_to_cdf(prediction, last_output_dim_size)
@@ -108,30 +141,33 @@ def calculate_E_nME(target, prediction, last_output_dim_size, normalizer_value):
     return tf.divide(expected_nME, tf.cast(normalizer_value, dtype=tf.float32))
 
 def calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size):
-
-    absolute_probability_errors = tf.abs(tf.subtract(prediction, target))
-    inverse_probability_errors = tf.subtract(1.0, absolute_probability_errors)
-    inverse_probability_errors_nonzero = tf.math.maximum(inverse_probability_errors, 1e-8)
-    inverse_log_probability_error = -tf.math.log(inverse_probability_errors_nonzero)
+    absolute_probability_errors = tf.subtract(prediction, target)
+    absolute_probability_errors = tf.abs(absolute_probability_errors)
+    absolute_probability_errors_bounded = tf.math.minimum(absolute_probability_errors, 1.0-1e-8)
+    inverse_probability_errors = tf.subtract(1.0, absolute_probability_errors_bounded)
+    # inverse_log_probability_error = tf.square(absolute_probability_errors_bounded)
+    inverse_log_probability_error = -tf.math.log(inverse_probability_errors)
 
     loss = 0.0
     num_entries = 0.0
     for prediction_tile in range(last_output_dim_size):
         tile_loss = 0.0
         for target_tile in range(last_output_dim_size):
-            tile_distance_sq = tf.cast(target_tile - prediction_tile, dtype=tf.float32)
-            tile_distance_sq = tf.abs(tile_distance_sq)
+            tile_distance_weight = tf.cast(target_tile - prediction_tile, dtype=tf.float32)
+            tile_distance_weight = tf.abs(tile_distance_weight)
 
             tile_tile_loss = tf.multiply(target[:, :, target_tile],
                                          inverse_log_probability_error[:, :, prediction_tile])
-            tile_tile_loss = tf.multiply(tile_distance_sq, tile_tile_loss)
+            tile_tile_loss = tf.multiply(tile_distance_weight, tile_tile_loss)
             num_entries += 1.0
             tile_loss += tile_tile_loss
 
         loss += tile_loss
 
     loss = tf.divide(loss, num_entries)
+
     loss = tf.reduce_sum(loss)
+    print(loss)
     return loss
 
 def calculate_KL_Divergence(target, prediction, last_output_dim_size):
@@ -152,8 +188,6 @@ def calculate_KL_Divergence(target, prediction, last_output_dim_size):
     return KL_divergence
 
 def __calculatate_skillscore_baseline(set_targets, sample_spacing_in_mins=5, normalizer_value=1.0, persistent_forecast=None):
-
-
 
     if persistent_forecast is None:
         persistency_offset = (24 * 60) / sample_spacing_in_mins

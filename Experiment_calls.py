@@ -16,7 +16,7 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
         for run in range(2):
             model_kwargs = {'model_type': 'generator',
                             'model_size' : 'generator',
-                            'use_dropout' : False, 'dropout_rate' : 0.3,
+                            'use_dropout' : True, 'dropout_rate' : 0.2,
                             'use_hw' : False,
                             'use_norm' : True,
                             'use_quasi_dense' : False,  # general architecture stuff
@@ -24,7 +24,7 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
                             # 'downsample' : False,
                             # 'mode': 'snip',  # MiMo stuff
                             }
-            train_kwargs = {'batch_size': 128}
+            train_kwargs = {'batch_size': 180}
 
             experiment = Model_Container(dataset_folder=set,
                                       model_kwargs=model_kwargs,

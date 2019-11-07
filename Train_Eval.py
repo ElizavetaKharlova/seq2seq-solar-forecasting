@@ -252,7 +252,7 @@ class Model_Container():
         elif model_size == 'large':
             units = [[256, 256]]
         elif model_size == 'generator':
-            units = [[256]]
+            units = [[128]]
 
         if model_type == 'MiMo-LSTM':
             print('building a', model_size, model_type)
@@ -444,7 +444,7 @@ class Model_Container():
 
         elif model_type == 'generator' or model_type == 'Generator':
             print('building E-D')
-            common_specs = {'units': units,
+            common_specs = {
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
                             'use_norm': use_norm,
@@ -454,8 +454,10 @@ class Model_Container():
 
             encoder_specs = copy.deepcopy(common_specs)
             encoder_specs['return_state'] = False
-            decoder_specs = copy.deepcopy(common_specs)
+            encoder_specs['units'] = [[96, 96]]
 
+            decoder_specs = copy.deepcopy(common_specs)
+            decoder_specs['units'] = [[96], [96]]
             decoder_specs['projection'] = tf.keras.layers.Conv1D(filters=out_shape[-1],
                                                 kernel_size=1,
                                                 strides=1,
@@ -482,8 +484,13 @@ class Model_Container():
                                                 kernel_initializer='glorot_uniform')
 
             from Building_Blocks import FFW_encoder, FFW_generator
-            encoder = FFW_encoder()
-            generator = FFW_generator(projection=projection_layer)
+            encoder = FFW_encoder(use_norm=use_norm,
+                                  use_dropout=use_dropout,
+                                  dropout_rate=dropout_rate)
+            generator = FFW_generator(use_norm=use_norm,
+                                    use_dropout=use_dropout,
+                                      dropout_rate=dropout_rate,
+                                      projection=projection_layer)
             from Models import forecaster_model
             self.model = forecaster_model(encoder_block=encoder,
                                      decoder_block=generator,
@@ -495,9 +502,11 @@ class Model_Container():
         else:
             print('trying to build with', model_size, model_type, 'but failed')
         from Losses_and_Metrics import loss_wrapper
-        self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4, clipnorm=1.0),
-                      loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='tile-to-forecast'),
-                      #loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='log-K-S'),
+        self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4,
+                                                              clipnorm=1.0,
+                                                              ),
+                      #loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='tile-to-forecast'),
+                      loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='KS_weighted_KL'),
                       metrics=[loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nME',
                                             normalizer_value=normalizer_value),
                                loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nRMSE',
@@ -509,7 +518,7 @@ class Model_Container():
     def __train_model(self, batch_size=64):
         self.metrics = {}
         callbacks = []
-        callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
+        callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_loss',
                                                                    patience=10,
                                                                    mode='min',
                                                                    restore_best_weights=True))

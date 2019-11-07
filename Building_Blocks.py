@@ -421,8 +421,8 @@ class Attention(tf.keras.layers.Layer):
             else:
                 score = tf.nn.softmax(score, axis=-1)
 
-            if self.use_dropout:
-                score = drop_timesteps_of_signal(score, self.dropout_rate)
+            # if self.use_dropout:
+            #    score = drop_timesteps_of_signal(score, self.dropout_rate)
 
             context_vector = tf.matmul(score, self.W_key(value))
 
@@ -447,7 +447,7 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         else:
             self.projection = True
             self.projection_layer = tf.keras.layers.Conv1D(project_to_units,
-                                         activation=tf.nn.sigmoid,
+                                         activation=tf.nn.elu,
                                          strides=1,
                                          kernel_size=1,
                                          padding='causal',
@@ -994,7 +994,7 @@ class FFW_encoder(tf.keras.layers.Layer):
                         'use_norm': use_norm,
                         }
 
-        attention_kwargs = {'units_per_head': [int(units[-1][-1]/3)] * 2,
+        attention_kwargs = {'units_per_head': [int(units[-1][-1]/3)] * 3,
                             'project_to_units': units[-1][-1],
                             'use_norm': use_norm,
                             'use_dropout': use_dropout,
@@ -1023,7 +1023,7 @@ class FFW_encoder(tf.keras.layers.Layer):
 class FFW_generator(tf.keras.layers.Layer):
 
     def __init__(self,
-                 units=[[128], [128]],
+                 units=[[128], [128], [128]],
                  use_dropout=True,
                  dropout_rate=0.2,
                  use_norm=True,
@@ -1038,13 +1038,13 @@ class FFW_generator(tf.keras.layers.Layer):
                         'use_norm': use_norm,
                         }
 
-        attention_kwargs = {'units_per_head': [int(units[-1][-1]/3)] * 2,
+        attention_kwargs = {'units_per_head': [int(units[-1][-1]/3)] * 3,
                             'project_to_units': units[-1][-1],
                             'use_norm': use_norm,
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate}
 
-        self.after_transform_in_history = []
+        self.self_attention_context = [[]]*(len(units))
         self.self_attention = []
         self.attention = []
         self.transform_out = []
@@ -1080,23 +1080,32 @@ class FFW_generator(tf.keras.layers.Layer):
     def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
 
         self.attention_value = attention_value
-        forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
-                                        alt=self.validation_call(history, forecast_timesteps),
-                                        training=tf.keras.backend.learning_phase())
+        # forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
+        #                                alt=self.validation_call(history, forecast_timesteps),
+        #                                training=tf.keras.backend.learning_phase())
+        forecast = self.validation_call(history, forecast_timesteps)
         return forecast
 
     # information flow for a single processing step,
     def process_inputs(self, inputs):
         # transform the raw input signal
-        after_transform_in = self.transform_in(inputs)
-        if not self.previous_history_exists:
-            self.after_transform_in_history = after_transform_in
-        else:
-            self.after_transform_in_history = tf.concat([self.after_transform_in_history, after_transform_in], axis=1)
-        out = self.after_transform_in_history
+        out = self.transform_in(inputs)
         # create temporal context, residual, norm
         for block in range(len(self.self_attention)):
-            out = self.self_attention[block](out)
+            # the idea of the memorry efficiency here is:
+            # if we are processing one large batch of steps at once, such as with teacher forcing, then we can do normal self attention with a causal mask
+            # if we'd have only 1 new step, it doesnt make sense to recalculate all the context that we don't need
+            # instead, it would make more sense to have classic attention of this new step as query and the past steps as values, since this is causal by definition
+            mem_efficient_sa_query = out
+            if not self.previous_history_exists: # parallelization wins, this covers teacher forcing and all non-unrolling scenarios with normal SA
+                out = self.self_attention[block](mem_efficient_sa_query)
+                self.self_attention_context[block] = mem_efficient_sa_query
+            else:
+                # here we can assume that the query is one step of the rollout
+                # it will be more efficient to just do normal attention with this one step as the query and the previous context as key, valye
+                out = self.self_attention[block](mem_efficient_sa_query, value=self.self_attention_context[block])
+                self.self_attention_context[block] = tf.concat([self.self_attention_context[block], mem_efficient_sa_query], axis=1) #add to the context for the next unrolling steppuru
+
             #relevant_self_attention_steps = after_self_attention[:,-inputs.shape[1]:,:]
             # create context with encoder thing, residual, norm
             out = self.attention[block](out, value=self.attention_value)

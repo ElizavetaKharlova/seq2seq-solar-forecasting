@@ -68,18 +68,22 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
                      sw_len_samples=int(5 * 24 * 60),
                      fc_len_samples=int(1 * 24 * 60),
                      fc_steps=24,
-                     fc_tiles=40):
+                     fc_tiles=50):
     # get the NWP data, separate faults array
-    weather_nwp, start_end_date = _get_weather_data(weather_data_folder)
-    faults = weather_nwp[:,-1]
-    weather_nwp = weather_nwp[:, :-1]
+    weather_nwp, start_end_date, faults = _get_weather_data(weather_data_folder)
     # get the NWP data, interpolate, normalize
-    # get the PV data and normalize
+    for axis in range(weather_nwp.shape[-1]):
+        to_be_scaled = weather_nwp[faults[:, 0] == 0, axis]
+        scaled = scale(np.expand_dims(to_be_scaled, axis=-1), axis=0, with_mean=True, with_std=True,
+                       copy=True)  # scale the dataset
+        weather_nwp[faults[:, 0] == 0, axis] = scaled[:, 0]
+        weather_nwp[faults[:, 0] == 1, axis] = np.mean(scaled)
+
+    # get the PV data, adjust and scale
     historical_pv = _get_PV(pv_data_path, start_end_date)
     history_shape = historical_pv.shape
-    scaler = StandardScaler()
+    print('PV max of year 1', np.amax(historical_pv[:24*60*365]), 'pv amax of year 2', np.amax(historical_pv[24*60*365:]))
     historical_pv = np.expand_dims(historical_pv, axis=1)
-    scaler.fit(historical_pv)
     historical_pv = scale(historical_pv, axis=0, with_mean=True, with_std=True, copy=True)
     historical_pv = np.squeeze(historical_pv)
     history_min_max = [np.amin(historical_pv), np.amax(historical_pv)]
@@ -97,26 +101,12 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
         weather_nwp_interpolated[:, feature_axis] = insert
     del weather_nwp, nwp_shape
 
-    # normalize and scale
-    for axis in range(weather_nwp_interpolated.shape[-1]):
-        min = np.amin(weather_nwp_interpolated[:,axis])
-        weather_nwp_interpolated[:, axis] = (weather_nwp_interpolated[:, axis] - min)
-        if np.amin(weather_nwp_interpolated[:,axis]) != 0.0:
-            print('somehow failed to level data to 0 min')
-        max = np.amax(weather_nwp_interpolated[:,axis])
-        if max != 0:
-            weather_nwp_interpolated[:,axis] = weather_nwp_interpolated[:, axis]/max
-    scaler = StandardScaler()
-    scaler.fit(weather_nwp_interpolated)
-    weather_nwp_interpolated = scale(weather_nwp_interpolated, axis=0, with_mean=True, with_std=True, copy=True) #scale the dataset
-
-
     print('fetching indices')
     train_indices, val_indices, test_indices = assign_samples_to_set(faults,
                                                                      train_ratio=0.8,
                                                                      sample_length=sw_len_samples+fc_len_samples,
-                                                                     val_seed=1,
-                                                                     test_seed=2,
+                                                                     val_seed=4,
+                                                                     test_seed=4,
                                                                      )
     print('fetches', len(train_indices), 'train samples, ', len(test_indices), 'test samples ', len(val_indices), 'val_samples')
 
@@ -247,9 +237,6 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
     dataset_info['val_baseline'] = val_baseline
     print('saved val set, baseline:', val_baseline)
 
-    with open('dataset_info' + '.pickle', 'wb') as handle:
-        pickle.dump(dataset_info, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
     test_baseline = __save_set_to_folder(test_indices,
                                         folder_name='test',
                                         save_every_xth_step=10)
@@ -258,9 +245,12 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
 
     train_baseline = __save_set_to_folder(train_indices,
                                         folder_name='train',
-                                        save_every_xth_step=2)
+                                        save_every_xth_step=3)
     dataset_info['train_baseline'] = train_baseline
     print('saved train set, baseline:', train_baseline)
+
+    with open('dataset_info' + '.pickle', 'wb') as handle:
+        pickle.dump(dataset_info, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 def assign_samples_to_set(faults, train_ratio=0.8, sample_length=2, val_seed=1, test_seed=2):
     num_val_samples = int(faults.shape[0] * (1.0-train_ratio)/2)
@@ -552,51 +542,66 @@ def _get_weather_data(weather_data_folder):
                                             axis=0)
         end_prev_sim = weather_mvts[-1,0]
 
-
+    # remove data array
+    weather_mvts = weather_mvts[:,1:]
+    # replace 1 of 2 temp arrays
+    weather_mvts = weather_mvts[:,1:]
     print('replacing the fauly values with the mean of the array')
     faults = weather_mvts[:, -1]
-    weather_mvts = np.delete(weather_mvts, -1, axis=-1)
+    weather_mvts = weather_mvts[:, :-1]
+
+    # delete 1 radiation, convext percipitation and normal percipitation
+    weather_mvts = np.delete(weather_mvts, [2, 6, 7], axis=-1)
 
     print('converting wind to polar coordinates')
-    wind = weather_mvts[:,-1]
+    wind_angle = weather_mvts[:,-1]
     weather_mvts = np.delete(weather_mvts, -1, axis=-1)
-    wind_in_radians = wind * np.pi / 180
+    wind_speed = weather_mvts[:,-1]
+    weather_mvts = np.delete(weather_mvts, -1, axis=-1)
+    wind_in_radians = wind_angle * np.pi / 180.0
     wind_in_radians = np.array(wind_in_radians, dtype=np.float32)
-    wind_in_cos = np.expand_dims(np.cos(wind_in_radians), axis=-1)
-    wind_in_sin = np.expand_dims(np.sin(wind_in_radians), axis=-1)
-    weather_mvts = np.concatenate((weather_mvts, wind_in_cos, wind_in_sin), axis=-1)
+    wind_in_cos = wind_speed*np.cos(wind_in_radians)
+    wind_in_sin = wind_speed*np.sin(wind_in_radians)
+    weather_mvts_buffer = np.zeros(shape=[weather_mvts.shape[0], weather_mvts.shape[1] + 2])
+    weather_mvts_buffer[:,:weather_mvts.shape[1]] = weather_mvts
+    weather_mvts_buffer[:,-2] = wind_in_cos
+    print(np.amax(wind_in_cos))
+    weather_mvts_buffer[:,-1] = wind_in_sin
+    print(np.amax(wind_in_sin))
+    weather_mvts = weather_mvts_buffer
+    del weather_mvts_buffer
 
 
-    datetime_array = weather_mvts[:,0].tolist()
-    weather_mvts = np.delete(weather_mvts, 0, axis=-1)
-    datetime_array_daytime = [datetime_entry.hour * 60 + datetime_entry.minute for datetime_entry in datetime_array]
-    datetime_array_daytime_normed_to_1 = datetime_array_daytime / np.amax(datetime_array_daytime)
-    daytime_in_radians = datetime_array_daytime_normed_to_1 * 2.0 * np.pi
-    daytime_sin = np.expand_dims(np.sin(daytime_in_radians),axis=-1)
-    daytime_cos = np.expand_dims(np.cos(daytime_in_radians), axis=-1)
-
-    datetime_array_yeartime = [datetime_entry.month * (365/12) * 24 * 60 + datetime_entry.day*24*60 + datetime_entry.hour * 60 + datetime_entry.minute for datetime_entry in datetime_array]
-    datetime_array_yeartime_normed_to_1 = datetime_array_yeartime / np.amax(datetime_array_yeartime)
-    yeartime_in_radians = datetime_array_yeartime_normed_to_1 * 2.0 * np.pi
-    yeartime_sin = np.expand_dims(np.sin(yeartime_in_radians),axis=-1)
-    yeartime_cos = np.expand_dims(np.cos(yeartime_in_radians), axis=-1)
+    # datetime_array = weather_mvts[:,0].tolist()
+    # weather_mvts = np.delete(weather_mvts, 0, axis=-1)
+    # datetime_array_daytime = [datetime_entry.hour * 60 + datetime_entry.minute for datetime_entry in datetime_array]
+    # datetime_array_daytime_normed_to_1 = datetime_array_daytime / np.amax(datetime_array_daytime)
+    # daytime_in_radians = datetime_array_daytime_normed_to_1 * 2.0 * np.pi
+    # daytime_sin = np.expand_dims(np.sin(daytime_in_radians),axis=-1)
+    # daytime_cos = np.expand_dims(np.cos(daytime_in_radians), axis=-1)
+    #
+    # datetime_array_yeartime = [datetime_entry.month * (365/12) * 24 * 60 + datetime_entry.day*24*60 + datetime_entry.hour * 60 + datetime_entry.minute for datetime_entry in datetime_array]
+    # datetime_array_yeartime_normed_to_1 = datetime_array_yeartime / np.amax(datetime_array_yeartime)
+    # yeartime_in_radians = datetime_array_yeartime_normed_to_1 * 2.0 * np.pi
+    # yeartime_sin = np.expand_dims(np.sin(yeartime_in_radians),axis=-1)
+    # yeartime_cos = np.expand_dims(np.cos(yeartime_in_radians), axis=-1)
 
 
     for axis in range(1, weather_mvts.shape[-1] - 1): #for all but the last data array
         mean = np.mean(weather_mvts[:,axis])
         weather_mvts[:, axis] = np.where(faults == 1, mean, weather_mvts[:, axis])
     faults = np.expand_dims(faults, axis=-1)
-    weather_mvts = np.concatenate((weather_mvts, daytime_cos, daytime_sin, yeartime_cos, yeartime_sin, faults), axis=-1)
-    return weather_mvts, [start_nwp, end_nwp]
+    # weather_mvts = np.concatenate((weather_mvts, daytime_cos, daytime_sin, yeartime_cos, yeartime_sin, faults), axis=-1)
+    return weather_mvts, [start_nwp, end_nwp], faults
 
-def _get_PV(path, start_end_date): #getting the PV data
+def _get_PV(path, start_end_date, profile_nbr=6): #getting the PV data
     start_nwp = start_end_date[0]
     end_nwp = start_end_date[1]
     cwd = os.getcwd()
     profile_name = __find_files(cwd + path, suffix=".zp")
-    profile_path = cwd + path + profile_name[0][:-3]
+    profile_path = cwd + path + profile_name[profile_nbr][:-3]
 
-    shift = datetime.timedelta(hours=-7) #lolol, turns out Steven uses UTC while Thomas something else
+    shift = datetime.timedelta(hours=-6) #lolol, turns out Steven uses UTC while Thomas something else
     deltaT = datetime.timedelta(minutes=5)
     forecast_distance = datetime.timedelta(days=0)
     start = datetime.datetime.strptime(start_nwp,  '%Y-%m-%d %H:%M:%S') + forecast_distance + shift
@@ -609,6 +614,10 @@ def _get_PV(path, start_end_date): #getting the PV data
 
     generation = profile['gen']['profile']
     generation = np.squeeze(generation)
+
+    def pseudo_curtailment(np_array, curtailment_value):
+        return np.where(np_array > curtailment_value, curtailment_value, np_array)
+    generation = pseudo_curtailment(generation, np.amax(generation[:24*60*365]))
 
     return generation
 

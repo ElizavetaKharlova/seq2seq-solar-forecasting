@@ -23,6 +23,7 @@ class Model_Container():
         self.strategy = tf.distribute.MirroredStrategy()
 
         self.dataset_info = pickle.load(open(dataset_folder + '/dataset_info.pickle', 'rb'))
+        print(self.dataset_info)
         self.sw_len_samples = self.dataset_info['sw_len_samples']
         #self.sw_len_samples = int(5 * 24 * 60)
         self.fc_len_samples = self.dataset_info['fc_len_samples']
@@ -34,7 +35,7 @@ class Model_Container():
         self.nwp_downsampling_rate = self.dataset_info['nwp_downsampling_rate']
         # self.nwp_downsampling_rate = 15
         self.nwp_dims = self.dataset_info['nwp_dims']
-        self.nwp_dims = 16
+        # self.nwp_dims = 16
         self.teacher_shape = [self.fc_steps, self.fc_tiles]
         self.target_shape = [self.fc_steps, self.fc_tiles]
         self.raw_nwp_shape = [int( (self.sw_len_samples + self.fc_len_samples)/self.nwp_downsampling_rate ), self.nwp_dims]
@@ -49,7 +50,10 @@ class Model_Container():
                                        self.raw_nwp_shape[1] + 1]
             model_kwargs['input_shape'] = self.actual_input_shape
         elif 'generator' in model_kwargs['model_type']:
-            model_kwargs['input_shape'] = 7
+            print(self.dataset_info['nwp_dims'])
+            model_kwargs['support_shape'] = [int(3*24*60/15), self.dataset_info['nwp_dims']]
+            model_kwargs['history_shape'] = [int(2*24), self.fc_tiles]
+
 
         model_kwargs['out_shape'] = self.target_shape
         model_kwargs['normalizer_value'] = 1.0
@@ -99,6 +103,8 @@ class Model_Container():
         for dimension_shape in output_shape:
             flattened_output_shape = flattened_output_shape * dimension_shape
 
+        real_support_length = self.model_kwargs['support_shape'][0]
+        real_history_length = self.model_kwargs['history_shape'][0]
         def __read_and_process_train_samples(example):
 
             features = {'nwp_input': tf.io.FixedLenFeature(flattened_nwp_shape, tf.float32),
@@ -169,6 +175,9 @@ class Model_Container():
                                          shape=[self.pdf_history_shape[0], self.pdf_history_shape[1]])
                 teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
                                      shape=[output_shape[0], output_shape[1]])
+                nwp_inputs = nwp_inputs[-real_support_length:,:]
+                history_pdf = history_pdf[-real_history_length:,:]
+                # ATM sampling last 2days plus forecast day from NWP and last 2 days from history
                 return{'support_input': nwp_inputs,
                        'history_input': history_pdf,
                        'teacher_input': teacher}, target
@@ -202,8 +211,8 @@ class Model_Container():
             else:
                 dataset = dataset.map(__read_and_process_normal_samples, num_parallel_calls=10)
             dataset = dataset.repeat()
-            dataset = dataset.shuffle(4 * batch_size)
-            dataset = dataset.prefetch(3 * batch_size)
+            dataset = dataset.shuffle(6 * batch_size)
+            dataset = dataset.prefetch(4 * batch_size)
             dataset = dataset.batch(batch_size, drop_remainder=False)
             return dataset
 
@@ -234,7 +243,9 @@ class Model_Container():
         self.test_steps_epr_epoch = int(np.ceil(len(test_list) / batch_size))
 
     def __build_model(self,
-                      input_shape, out_shape, normalizer_value,
+                      out_shape, normalizer_value,
+                      support_shape, history_shape,
+                      input_shape=None,
                       model_type='MiMo-sth',
                       model_size='small',
                       use_dropout=False, dropout_rate=0.0, use_hw=False, use_norm=False, use_quasi_dense=False, #general architecture stuff
@@ -373,7 +384,7 @@ class Model_Container():
                                     use_teacher=True,
                                      output_shape=out_shape,
                                      support_shape=self.raw_nwp_shape,
-                                     history_shape=self.pdf_history_shape)
+                                     history_shape=history_shape)
 
         elif model_type == 'Encoder-Decoder-TCN' or model_type == 'E-D-TCN':
             common_specs = {'units': [[32],[32],[32]],
@@ -444,18 +455,16 @@ class Model_Container():
 
         elif model_type == 'generator' or model_type == 'Generator':
             print('building E-D')
-            common_specs = {
+            common_specs = {'attention_heads': 2,
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
                             'use_norm': use_norm}
 
             encoder_specs = copy.deepcopy(common_specs)
-            encoder_specs['return_state'] = False
-            encoder_specs['only_last_layer_output'] = True
-            encoder_specs['units'] = [[96]]
+            encoder_specs['units'] = [[32], [48], [64]]
 
             decoder_specs = copy.deepcopy(common_specs)
-            decoder_specs['units'] = [[96]]
+            decoder_specs['units'] = [[32], [32]]
             decoder_specs['projection'] = tf.keras.layers.Conv1D(filters=out_shape[-1],
                                                 kernel_size=1,
                                                 strides=1,
@@ -463,15 +472,14 @@ class Model_Container():
                                                 activation=tf.keras.layers.Softmax(axis=-1),
                                                 kernel_initializer='glorot_uniform')
 
-            from Building_Blocks import block_LSTM, generator_LSTM_block
-            from Building_Blocks import FFW_generator, FFW_encoder
+            from Building_Blocks import sa_encoder_LSTM, fixed_generator_LSTM_block
             from Models import forecaster_model
-            self.model = forecaster_model(encoder_block=block_LSTM(**encoder_specs),
-                                     decoder_block=generator_LSTM_block(**decoder_specs),
+            self.model = forecaster_model(encoder_block=sa_encoder_LSTM(**encoder_specs),
+                                     decoder_block=fixed_generator_LSTM_block(**decoder_specs),
                                     use_teacher=True,
                                      output_shape=out_shape,
-                                     support_shape=self.raw_nwp_shape,
-                                     history_shape=self.pdf_history_shape)
+                                     support_shape=support_shape,
+                                     history_shape=history_shape)
         elif model_type == 'FFWgenerator' or model_type == 'FFWGenerator':
             print('building E-D')
 
@@ -555,12 +563,15 @@ class Model_Container():
 
 
     def __skill_metrics(self):
-        saved_epoch = np.argmax(self.metrics['val_nRMSE'])
-        # self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_nRMSE'][saved_epoch] / self.dataset_info['val_persistency_baseline']['nRMSE'])
-        # self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_CRPS'][saved_epoch] / self.dataset_info['val_persistency_baseline']['CRPS'])
-        # self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['test_nRMSE'] / self.dataset_info['test_persistency_baseline']['nRMSE'])
-        # self.metrics['test_CRPS_skill'] = 1 - (self.metrics['test_CRPS'] / self.dataset_info['test_persistency_baseline']['CRPS'])
-
+        saved_epoch = np.argmin(self.metrics['val_nRMSE'])
+        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_nRMSE'][saved_epoch] / self.dataset_info['val_baseline']['nRMSE'])
+        self.metrics['val_CRPS_skill'] = 1 - (self.metrics['val_CRPS'][saved_epoch] / self.dataset_info['val_baseline']['CRPS'])
+        self.metrics['test_nRMSE_skill'] = 1 - (self.metrics['test_nRMSE'] / self.dataset_info['test_baseline']['nRMSE'])
+        self.metrics['test_CRPS_skill'] = 1 - (self.metrics['test_CRPS'] / self.dataset_info['test_baseline']['CRPS'])
+        print('val_skill nRMSE', self.metrics['val_nRMSE_skill'] )
+        print('val_skill CRPS', self.metrics['val_CRPS_skill'])
+        print('test_skill nRMSE', self.metrics['test_nRMSE_skill'])
+        print('test_skill CRPS', self.metrics['test_CRPS_skill'])
 
 
 def __get_max_min_targets(train_targets, test_targets):

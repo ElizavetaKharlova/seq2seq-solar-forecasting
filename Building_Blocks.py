@@ -51,6 +51,8 @@ class Norm_wrapper(tf.keras.layers.Wrapper):
             self.norm = tf.keras.layers.LayerNormalization(axis=-1,
                                                            center=True,
                                                            scale=True, )
+        elif norm == 'batch':
+            self.norm = tf.keras.layers.BatchNormalization()
         else:
             print('norm type', norm, 'not found, check the code to see if it is a typo')
 
@@ -451,6 +453,7 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
     def __init__(self, units_per_head=[80, 80], kernel_size=None,
                  project_to_units=None,
                  use_norm=True,
+                 norm_type='layer',
                  L1=0.0, L2=0.0,
                  use_dropout=True, dropout_rate=0.2):
         super(multihead_attentive_layer, self).__init__()
@@ -475,8 +478,6 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                 self.projection_layer = Dropout_wrapper(self.projection_layer, dropout_rate=dropout_rate, units=project_to_units)
 
         self.multihead_attention = []
-        if self.use_norm:
-            self.norm = tf.keras.layers.LayerNormalization(axis=-1, center=True, scale=False)
         if self.use_dropout:
             self.dropout = tf.keras.layers.Dropout(dropout_rate, noise_shape=(1, int(np.sum(units_per_head))))
 
@@ -489,6 +490,8 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                                   dropout_rate=dropout_rate,
                                   only_context=True)
 
+            if self.use_norm:
+                attention = Norm_wrapper(attention, norm=norm_type)
             self.multihead_attention.append(attention)
 
     def call(self, query, value=None):
@@ -500,8 +503,6 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         multihead_out = tf.concat(multihead_out, axis=-1)
 
         if self.projection:
-            if self.use_norm:
-                multihead_out = self.norm(multihead_out)
             if self.use_dropout:
                 multihead_out = self.dropout(multihead_out, training=tf.keras.backend.learning_phase())
 
@@ -1397,17 +1398,130 @@ class FFW_generator(tf.keras.layers.Layer):
 
 ########################################################################################################################
 
+class fixed_generator_Dense_block(tf.keras.layers.Layer):
+    def __init__(self,
+                 units=None,
+                 use_dropout=False,
+                 dropout_rate=0.0,
+                 attention_heads=3,
+                 L1=0.0, L2=0.0,
+                 use_norm=False,
+                 projection=tf.keras.layers.Dense(20)):
+        super(fixed_generator_Dense_block, self).__init__()
+        self.use_norm = use_norm
+        #ToDo: Figure out how we want to do the parameter growth thingie
+
+        self.projection = projection
+
+        # Self attention and attention layers
+        self.transform = []
+        self.attention = []
+        self.self_attention = []
+        self.self_attention_context = [[]]*len(units)
+
+        for block in range(len(units)):
+            Dense_params = {'units': [[units[block][-1]]],
+                            'use_dropout': use_dropout,
+                            'dropout_rate': dropout_rate,
+                            # 'L1':L1, 'L2':L2,
+                            'use_norm': use_norm,
+                            'kernel_sizes': [3],
+                            'residual':True,
+                            'project_to_features': units[block][-1]
+                             }
+            transform = DenseTCN(**Dense_params)
+            # transform = Residual_LSTM_wrapper(transform)
+            if self.use_norm:
+                transform = Norm_wrapper(transform, norm='batch')
+            self.transform.append(transform)
+
+            attn_units_per_head = [int(attention_heads*units[block][-1]/(attention_heads+1))] * attention_heads
+            self_attention = multihead_attentive_layer(units_per_head=attn_units_per_head,
+                                                       use_norm=use_norm,
+                                                       norm_type='batch',
+                                                       L1=L1, L2=L2,
+                                                       project_to_units=units[block][-1],
+                                                       use_dropout=use_dropout, dropout_rate=dropout_rate)
+            self_attention = Residual_wrapper(self_attention)
+            if use_norm:
+                self_attention=Norm_wrapper(self_attention, norm='batch')
+            self.self_attention.append(self_attention)
+
+            attn = multihead_attentive_layer(units_per_head=attn_units_per_head,
+                                               use_norm=use_norm,
+                                               norm_type='batch',
+                                                L1=L1, L2=L2,
+                                               project_to_units=units[block][-1],
+                                               use_dropout=use_dropout, dropout_rate=dropout_rate)  # choose the attention style (Bahdanau, Transformer
+            attn = Residual_wrapper(attn)
+            if self.use_norm:
+                attn = Norm_wrapper(attn, norm='batch')
+            self.attention.append(attn)
+
+
+
+    def process(self, input_steps):
+        # Input to first transformation layer, assign last state and out
+        out = input_steps
+
+        for block in range(len(self.transform)):
+            out = self.transform[block](out)
+
+            if not self.previous_history_exists:  # parallelization wins, this covers teacher forcing and all non-unrolling scenarios with normal SA
+                self.self_attention_context[block] = out
+            else:
+                self.self_attention_context[block] = tf.concat([self.self_attention_context[block], out], axis=1)  # add to the context for the next unrolling steppuru
+
+            out_sa = self.self_attention[block](self.self_attention_context[block])
+            out = out_sa[:,-out.shape[1]:,:]
+            out = self.attention[block](out, value=self.attention_value)
+
+        if not self.previous_history_exists:
+            self.forecast = self.projection(out)
+        else:
+            self.forecast = tf.concat([self.forecast, self.projection(out)], axis=1)
+        # print(self.forecast)
+
+    def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
+        self.attention_value = attention_value
+
+        # forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
+        #                                 alt=self.validation_call(history, forecast_timesteps),
+        #                                 training=tf.keras.backend.learning_phase())
+        forecast = self.validation_call(history, forecast_timesteps)
+        return forecast
+
+    def training_call(self, history_and_teacher, forecast_timesteps):
+
+        self.transform_states = [None]*len(self.transform)
+        self.previous_history_exists = False
+        self.process(history_and_teacher)
+        self.previous_history_exists = True
+        forecast = self.forecast[:, -forecast_timesteps:, :]
+        return forecast
+
+    def validation_call(self, history, forecast_timesteps):
+        self.transform_states = [None]*len(self.transform)
+        self.previous_history_exists = False
+        self.process(history)
+
+        self.previous_history_exists = True
+        for step in range(forecast_timesteps - 1):
+            self.process(self.forecast[:, -1:, :])
+        forecast = self.forecast[:, -forecast_timesteps:, :]
+        return forecast
+
 class Dense_generator(tf.keras.layers.Layer):
 
     def __init__(self,
-                 units=[[96,96]],
+                 units=[[64,64]],
                  use_dropout=True,
                  dropout_rate=0.2,
                  use_norm=True,
                  projection=tf.keras.layers.Dense(20)
                  ):
         super(Dense_generator, self).__init__()
-        block_kwargs = {'units': units,
+        block_kwargs = {'units': [units[0]],
                         'growth_rate': 12,
                         'use_dropout': use_dropout,
                         'dropout_rate': dropout_rate,
@@ -1423,26 +1537,35 @@ class Dense_generator(tf.keras.layers.Layer):
                             'dropout_rate': dropout_rate}
 
         block_kwargs['project_to_features']=units[-1][-1]
+        self.after_transform_in_history = []
+        self.self_attention = []
+        self.attention = []
+        self.transform_out = []
+
         self.transform_in = DenseTCN(**block_kwargs)
         if use_norm:
             self.transform_in = Norm_wrapper(self.transform_in)
         self.after_transform_in_history = None
+        for block in units:
+            self_attention = multihead_attentive_layer(**attention_kwargs)
+            self_attention = Residual_wrapper(self_attention)
+            if use_norm:
+                self_attention=Norm_wrapper(self_attention)
+            self.self_attention.append(self_attention)
 
-        self.self_attention=multihead_attentive_layer(**attention_kwargs)
-        self.self_attention=Residual_wrapper(self.self_attention)
-        if use_norm:
-            self.self_attention=Norm_wrapper(self.self_attention)
+            attention = multihead_attentive_layer(**attention_kwargs)
+            attention = Residual_wrapper(attention)
+            if use_norm:
+                attention=Norm_wrapper(attention)
+            self.attention.append(attention)
 
-        self.attention = multihead_attentive_layer(**attention_kwargs)
-        self.attention = Residual_wrapper(self.attention)
-        if use_norm:
-            self.attention=Norm_wrapper(self.attention)
+            block_kwargs['project_to_features']=None
+            transform_out = DenseTCN(**block_kwargs)
+            transform_out = Residual_wrapper(transform_out)
+            if use_norm:
+                transform_out=Norm_wrapper(transform_out)
+            self.transform_out.append(transform_out)
 
-        block_kwargs['project_to_features']=None
-        self.transform_out = DenseTCN(**block_kwargs)
-        self.transform_out = Residual_wrapper(self.transform_out)
-        if use_norm:
-            self.transform_out=Norm_wrapper(self.transform_out)
         self.pre_projection_history = None
 
         self.projection = projection
@@ -1450,12 +1573,11 @@ class Dense_generator(tf.keras.layers.Layer):
 
     def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
         self.attention_value = attention_value
-        self.previous_history_exists = False
 
         forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
                                         alt=self.validation_call(history, forecast_timesteps),
                                         training=tf.keras.backend.learning_phase())
-
+        # forecast = self.validation_call(history, forecast_timesteps)
         return forecast
 
     # helper function to keep history if signals that we need to attend to
@@ -1473,27 +1595,29 @@ class Dense_generator(tf.keras.layers.Layer):
             self.after_transform_in_history = after_transform_in
         else:
             self.after_transform_in_history = tf.concat([self.after_transform_in_history, after_transform_in], axis=1)
-
+        out = self.after_transform_in_history
         # create temporal context, residual, norm
-        after_self_attention = self.self_attention(self.after_transform_in_history)
-        relevant_self_attention_steps = after_self_attention[:,-inputs.shape[1]:,:]
+        for block in range(len(self.self_attention)):
+            out = self.self_attention[block](out)
+            #relevant_self_attention_steps = after_self_attention[:,-inputs.shape[1]:,:]
+            # create context with encoder thing, residual, norm
+            out = self.attention[block](out, value=self.attention_value)
+            out = self.transform_out[block](out)
 
-        # create context with encoder thing, residual, norm
-        after_attention = self.attention(relevant_self_attention_steps, value=self.attention_value)
-
-        after_transform_out = self.transform_out(after_attention)
         if not self.previous_history_exists:
-            self.pre_projection_history = after_transform_out
+            self.pre_projection_history = out
         else:
-            self.pre_projection_history = tf.concat([self.pre_projection_history, after_transform_out], axis=1)
+            self.pre_projection_history = tf.concat([self.pre_projection_history, out[:,-inputs.shape[1]:,:]], axis=1)
 
     def training_call(self, history_and_teacher, forecast_timesteps):
+        self.previous_history_exists = False
         self.process_inputs(history_and_teacher)
         self.previous_history_exists = True
          #technically not needed, since we dont have any followup calls anymore
         return self.projection(self.pre_projection_history[:,-forecast_timesteps:,:])
 
     def validation_call(self, history, forecast_timesteps):
+        self.previous_history_exists = False
         self.process_inputs(history)
         self.previous_history_exists = True
 
@@ -1517,14 +1641,13 @@ class attentive_TCN(tf.keras.layers.Layer):
                 dropout_rate=0.15, 
                 use_norm=False, 
                 mode='encoder', 
-                use_attention=True, 
-                self_recurrent=False):
+                use_attention=True):
         # self_recurrent is a quick fix, change to exclude later
         super(attentive_TCN, self).__init__()
 
         #TODO: change units so it's flexible but not too much
         if units is None:
-            units = [[12,12,12,12,12],[20,20],[12,12,12]]
+            units = [[12,12,12],[20,20],[12,12,12]]
         self.units = units
         self.mode = mode
         self.use_attention = use_attention
@@ -1548,7 +1671,7 @@ class attentive_TCN(tf.keras.layers.Layer):
                                             kernel_sizes=[3],
                                             residual=False))
         if self.mode == 'decoder' and self.use_attention:
-            self.attention_layer = Attention(self.units[-1][-1], mode='Transformer')
+            self.attention_layer = multihead_attentive_layer()
 
 
     def call(self, inputs, decoder_init_state=None, attention_query=None, attention_value=None):

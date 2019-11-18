@@ -64,7 +64,7 @@ def get_Lizas_data():
     return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins
 
 
-def Create_full_dataset(dataset_name='Lizas_Dataset_3',
+def Create_full_dataset(dataset_name='Lizas_Dataset_1',
                     weather_data_folder='/data/', pv_data_path="./data/20190207-15-min-system-load-MV.xlsx",
                      sw_len_samples=int(5 * 24 * 4),
                      fc_len_samples=int(1 * 24 * 4),
@@ -89,12 +89,11 @@ def Create_full_dataset(dataset_name='Lizas_Dataset_3',
     print('history min_max', history_min_max)
 
     nwp_shape = weather_nwp.shape
-    history_indices = np.arange(history_shape[0])
-    nwp_indices = np.arange(0, history_shape[0], int(history_shape[0] / nwp_shape[0]))
-    weather_nwp_interpolated = weather_nwp
+    # history_indices = np.arange(history_shape[0])
+    # nwp_indices = np.arange(0, history_shape[0], int(history_shape[0] / nwp_shape[0]))
     faults = np.repeat(faults, int(history_shape[0] / nwp_shape[0])) 
 
-    weather_nwp_interpolated = weather_nwp_interpolated.astype(dtype='float32')
+    weather_nwp_interpolated = weather_nwp.astype(dtype='float32')
     historical_load = historical_load.astype(dtype='float32')
 
     print('fetching indices')
@@ -119,6 +118,7 @@ def Create_full_dataset(dataset_name='Lizas_Dataset_3',
         target_pdf = __convert_to_pdf(target_raw, num_steps=target_steps, num_tiles=target_tiles, min_max=history_min_max)  # pdf for probability distribution thingie
         teacher_pdf = __convert_to_pdf(teacher_raw, num_steps=target_steps, num_tiles=target_tiles, min_max=history_min_max)
         historical_support_pdf = __convert_to_pdf(historical_support_raw, num_steps=support_steps, num_tiles=target_tiles, min_max=history_min_max)
+
         features = {'nwp_input': __create_float_feature(nwp_input.flatten()),
 
                     'raw_historical_input': __create_float_feature(historical_support_raw.flatten()),
@@ -192,11 +192,11 @@ def Create_full_dataset(dataset_name='Lizas_Dataset_3',
                 set_CRPS.append(partial_baseline['CRPS'])
 
             with tf.io.TFRecordWriter(str(sample_index) + '.tfrecord') as writer:
+
                 example = _features_to_example(nwp_input=nwp_input,
                                                historical_support_raw=history_support,
                                                teacher_raw=teacher,
                                                target_raw=target)
-
                 writer.write(example)
 
                     # we're done with val set, so jump back to the dataset folder
@@ -470,22 +470,21 @@ def _get_weather_data(weather_data_folder):
         buffer = pd.read_csv(file)
         read_csv.append(buffer)
 
-    def __nan_helper(y):
-        return np.isnan(y), lambda z: np.nonzero(z)[0]
-
     'Saving it all to a numpy array'
     # this is just for putting several csv weather files together
     weather_mvts = read_csv[0]
-    weather_mvts = weather_mvts.drop(['MW1U', 'Pool_price', 'ANC1', 'Interchange', 'Calgary_hmdx', 'Calgary_wind_chill', 'Calgary_weather', 
-                                    'Edmonton_hmdx', 'Edmonton_wind_chill', 'Edmonton_weather', 'McMurray_hmdx', 'McMurray_wind_chill', 'McMurray_weather'], axis=1)
+    # weather_mvts = weather_mvts.drop(['MW1U', 'Pool_price', 'ANC1', 'Interchange', 'Calgary_hmdx', 'Calgary_wind_chill', 'Calgary_weather', 
+    #                                 'Edmonton_hmdx', 'Edmonton_wind_chill', 'Edmonton_weather', 'McMurray_hmdx', 'McMurray_wind_chill', 'McMurray_weather'], axis=1)
 
     X_old = weather_mvts[['Edmonton_temp', 'Edmonton_dew_point_temp', 'Edmonton_rel_hum', 'Edmonton_wind_spd', 'Edmonton_visibility', 'Edmonton_stn_press', 'Edmonton_wind_dir']]
     X_old = np.asarray(X_old)
 
     for i in range(X_old.shape[1]):
         y = X_old[:,i]
-        nans, x= __nan_helper(y)
-        y[nans]= np.interp(x(nans), x(~nans), y[~nans])
+        nans = np.isnan(y)
+        nan_ind = np.nonzero(nans)[0]
+        ind = np.nonzero(np.invert(nans))[0]
+        y[nan_ind.astype(int)]= np.interp(nan_ind, ind, y[ind.astype(int)])
         X_old[:,i] = y
 
     new_ind = np.arange(X_old.shape[0]*4)
@@ -558,8 +557,6 @@ def _get_weather_data(weather_data_folder):
     yeartime_sin = np.expand_dims(np.sin(yeartime_in_radians),axis=-1)
     yeartime_cos = np.expand_dims(np.cos(yeartime_in_radians), axis=-1)
 
-    # scale = 1/10
-    # alltime_cos = scale*daytime_cos + yeartime_cos
 
     weather_mvts = np.concatenate((weather_mvts, daytime_cos, daytime_sin, yeartime_cos, yeartime_sin), axis=-1)
 

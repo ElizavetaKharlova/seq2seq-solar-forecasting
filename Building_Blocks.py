@@ -1209,6 +1209,12 @@ class FFW_generator(tf.keras.layers.Layer):
 ########################################################################################################################
 
 class fixed_attentive_TCN(tf.keras.layers.Layer):
+    '''
+    Encoder consisting of alternating self-attention and Desne TCN blocks
+    requires units in shape of [[attention block units], [dense tcn units] ... ]
+    the first block is always self-attention in order to get the most information from the input
+    outputs after each block (dense tcn and self-attention) are concatenated
+    '''
     def __init__(self,
                  units=None,
                  use_dropout=False,
@@ -1380,185 +1386,7 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
         forecast = self.forecast[:, -forecast_timesteps:, :]
         return forecast
 
-class Dense_generator(tf.keras.layers.Layer):
-
-    def __init__(self,
-                 units=[[64,64]],
-                 use_dropout=True,
-                 dropout_rate=0.2,
-                 use_norm=True,
-                 projection=tf.keras.layers.Dense(20)
-                 ):
-        super(Dense_generator, self).__init__()
-        block_kwargs = {'units': [units[0]],
-                        'growth_rate': 12,
-                        'use_dropout': use_dropout,
-                        'dropout_rate': dropout_rate,
-                        'use_norm': use_norm,
-                        'kernel_sizes': [3],
-                        'residual': True,
-                        }
-
-        attention_kwargs = {'units_per_head': [int(units[-1][-1]/3)] * 2,
-                            'project_to_units': units[-1][-1],
-                            'use_norm': use_norm,
-                            'use_dropout': use_dropout,
-                            'dropout_rate': dropout_rate}
-
-        block_kwargs['project_to_features']=units[-1][-1]
-        self.after_transform_in_history = []
-        self.self_attention = []
-        self.attention = []
-        self.transform_out = []
-
-        self.transform_in = DenseTCN(**block_kwargs)
-        if use_norm:
-            self.transform_in = Norm_wrapper(self.transform_in)
-        self.after_transform_in_history = None
-        for block in units:
-            self_attention = multihead_attentive_layer(**attention_kwargs)
-            self_attention = Residual_wrapper(self_attention)
-            if use_norm:
-                self_attention=Norm_wrapper(self_attention)
-            self.self_attention.append(self_attention)
-
-            attention = multihead_attentive_layer(**attention_kwargs)
-            attention = Residual_wrapper(attention)
-            if use_norm:
-                attention=Norm_wrapper(attention)
-            self.attention.append(attention)
-
-            block_kwargs['project_to_features']=None
-            transform_out = DenseTCN(**block_kwargs)
-            transform_out = Residual_wrapper(transform_out)
-            if use_norm:
-                transform_out=Norm_wrapper(transform_out)
-            self.transform_out.append(transform_out)
-
-        self.pre_projection_history = None
-
-        self.projection = projection
-
-
-    def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
-        self.attention_value = attention_value
-
-        forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
-                                        alt=self.validation_call(history, forecast_timesteps),
-                                        training=tf.keras.backend.learning_phase())
-        # forecast = self.validation_call(history, forecast_timesteps)
-        return forecast
-
-    # helper function to keep history if signals that we need to attend to
-    def keep_history(self, addendum, history):
-        if not self.previous_history_exists:
-            return addendum
-        else:
-            return tf.concat([history, addendum], axis=1)
-
-    # information flow for a single processing step,
-    def process_inputs(self, inputs):
-        # transform the raw input signal
-        after_transform_in = self.transform_in(inputs)
-        if not self.previous_history_exists:
-            self.after_transform_in_history = after_transform_in
-        else:
-            self.after_transform_in_history = tf.concat([self.after_transform_in_history, after_transform_in], axis=1)
-        out = self.after_transform_in_history
-        # create temporal context, residual, norm
-        for block in range(len(self.self_attention)):
-            out = self.self_attention[block](out)
-            #relevant_self_attention_steps = after_self_attention[:,-inputs.shape[1]:,:]
-            # create context with encoder thing, residual, norm
-            out = self.attention[block](out, value=self.attention_value)
-            out = self.transform_out[block](out)
-
-        if not self.previous_history_exists:
-            self.pre_projection_history = out
-        else:
-            self.pre_projection_history = tf.concat([self.pre_projection_history, out[:,-inputs.shape[1]:,:]], axis=1)
-
-    def training_call(self, history_and_teacher, forecast_timesteps):
-        self.previous_history_exists = False
-        self.process_inputs(history_and_teacher)
-        self.previous_history_exists = True
-         #technically not needed, since we dont have any followup calls anymore
-        return self.projection(self.pre_projection_history[:,-forecast_timesteps:,:])
-
-    def validation_call(self, history, forecast_timesteps):
-        self.previous_history_exists = False
-        self.process_inputs(history)
-        self.previous_history_exists = True
-
-        for step in range(forecast_timesteps - 1):
-            next_input = self.projection(self.pre_projection_history[:, -1:, :])
-            self.process_inputs(next_input)
-
-        return self.projection(self.pre_projection_history[:,-forecast_timesteps:,:])
-
 ########################################################################################################################
-
-class attentive_TCN(tf.keras.layers.Layer):
-    '''
-    Encoder consisting of alternating self-attention and Desne TCN blocks
-    requires units in shape of [[attention block units], [dense tcn units] ... ]
-    the first block is always self-attention in order to get the most information from the input
-    outputs after each block (dense tcn and self-attention) are concatenated
-    '''
-    def __init__(self, units = None, 
-                use_dropout=False, 
-                dropout_rate=0.15, 
-                use_norm=False, 
-                mode='encoder', 
-                use_attention=True):
-        # self_recurrent is a quick fix, change to exclude later
-        super(attentive_TCN, self).__init__()
-
-        #TODO: change units so it's flexible but not too much
-        if units is None:
-            units = [[12,12,12],[20,20],[12,12,12]]
-        self.units = units
-        self.mode = mode
-        self.use_attention = use_attention
-        self.use_norm = use_norm
-        self.block_stack = []
-        for block in range(len(self.units)):
-            # first block is always attention
-            if block%2 == 1:
-                # can accommodate several self-attention layers
-                attn_block = []
-                for layer in range(1):
-                    attn_block.append(multihead_attentive_layer())
-                self.block_stack.append(attn_block)
-            else:
-                self.block_stack.append(DenseTCN(units=[self.units[block]], 
-                                            growth_rate=self.units[block][0],
-                                            squeeze_factor=0.5, 
-                                            use_dropout = use_dropout,
-                                            dropout_rate=dropout_rate,
-                                            use_norm=use_norm,
-                                            kernel_sizes=[3],
-                                            residual=False))
-        if self.mode == 'decoder' and self.use_attention:
-            self.attention_layer = multihead_attentive_layer()
-
-
-    def call(self, inputs, decoder_init_state=None, attention_query=None, attention_value=None):
-        if self.mode=='decoder' and self.use_attention:
-            context_vector = self.attention_layer(attention_query, value=attention_value)
-            inputs = tf.concat([inputs,context_vector], axis=-1)
-        for block in range(len(self.units)):
-            # for the first and later attention layers, concatenate the outputs
-            if block%2 == 1:
-                for layer in range(len(self.block_stack[block])):
-                    out = self.block_stack[block][layer](inputs)
-                    # out = tf.concat([out,inputs],-1)
-                    inputs = out
-            else:
-                # dense tcn block concatenates the outputs automatically
-                out = self.block_stack[block](inputs)
-                inputs = out
-        return out
 
 class TCN_Transformer(tf.keras.layers.Layer):
     def __init__(self,

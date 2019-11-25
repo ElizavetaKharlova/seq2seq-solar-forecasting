@@ -43,12 +43,12 @@ def loss_wrapper(last_output_dim_size, loss_type='nME', normalizer_value=1.0):
             return calculate_KL_Divergence(target, prediction, last_output_dim_size)
         return KL_D
     #wierdass crap
-    elif loss_type=='KS_weighted_KL':
-        def KS_weighted_KL(target,prediction):
+    elif loss_type=='KS':
+        def KS(target,prediction):
             target = tf.cast(target, dtype=tf.float32)
             prediction = tf.cast(prediction, dtype=tf.float32)
-            return calculate_KS_weighted_KL(target, prediction, last_output_dim_size)
-        return KS_weighted_KL
+            return calculate_KS(target, prediction, last_output_dim_size)
+        return KS
     elif loss_type == 'tile-to-forecast':
         def designed(target, prediction):
             target = tf.cast(target, dtype=tf.float32)
@@ -121,16 +121,12 @@ def calculate_KS_weighted_KL(target, prediction, last_output_dim_size):
 
 def calculate_KS(target, prediction, last_output_dim_size):
 
-    # KL_div = -target*tf.math.log(tf.maximum(prediction, 1e-12)/tf.maximum(target, 1e-12)) #KL divergence fromfor target and prediction
-    x_entropy_p_q = -target * tf.math.log(tf.maximum(prediction, 1e-12)) #xentropy for target and prediction
-    # X_entropy_inverse_prob = -(1.0-target) * tf.math.log(tf.maximum(1.0-prediction, 1e-12))
-    x_entropy_q_p = -prediction * tf.math.log(tf.maximum(target, 1e-12))
-    # target_error_log =  -target*tf.math.log(tf.maximum(1.0-(target - prediction), 1e-12))
-    # prediction_error_log = -prediction * tf.math.log(tf.maximum(1.0 - (prediction - target), 1e-12))
-
-    KL_div = tf.reduce_sum(x_entropy_q_p + x_entropy_p_q, axis=-1)
-    KL_div = tf.reduce_sum(KL_div, axis=-1)
-    return tf.reduce_mean(KL_div)
+    pred_cdf = __pdf_to_cdf(prediction, last_output_dim_size)
+    targ_cdf = __pdf_to_cdf(target, last_output_dim_size)
+    KS_integral = tf.abs(pred_cdf - targ_cdf)
+    KS_integral = tf.reduce_sum(KS_integral, axis=-1)
+    # KS_integral = tf.square(KS_integral)
+    return tf.reduce_mean(KS_integral)
 
 def calculate_CRPS(target, prediction, last_output_dim_size):
     forecast_cdf = __pdf_to_cdf(prediction, last_output_dim_size)

@@ -3,6 +3,11 @@ import pickle
 import matplotlib.pyplot as plt
 from Train_Eval import Model_Container
 import tensorflow as tf
+#ToDo: Experiment1 is to check wether placement of dropout before or after norm is better
+#ToDo: Retest cost curves with KS and CRPS!
+#ToDo: Experiment2 is to check for different dropout rates
+#ToDo: Experiment3 is to check for layer depth in Encoder and Decoder
+
 
 def train_LSTM_baseline_3fold_on_Daniel_data():
     # ToDo: do the dataset one folder up
@@ -16,10 +21,10 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
         for run in range(2):
             model_kwargs = {'model_type': 'generator',
                             'model_size' : 'generator',
-                            'use_dropout' : True, 'dropout_rate' : 0.25,
-                            'use_norm' : True,
+                            'use_dropout' : True, 'dropout_rate' : 0.4,
+                            'use_norm' : False,
                             }
-            train_kwargs = {'batch_size': 128+128}
+            train_kwargs = {'batch_size': 128}
 
             experiment = Model_Container(dataset_folder=set,
                                       model_kwargs=model_kwargs,
@@ -29,7 +34,7 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
             del experiment
             tf.keras.backend.clear_session()
 
-    experiment_name = 'test_dropout_025'
+    experiment_name = 'Test_AttnDropout_small_gen'
     with open(experiment_name+'.pickle', 'wb') as handle:
         pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
 

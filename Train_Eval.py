@@ -221,22 +221,26 @@ class Model_Container():
         train_folder = self.dataset_path + '/train'
         train_list = __get_all_tfrecords_in_folder(train_folder)
         shuffle(train_list)
-        def get_training_dataset():
-            return get_batched_dataset(train_list, batch_size, train_mode=False)
-        self.train_dataset_generator = get_training_dataset
-        self.train_steps_epr_epoch = int(np.ceil(len(train_list)/batch_size))
-
         val_folder = self.dataset_path + '/validation'
         val_list = __get_all_tfrecords_in_folder(val_folder)
         shuffle(val_list)
+        test_folder = self.dataset_path + '/test'
+        test_list = __get_all_tfrecords_in_folder(test_folder)
+        shuffle(test_list)
+
+        def get_training_dataset():
+            #ToDo: revert to train_list instead of val_list
+            return get_batched_dataset(train_list, batch_size, train_mode=False)
+        self.train_dataset_generator = get_training_dataset
+        self.train_steps_epr_epoch = int(len(train_list)/batch_size)
+
+
         def get_val_dataset():
             return get_batched_dataset(val_list, batch_size, train_mode=False)
         self.val_dataset_generator = get_val_dataset
         self.val_steps_epr_epoch = int(np.ceil(len(val_list) / batch_size))
 
-        test_folder = self.dataset_path + '/test'
-        test_list = __get_all_tfrecords_in_folder(test_folder)
-        shuffle(test_list)
+
         def get_test_dataset():
             return get_batched_dataset(test_list, batch_size, train_mode=False)
         self.test_dataset_generator = get_test_dataset
@@ -455,16 +459,16 @@ class Model_Container():
 
         elif model_type == 'generator' or model_type == 'Generator':
             print('building E-D')
-            common_specs = {'attention_heads': 2,
+            common_specs = {'attention_heads': 3,
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
                             'use_norm': use_norm}
 
             encoder_specs = copy.deepcopy(common_specs)
-            encoder_specs['units'] = [[32], [48], [64]]
+            encoder_specs['units'] = [[48], [64], [80]]
 
             decoder_specs = copy.deepcopy(common_specs)
-            decoder_specs['units'] = [[32], [32]]
+            decoder_specs['units'] = [[40], [40]]
             decoder_specs['projection'] = tf.keras.layers.Conv1D(filters=out_shape[-1],
                                                 kernel_size=1,
                                                 strides=1,
@@ -491,12 +495,12 @@ class Model_Container():
                                                 kernel_initializer='glorot_uniform')
 
             from Building_Blocks import FFW_encoder, FFW_generator
-            encoder = FFW_encoder(units=[[128]],
+            encoder = FFW_encoder(units=[[64], [96], [128]],
                                   use_norm=use_norm,
                                   use_dropout=use_dropout,
                                   dropout_rate=dropout_rate)
 
-            generator = FFW_generator(units=[[128]],
+            generator = FFW_generator(units=[[48], [48]],
                                     use_norm=use_norm,
                                     use_dropout=use_dropout,
                                       dropout_rate=dropout_rate,
@@ -506,8 +510,8 @@ class Model_Container():
                                      decoder_block=generator,
                                     use_teacher=True,
                                      output_shape=out_shape,
-                                     support_shape=self.raw_nwp_shape,
-                                     history_shape=self.pdf_history_shape)
+                                     support_shape=support_shape,
+                                     history_shape=history_shape)
 
         else:
             print('trying to build with', model_size, model_type, 'but failed')
@@ -516,8 +520,8 @@ class Model_Container():
                                                               #clipnorm=1.0,
                                                               ),
                       # loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='tile-to-forecast'),
-                      #loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='KS_weighted_KL'),
-                      loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='KL_D'),
+                      #loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='KS'),
+                    loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='KL_D'),
                       metrics=[loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nME',
                                             normalizer_value=normalizer_value),
                                loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nRMSE',
@@ -530,12 +534,12 @@ class Model_Container():
         self.metrics = {}
         callbacks = []
         callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=15,
+                                                                   patience=10,
                                                                    mode='min',
                                                                    restore_best_weights=True))
         callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='loss',
                                                                factor=0.50,
-                                                               patience=10,
+                                                               patience=5,
                                                                verbose=True,
                                                                mode='min',
                                                                cooldown=5))

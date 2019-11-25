@@ -417,9 +417,9 @@ class Attention(tf.keras.layers.Layer):
             if self_attention:
                 score_pre_softmax += self.build_mask(score_pre_softmax)
 
-            score_pre_softmax = tf.keras.backend.in_train_phase(x=score_pre_softmax + self.dropout_mask(score_pre_softmax),
-                                                    alt=score_pre_softmax,
-                                                    training=tf.keras.backend.learning_phase())
+            # score_pre_softmax = tf.keras.backend.in_train_phase(x=score_pre_softmax + self.dropout_mask(score_pre_softmax),
+            #                                         alt=score_pre_softmax,
+            #                                         training=tf.keras.backend.learning_phase())
             score = tf.nn.softmax(score_pre_softmax, axis=-1)
 
             context_vector = tf.matmul(score, self.W_key(value))
@@ -1337,13 +1337,13 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
             out = self.transform[block](out)
 
             if not self.previous_history_exists:  # parallelization wins, this covers teacher forcing and all non-unrolling scenarios with normal SA
+                out_sa = self.self_attention[block](out)
                 self.self_attention_context[block] = out
             else:
+                out_sa = self.self_attention[block](out, value=self.self_attention_context[block])
                 self.self_attention_context[block] = tf.concat([self.self_attention_context[block], out], axis=1)  # add to the context for the next unrolling steppuru
 
-            out_sa = self.self_attention[block](self.self_attention_context[block])
-            out = out_sa[:,-out.shape[1]:,:]
-            out = self.attention[block](out, value=self.attention_value)
+            out = self.attention[block](out_sa, value=self.attention_value)
 
         if not self.previous_history_exists:
             self.forecast = self.projection(out)

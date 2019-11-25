@@ -374,14 +374,13 @@ class Attention(tf.keras.layers.Layer):
             if use_dropout:
                 self.W_key = Dropout_wrapper(self.W_key, dropout_rate=dropout_rate, units=units)
 
-    def dropout_score(self, score):
+    def dropout_mask(self, score):
         dropout_mask = tf.random.uniform(shape=tf.shape(score), minval=0.0, maxval=1.0)
-        dropout_mask = tf.where(dropout_mask <= self.dropout_rate, x=float('-inf'), y=0)
-        # dropout_mask = tf.where(score == float('-inf'), x=0.0, y=dropout_mask)
-        return score + dropout_mask
+        dropout_mask = tf.where(dropout_mask <= self.dropout_rate, x=float('-inf'), y=0.0)
+        return dropout_mask
 
-    def build_mask(self, input_shape):
-        mask = tf.linalg.band_part(tf.ones(shape=input_shape, dtype=tf.float32)*float('-inf'), 0, -1) #upper triangular ones, INCLUDING diagonal
+    def build_mask(self, input_tensor):
+        mask = tf.linalg.band_part(tf.ones_like(input_tensor)*float('-inf'), 0, -1) #upper triangular ones, INCLUDING diagonal
         return mask
 
     def call(self, query, value=None, key=None):
@@ -412,20 +411,17 @@ class Attention(tf.keras.layers.Layer):
             if len(query.shape) < len(key.shape):
                 query = tf.expand_dims(query,1)
 
-            score = tf.matmul(self.W_query(query), self.W_value(key), transpose_b=True)
-            score = score / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
+            score_pre_softmax = tf.matmul(self.W_query(query), self.W_value(key), transpose_b=True)
+            score_pre_softmax = score_pre_softmax / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
 
             if self_attention:
-                score = score + self.build_mask(tf.shape(score))
-                zeroth_row_replacement = tf.zeros(shape=[tf.shape(score)[0], 1, score.shape[-1]])
-                rest_context = tf.nn.softmax(score[:,1:,:], axis=-1)
-                score = tf.concat([zeroth_row_replacement, rest_context], axis=1)
-                # score = drop_features_of_signal(score, self.dropout_rate)
+                score_pre_softmax += self.build_mask(score_pre_softmax)
 
-            else:
-                score = tf.nn.softmax(score, axis=-1)
-                # score = drop_features_of_signal(score, self.dropout_rate)
-
+            score_pre_softmax = tf.keras.backend.in_train_phase(x=score_pre_softmax + self.dropout_mask(score_pre_softmax),
+                                                    alt=score_pre_softmax,
+                                                    training=tf.keras.backend.learning_phase())
+            score_with_nans = tf.nn.softmax(score_pre_softmax, axis=-1)
+            score = tf.where(tf.math.is_nan(score_with_nans), x=0.0, y=score_with_nans)
 
             context_vector = tf.matmul(score, self.W_key(value))
             # context_vector = drop_features_of_signal(context_vector, self.dropout_rate)

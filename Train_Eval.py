@@ -41,10 +41,13 @@ class Model_Container():
         self.raw_nwp_shape = [int( (self.sw_len_samples + self.fc_len_samples)/self.nwp_downsampling_rate ), self.nwp_dims]
         self.pdf_history_shape = [int(self.sw_len_samples/(self.fc_len_samples/self.fc_steps)), self.fc_tiles]
 
-        if model_kwargs['model_type'] == 'Encoder-Decoder' or model_kwargs['model_type'] == 'E-D' or 'MiMo' in model_kwargs['model_type']:
+        if model_kwargs['model_type'] == 'Encoder-Decoder' or model_kwargs['model_type'] == 'E-D' or 'MiMo' in model_kwargs['model_type'] or 'E-D' in model_kwargs['model_type']:
             self.actual_input_shape = [int(self.sw_len_samples / self.nwp_downsampling_rate),
                                        self.raw_nwp_shape[1] + 1]
             model_kwargs['input_shape'] = self.actual_input_shape
+            # TODO: this is not required, only becasue it asks for it later
+            model_kwargs['support_shape'] = [int(3*24*60/15), self.dataset_info['nwp_dims']]
+            model_kwargs['history_shape'] = [int(2*24), self.fc_tiles]
         elif 'MiMo' in model_kwargs['model_type']:
             self.actual_input_shape = [int(self.sw_len_samples / self.nwp_downsampling_rate),
                                        self.raw_nwp_shape[1] + 1]
@@ -133,7 +136,7 @@ class Model_Container():
                        'history_input': history_pdf,
                        'teacher_input': teacher}, adjusted_train_target
 
-            elif self.model_kwargs['model_type'] == 'Encoder-Decoder' or self.model_kwargs['model_type'] == 'E-D' or 'MiMo' in self.model_kwargs['model_type']:
+            elif self.model_kwargs['model_type'] == 'Encoder-Decoder' or self.model_kwargs['model_type'] == 'E-D' or 'MiMo' in self.model_kwargs['model_type'] or 'E-D' in self.model_kwargs['model_type']:
                 history_pv = tf.reshape(tensor=unadjusted_example['raw_historical_input'], shape=[self.nwp_downsampling_rate, int(self.sw_len_samples/self.nwp_downsampling_rate)])
                 history_pv = tf.transpose(history_pv, [1,0])
                 history_pv = tf.reduce_mean(history_pv, axis=-1, keepdims=True)
@@ -182,7 +185,7 @@ class Model_Container():
                        'history_input': history_pdf,
                        'teacher_input': teacher}, target
 
-            elif self.model_kwargs['model_type'] == 'Encoder-Decoder' or self.model_kwargs['model_type'] == 'E-D' or 'MiMo' in self.model_kwargs['model_type']:
+            elif self.model_kwargs['model_type'] == 'Encoder-Decoder' or self.model_kwargs['model_type'] == 'E-D' or 'MiMo' in self.model_kwargs['model_type'] or 'E-D' in self.model_kwargs['model_type']:
                 history_pv = tf.reshape(tensor=unadjusted_example['raw_historical_input'], shape=[self.nwp_downsampling_rate, int(self.sw_len_samples/self.nwp_downsampling_rate)])
                 history_pv = tf.transpose(history_pv, [1,0])
                 history_pv = tf.reduce_mean(history_pv, axis=-1, keepdims=True)
@@ -291,14 +294,15 @@ class Model_Container():
 
         elif model_type == 'MiMo-attn-tcn':
             print('building a', model_size, model_type)
-            from Building_Blocks import attentive_TCN
-            encoder_specs = {'units': [[32],[32],[32],[32],[32]],
-                             'use_dropout': use_dropout,
-                             'dropout_rate': dropout_rate,
-                             'use_norm': True}
+            from Building_Blocks import fixed_attentive_TCN
+            encoder_specs = {'units': [[32,32,32], [48,48], [64,64]],
+                            'attention_heads': 2,
+                            'use_dropout': use_dropout,
+                            'dropout_rate': dropout_rate,
+                            'use_norm': use_norm}
 
             from Models import mimo_model
-            self.model = mimo_model(function_block=attentive_TCN(**encoder_specs),
+            self.model = mimo_model(function_block=fixed_attentive_TCN(**encoder_specs),
                                input_shape=input_shape,
                                output_shape=out_shape,
                                downsample_input=False,
@@ -508,6 +512,33 @@ class Model_Container():
             from Models import forecaster_model
             self.model = forecaster_model(encoder_block=encoder,
                                      decoder_block=generator,
+                                    use_teacher=True,
+                                     output_shape=out_shape,
+                                     support_shape=support_shape,
+                                     history_shape=history_shape)
+        elif model_type == 'Densegenerator' or model_type == 'DenseGenerator':
+            print('building E-D')
+            common_specs = {'attention_heads': 2,
+                            'use_dropout': use_dropout,
+                            'dropout_rate': dropout_rate,
+                            'use_norm': use_norm}
+
+            encoder_specs = copy.deepcopy(common_specs)
+            encoder_specs['units'] = [[32,32,32], [48,48,48], [64,64]]
+
+            decoder_specs = copy.deepcopy(common_specs)
+            decoder_specs['units'] = [[32,32], [32,32]]
+            decoder_specs['projection'] = tf.keras.layers.Conv1D(filters=out_shape[-1],
+                                                kernel_size=1,
+                                                strides=1,
+                                                padding='causal',
+                                                activation=tf.keras.layers.Softmax(axis=-1),
+                                                kernel_initializer='glorot_uniform')
+
+            from Building_Blocks import fixed_attentive_TCN, fixed_generator_Dense_block
+            from Models import forecaster_model
+            self.model = forecaster_model(encoder_block=fixed_attentive_TCN(**encoder_specs),
+                                     decoder_block=fixed_generator_Dense_block(**decoder_specs),
                                     use_teacher=True,
                                      output_shape=out_shape,
                                      support_shape=support_shape,

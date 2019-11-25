@@ -1024,6 +1024,7 @@ class fixed_generator_LSTM_block(tf.keras.layers.Layer):
                 self.self_attention_context[block] = tf.concat([self.self_attention_context[block], out], axis=1)  # add to the context for the next unrolling steppuru
 
             out = out_sa[:,-out.shape[1]:,:]
+            # TODO: this is to test the generator without the encoder features
             out = self.attention[block](out, value=self.attention_value)
 
         if not self.previous_history_exists:
@@ -1212,6 +1213,64 @@ class FFW_generator(tf.keras.layers.Layer):
 
 ########################################################################################################################
 
+class fixed_attentive_TCN(tf.keras.layers.Layer):
+    def __init__(self,
+                 units=None,
+                 use_dropout=False,
+                 dropout_rate=0.0,
+                 attention_heads=3,
+                 L1=0.0, L2=0.0,
+                 use_norm=False,):
+        super(fixed_attentive_TCN, self).__init__()
+        self.use_norm = use_norm
+        self.use_dropout = use_dropout
+        self.dropout_rate = dropout_rate
+        #ToDo: Figure out how we want to do the parameter growth thingie
+
+
+        self.transform = []
+        self.self_attention = []
+        self.self_attention_context = [[]]*len(units)
+
+        for block in range(len(units)):
+
+            Dense_params = {'units': [units[block]],
+                            'growth_rate': units[block][0],
+                            'use_dropout': use_dropout,
+                            'dropout_rate': dropout_rate,
+                            # 'L1':L1, 'L2':L2,
+                            'use_norm': use_norm,
+                            'kernel_sizes': [5],
+                            'residual':True,
+                            'project_to_features': units[block][-1]
+                             }
+            transform = DenseTCN(**Dense_params)
+            if self.use_norm:
+                transform = Norm_wrapper(transform, norm='batch')
+            self.transform.append(transform)
+
+            attn_units_per_head = [int(attention_heads*units[block][-1]/(attention_heads+1))] * attention_heads
+            self_attention = multihead_attentive_layer(units_per_head=attn_units_per_head,
+                                                       use_norm=use_norm,
+                                                       norm_type='batch',
+                                                       L1=L1, L2=L2,
+                                                       project_to_units=units[block][-1],
+                                                       use_dropout=use_dropout, dropout_rate=dropout_rate)
+            self_attention = Residual_wrapper(self_attention)
+            if use_norm:
+                self_attention=Norm_wrapper(self_attention)
+            self.self_attention.append(self_attention)
+
+    def call(self, inputs):
+        # Input to first transformation layer, assign last state and out
+        out = inputs
+
+        for block in range(len(self.transform)):
+            out = self.transform[block](out)
+            out = self.self_attention[block](out)
+
+        return out
+
 class fixed_generator_Dense_block(tf.keras.layers.Layer):
     def __init__(self,
                  units=None,
@@ -1234,12 +1293,13 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
         self.self_attention_context = [[]]*len(units)
 
         for block in range(len(units)):
-            Dense_params = {'units': [[units[block][-1]]],
+            Dense_params = {'units': [units[block]],
+                            'growth_rate': units[block][0],
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
                             # 'L1':L1, 'L2':L2,
                             'use_norm': use_norm,
-                            'kernel_sizes': [3],
+                            'kernel_sizes': [5],
                             'residual':True,
                             'project_to_features': units[block][-1]
                              }

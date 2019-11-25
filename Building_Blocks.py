@@ -376,11 +376,11 @@ class Attention(tf.keras.layers.Layer):
 
     def dropout_mask(self, score):
         dropout_mask = tf.random.uniform(shape=tf.shape(score), minval=0.0, maxval=1.0)
-        dropout_mask = tf.where(dropout_mask <= self.dropout_rate, x=-1e12, y=0.0)
+        dropout_mask = tf.where(dropout_mask <= self.dropout_rate, x=float('-inf'), y=0.0)
         return dropout_mask
 
     def build_mask(self, input_tensor):
-        mask = tf.linalg.band_part(tf.ones_like(input_tensor)*-1e12, 0, -1) #upper triangular ones, INCLUDING diagonal
+        mask = tf.linalg.band_part(tf.ones_like(input_tensor)*float('-inf'), 0, -1) #upper triangular ones, INCLUDING diagonal
         return mask
 
     def call(self, query, value=None, key=None):
@@ -420,9 +420,11 @@ class Attention(tf.keras.layers.Layer):
             score_pre_softmax = tf.keras.backend.in_train_phase(x=score_pre_softmax + self.dropout_mask(score_pre_softmax),
                                                     alt=score_pre_softmax,
                                                     training=tf.keras.backend.learning_phase())
-            score = tf.nn.softmax(score_pre_softmax, axis=-1)
+            score_with_nans = tf.nn.softmax(score_pre_softmax, axis=-1)
+            score = tf.where(tf.math.is_nan(score_with_nans), x=0.0, y=score_with_nans)
 
             context_vector = tf.matmul(score, self.W_key(value))
+            # context_vector = drop_features_of_signal(context_vector, self.dropout_rate)
 
         if self.only_context:
             return context_vector

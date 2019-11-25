@@ -469,10 +469,10 @@ class Model_Container():
                             'use_norm': use_norm}
 
             encoder_specs = copy.deepcopy(common_specs)
-            encoder_specs['units'] = [[48], [64], [80]]
+            encoder_specs['units'] = [[32], [64], [96]]
 
             decoder_specs = copy.deepcopy(common_specs)
-            decoder_specs['units'] = [[40], [40]]
+            decoder_specs['units'] = [[32], [32]]
             decoder_specs['projection'] = tf.keras.layers.Conv1D(filters=out_shape[-1],
                                                 kernel_size=1,
                                                 strides=1,
@@ -578,7 +578,7 @@ class Model_Container():
         train_history = self.model.fit(self.train_dataset_generator(),
                                        steps_per_epoch=self.train_steps_epr_epoch,
                                       epochs=100,
-                                      verbose=2,
+                                      verbose=1,
                                       validation_data=self.val_dataset_generator(),
                                        validation_steps=self.val_steps_epr_epoch,
                                       callbacks=callbacks)

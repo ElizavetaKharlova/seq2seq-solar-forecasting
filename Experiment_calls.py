@@ -19,7 +19,7 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
     for set in datasets:
         metrics[set] = []
         for run in range(2):
-            model_kwargs = {'model_type': 'generator',
+            model_kwargs = {'model_type': 'Densegenerator',
                             'model_size' : 'generator',
                             'use_dropout' : True, 'dropout_rate' : 0.4,
                             'use_norm' : False,
@@ -40,27 +40,35 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
 
     __plot_training_curves(metrics, experiment_name=experiment_name)
 
-def train_on_Lizas_data():
+def train_on_LD():
 
     # ToDo: Gotta recompile ur datasets obviously
-    data_files = ['Lizas_dataset_2',]
+    datasets = ['Lizas_Dataset_1']
     metrics = {}
-    for set in data_files:
+    for set in datasets:
         metrics[set] = []
         for run in range(2):
-            model_kwargs = {'model_type': 'MiMo-attn-tcn',
-                            'model_size':'small',}
-            train_kwargs = {'batch_size':512}
+            model_kwargs = {'model_type': 'Densegenerator',
+                            'model_size' : 'generator',
+                            'use_dropout' : True, 'dropout_rate' : 2*0.15,
+                            'use_hw' : False,
+                            'use_norm' : True,
+                            'use_quasi_dense' : False,  # general architecture stuff
+                            'use_attention' : True, 'attention_hidden' : False,
+                            # 'downsample' : False,
+                            # 'mode': 'snip',  # MiMo stuff
+                            }
+            train_kwargs = {'batch_size': 128+32}
 
             experiment = Model_Container(dataset_folder=set,
-                                         model_kwargs=model_kwargs,
-                                         train_kwargs=train_kwargs,
-                                         try_distribution_across_GPUs=False, )
+                                      model_kwargs=model_kwargs,
+                                      train_kwargs=train_kwargs,
+                                      try_distribution_across_GPUs=False,)
             metrics[set].append(experiment.get_results())
             del experiment
             tf.keras.backend.clear_session()
 
-    experiment_name = model_kwargs['model_size'] + '_' + model_kwargs['model_type']
+    experiment_name = '96_units_generator_no_self_attn'
     with open(experiment_name+'.pickle', 'wb') as handle:
         pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
 

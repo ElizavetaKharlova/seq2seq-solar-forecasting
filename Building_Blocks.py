@@ -658,13 +658,13 @@ class DenseTCN(tf.keras.layers.Layer):
     # return output concatednated with input
     def run_layer(self, block, num_layer, num_stream, inputs):
         out = inputs
-        # self.blocks[block][num_stream][num_layer] = [Bottleneck_norm, Bottleneck_features, bottleneck_dropout,
-        #                                              growth_norm, growth_layer, growth_dropout]
-        # Bottleneck section
-        if self.use_norm:
-            out = self.blocks[block][num_stream][num_layer]['bottleneck_norm'](out)
-        out = tf.keras.activations.elu(out)
-        out = self.blocks[block][num_stream][num_layer]['bottleneck_layer'](out)
+
+        #bottleneck section
+        if inputs.shape[-1] > self.bottleneck_features:
+            if self.use_norm:
+                out = self.blocks[block][num_stream][num_layer]['bottleneck_norm'](out)
+            out = tf.keras.activations.elu(out)
+            out = self.blocks[block][num_stream][num_layer]['bottleneck_layer'](out)
 
         # growth section
         if self.use_norm:
@@ -1287,6 +1287,7 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
         self.attention = []
         self.self_attention = []
         self.self_attention_context = [[]]*len(units)
+        self.before_transform_history = []
 
         for block in range(len(units)):
             Dense_params = {'units': [units[block][:-1]],
@@ -1304,6 +1305,7 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
             if self.use_norm:
                 transform = Norm_wrapper(transform, norm='batch')
             self.transform.append(transform)
+            self.before_transform_history.append([])
 
             attn_units_per_head = [int(attention_heads*units[block][-1]/(attention_heads+1))] * attention_heads
             self_attention = multihead_attentive_layer(units_per_head=attn_units_per_head,
@@ -1329,14 +1331,23 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
             self.attention.append(attn)
 
 
-
-    def process(self, input_steps):
+    def process(self, input_data):
         # Input to first transformation layer, assign last state and out
-        out = input_steps
+        input_num_timesteps = input_data.shape[1]
+        out = input_data
 
         for block in range(len(self.transform)):
-            out = self.transform[block](out)
 
+            # Transformation step
+            # This needs to be logged to make sure we give the TCN enough data for the receptive windows to actually matter
+            if not self.previous_history_exists:
+                self.before_transform_history[block] = out
+            else:
+                self.before_transform_history[block] = tf.concat([self.before_transform_history[block], out], axis=1)
+            out = self.transform[block](self.before_transform_history[block])
+            out = out[:, -input_num_timesteps:, :]
+
+            # Self-attention or pseudo self-attention, depending on wether we are unrolling or not
             if not self.previous_history_exists:  # parallelization wins, this covers teacher forcing and all non-unrolling scenarios with normal SA
                 out_sa = self.self_attention[block](out)
                 self.self_attention_context[block] = out
@@ -1344,6 +1355,7 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
                 out_sa = self.self_attention[block](out, value=self.self_attention_context[block])
                 self.self_attention_context[block] = tf.concat([self.self_attention_context[block], out], axis=1)  # add to the context for the next unrolling steppuru
 
+            # Attention on the context
             out = self.attention[block](out_sa, value=self.attention_value)
 
         if not self.previous_history_exists:

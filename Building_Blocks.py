@@ -6,7 +6,7 @@ import tensorflow as tf
 import numpy as np
 ########################################################################################################################
 '''General help functions, lowest level'''
-
+initializer = tf.keras.initializers.glorot_uniform()
 def drop_features_of_signal(input, dropout_rate):
     batch_dim = tf.shape(input)[0]
     # if batch_dim is None:
@@ -38,11 +38,17 @@ class Dropout_wrapper(tf.keras.layers.Wrapper):
         self.units = units
         self.dropout_rate = dropout_rate
     def call(self, inputs, value=None):
-
         if value is None:
             return drop_features_of_signal(self.layer(inputs), self.dropout_rate)
         else:
             return drop_features_of_signal(self.layer(inputs, value), self.dropout_rate)
+        # if value is None:
+        #     dropped_inputs = drop_features_of_signal(inputs, self.dropout_rate)
+        #     return self.layer(dropped_inputs)
+        # else:
+        #     dropped_inputs = drop_features_of_signal(inputs, self.dropout_rate)
+        #     dropped_values = drop_features_of_signal(value, self.dropout_rate)
+        #     return self.layer(dropped_inputs, dropped_values)
 
 class Norm_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, norm='layer'):
@@ -139,7 +145,10 @@ class Residual_LSTM_wrapper(tf.keras.layers.Wrapper):
 class Highway_LSTM_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, units, iniital_bias):
         super(Highway_LSTM_wrapper, self).__init__(layer)
-        self.transform_gate  = tf.keras.layers.Dense(units, activation='sigmoid', bias_initializer=tf.initializers.constant(iniital_bias))
+        self.transform_gate  = tf.keras.layers.Dense(units,
+                                                     activation='sigmoid',
+                                                     kernel_initializer=initializer,
+                                                     bias_initializer=tf.initializers.constant(iniital_bias))
         # self.transform_gate = tf.keras.layers.TimeDistributed(self.transform_gate )
 
     def call(self, input, initial_state):
@@ -222,7 +231,7 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                                                       return_sequences=True,
                                                       implementation=2,
                                                       return_state=True,
-                                                      kernel_initializer='glorot_uniform',
+                                                      kernel_initializer=initializer,
                                                       recurrent_initializer='orthogonal',
                                                       bias_initializer='zeros')
 
@@ -345,7 +354,7 @@ class Attention(tf.keras.layers.Layer):
                                          kernel_size=query_kernel,
                                          kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                          padding='causal',
-                                         kernel_initializer='glorot_uniform',
+                                         kernel_initializer=initializer,
                                          use_bias=False)
         if use_dropout:
             self.W_query = Dropout_wrapper(self.W_query, dropout_rate=dropout_rate)
@@ -356,7 +365,7 @@ class Attention(tf.keras.layers.Layer):
                                          kernel_size=1,
                                          padding='causal',
                                          kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                         kernel_initializer='glorot_uniform',
+                                         kernel_initializer=initializer,
                                          use_bias=False)
         if use_dropout:
             self.W_value = Dropout_wrapper(self.W_value, dropout_rate=dropout_rate)
@@ -370,7 +379,7 @@ class Attention(tf.keras.layers.Layer):
                                          kernel_size=key_kernel,
                                          kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                          padding='causal',
-                                         kernel_initializer='glorot_uniform',
+                                         kernel_initializer=initializer,
                                          use_bias=False)
             if use_dropout:
                 self.W_key = Dropout_wrapper(self.W_key, dropout_rate=dropout_rate)
@@ -418,9 +427,9 @@ class Attention(tf.keras.layers.Layer):
             if self_attention:
                 score_pre_softmax += self.build_mask(score_pre_softmax)
 
-            score_pre_softmax = tf.keras.backend.in_train_phase(x=score_pre_softmax + self.dropout_mask(score_pre_softmax),
-                                                    alt=score_pre_softmax,
-                                                    training=tf.keras.backend.learning_phase())
+            # score_pre_softmax = tf.keras.backend.in_train_phase(x=score_pre_softmax + self.dropout_mask(score_pre_softmax),
+            #                                         alt=score_pre_softmax,
+            #                                         training=tf.keras.backend.learning_phase())
 
             score = tf.nn.softmax(score_pre_softmax, axis=-1)
 
@@ -454,7 +463,7 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                                          kernel_size=1,
                                          kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                          padding='causal',
-                                         kernel_initializer='glorot_uniform',
+                                         kernel_initializer=initializer,
                                          use_bias=False)
             if self.use_dropout:
                 self.projection_layer = Dropout_wrapper(self.projection_layer, dropout_rate=dropout_rate)
@@ -491,6 +500,25 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         return multihead_out
 
 ########################################################################################################################
+class peusod_fucked_TCN(tf.keras.layers.Layer):
+    def __init__(self, units=[[12,12,12]]):
+        super(peusod_fucked_TCN, self).__init__()
+
+        self.units = units
+        self.dyllllllated_stack = []
+
+        for deth in range(len(units[0])):
+            layer = tf.keras.layers.Conv1D(filters=units[0][deth],
+                                      kernel_size=2,
+                                      dilation_rate=2**deth,
+                                      kernel_initializer=initializer,
+                                      padding='causal')
+            self.dyllllllated_stack.append(layer)
+
+    def call(self, useless_info):
+        for layer in self.dyllllllated_stack:
+            useless_info = layer(useless_info)
+        return useless_info
 
 class FFW_block(tf.keras.layers.Layer):
     def __init__(self,
@@ -508,7 +536,7 @@ class FFW_block(tf.keras.layers.Layer):
                 layer = tf.keras.layers.Dense(units[block][layer_num],
                                               activation=tf.nn.elu,
                                               use_bias=True,
-                                              kernel_initializer='glorot_uniform',
+                                              kernel_initializer=initializer,
                                               bias_initializer='zeros',
                                               kernel_regularizer=None,
                                               bias_regularizer=None,
@@ -586,9 +614,10 @@ class DenseTCN(tf.keras.layers.Layer):
     # initialize one CNN layer with arbitrary parameters
     def cnn_layer(self, num_features, kernel_size, dilation_rate, stride=1):
         return tf.keras.layers.Conv1D(filters=num_features,
-                                        kernel_size=kernel_size,
-                                        dilation_rate=dilation_rate,
-                                        padding='causal')
+                                      kernel_size=kernel_size,
+                                      dilation_rate=dilation_rate,
+                                      kernel_initializer=initializer,
+                                      padding='causal')
 
     # build a stack for one layer of the network
     def build_layer(self, num_layer, kernel_size):
@@ -646,7 +675,10 @@ class DenseTCN(tf.keras.layers.Layer):
             # create stack of squeeze layers
             if self.use_norm:
                 self.norm.append(tf.keras.layers.BatchNormalization(axis=-1, center=True))
-            self.squeeze.append(self.cnn_layer(num_features, kernel_size=1, dilation_rate=1, stride=1))
+            squeeze_layer = self.cnn_layer(num_features, kernel_size=1, dilation_rate=1, stride=1)
+            if self.use_dropout:
+                squeeze_layer = Dropout_wrapper(squeeze_layer, self.dropout_rate)
+            self.squeeze.append(squeeze_layer)
             if self.downsample_rate > 1:
                 self.pool = tf.keras.layers.AvgPool1D(pool_size=self.downsample_rate,
                                                       strides=self.downsample_rate)
@@ -660,7 +692,7 @@ class DenseTCN(tf.keras.layers.Layer):
         out = inputs
 
         #bottleneck section
-        if inputs.shape[-1] > self.bottleneck_features:
+        if inputs.shape[-1] >= self.bottleneck_features:
             if self.use_norm:
                 out = self.blocks[block][num_stream][num_layer]['bottleneck_norm'](out)
             out = tf.keras.activations.elu(out)
@@ -670,8 +702,9 @@ class DenseTCN(tf.keras.layers.Layer):
         if self.use_norm:
             out = self.blocks[block][num_stream][num_layer]['growth_norm'](out)
         out = tf.keras.activations.elu(out)
+        # print(out.shape)
         out = self.blocks[block][num_stream][num_layer]['growth_layer'](out)
-
+        # print(out.shape)
         return tf.concat([out, inputs], axis=-1)
 
     # run output through one stream
@@ -709,6 +742,28 @@ class DenseTCN(tf.keras.layers.Layer):
             if self.downsample_rate >1:
                 out = self.pool(out)
         return out
+
+class project_input_to_4k_layer(tf.keras.layers.Layer):
+    def __init__(self,
+                 growth_rate=12,
+                 kernel=3,
+                 use_dropout=True,
+                 dropout_rate=0.2,
+                 use_norm=False,
+                 ):
+        super(project_input_to_4k_layer, self).__init__()
+        self.input_to_4k_features =  tf.keras.layers.Conv1D(filters=4*growth_rate,
+                                      kernel_size=kernel,
+                                      dilation_rate=1,
+                                      kernel_initializer=initializer,
+                                      padding='causal')
+        if use_norm:
+            self.input_to_4k_features = Norm_wrapper(self.input_to_4k_features, norm='batch')
+        if use_dropout:
+            self.input_to_4k_features = Dropout_wrapper(self.input_to_4k_features, dropout_rate)
+
+    def call(self, input):
+        return self.input_to_4k_features(input)
 
 ########################################################################################################################
 
@@ -1222,21 +1277,23 @@ class fixed_attentive_TCN(tf.keras.layers.Layer):
         self.use_dropout = use_dropout
         self.dropout_rate = dropout_rate
         #ToDo: Figure out how we want to do the parameter growth thingie
-
-
+        kernel_size = [3]
+        self.input_projection = project_input_to_4k_layer(growth_rate=units[0][0],
+                                                          kernel=kernel_size,
+                                                          use_dropout=use_dropout,
+                                                          dropout_rate=dropout_rate,
+                                                          use_norm=use_norm)
         self.transform = []
         self.self_attention = []
         self.self_attention_context = [[]]*len(units)
-
         for block in range(len(units)):
-
             Dense_params = {'units': [units[block][:-1]],
                             'growth_rate': units[block][0],
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
                             # 'L1':L1, 'L2':L2,
                             'use_norm': use_norm,
-                            'kernel_sizes': [5],
+                            'kernel_sizes': kernel_size,
                             'residual':True,
                             'project_to_features': units[block][-1]
                              }
@@ -1259,8 +1316,7 @@ class fixed_attentive_TCN(tf.keras.layers.Layer):
 
     def call(self, inputs):
         # Input to first transformation layer, assign last state and out
-        out = inputs
-
+        out = self.input_projection(inputs)
         for block in range(len(self.transform)):
             out = self.transform[block](out)
             out = self.self_attention[block](out)
@@ -1282,13 +1338,18 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
 
         self.projection = projection
 
+        kernel_size = [3]
+        self.input_projection = project_input_to_4k_layer(growth_rate=units[0][0],
+                                                          kernel=kernel_size,
+                                                          use_dropout=use_dropout,
+                                                          dropout_rate=dropout_rate,
+                                                          use_norm=use_norm)
         # Self attention and attention layers
         self.transform = []
         self.attention = []
         self.self_attention = []
         self.self_attention_context = [[]]*len(units)
         self.before_transform_history = []
-
         for block in range(len(units)):
             Dense_params = {'units': [units[block][:-1]],
                             'growth_rate': units[block][0],
@@ -1296,7 +1357,7 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
                             'dropout_rate': dropout_rate,
                             # 'L1':L1, 'L2':L2,
                             'use_norm': use_norm,
-                            'kernel_sizes': [5],
+                            'kernel_sizes': kernel_size,
                             'residual':True,
                             'project_to_features': units[block][-1]
                              }
@@ -1334,10 +1395,9 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
     def process(self, input_data):
         # Input to first transformation layer, assign last state and out
         input_num_timesteps = input_data.shape[1]
-        out = input_data
+        out = self.input_projection(input_data)
 
         for block in range(len(self.transform)):
-
             # Transformation step
             # This needs to be logged to make sure we give the TCN enough data for the receptive windows to actually matter
             if not self.previous_history_exists:
@@ -1394,98 +1454,6 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
         return forecast
 
 ########################################################################################################################
-
-class TCN_Transformer(tf.keras.layers.Layer):
-    def __init__(self,
-                 units=[[20, 20], [10, 10, 10],    # first si the attention layer units, then the TCN units
-                                  [30, 30], [10, 10, 10],
-                                  [45, 45], [10, 10, 10]],
-                 mode='Encoder',
-                 use_dropout=True, dropout_rate=0.2, use_norm=True, **kwargs):
-        super(TCN_Transformer, self).__init__()
-
-        self.use_dropout = use_dropout
-        self.dropout_rate = dropout_rate
-        self.use_norm = use_norm
-        self.mode = mode
-
-        self.all_layers = []
-        if self.mode == 'decoder' or self.mode =='Decoder' or self.mode=='D':
-            downsample_rate = 1
-        else:
-            downsample_rate = 2
-
-        for stage_in_block in range(len(units)):
-            if stage_in_block%2 == 0: # attention stuffs
-                block_layers = []
-                # self attention
-                num_heads = len(units[stage_in_block])
-                num_units = units[stage_in_block][0]
-                block_layers.append(multihead_attentive_layer(num_heads=num_heads, num_units_per_head=num_units) )
-                if self.use_norm:
-                    block_layers.append(tf.keras.layers.BatchNormalization(axis=-1, center=True, scale=True))
-                else:
-                    block_layers.append([])
-                if self.use_dropout:
-                    block_layers.append( tf.keras.layers.Dropout(dropout_rate, noise_shape=(1, num_heads*num_units) ) )
-                else:
-                    block_layers.append([])
-
-                # Wohoo, do the whole thing again, yay
-                if self.mode == 'decoder' or self.mode =='Decoder' or self.mode=='D':
-
-                    block_layers.append(multihead_attentive_layer(num_heads=num_heads, num_units_per_head=num_units))
-                    if self.use_norm:
-                        block_layers.append(tf.keras.layers.BatchNormalization(axis=-1, center=True, scale=True))
-                    else:
-                        block_layers.append([])
-                    if self.use_dropout:
-                        block_layers.append(
-                            tf.keras.layers.Dropout(dropout_rate, noise_shape=(1, num_heads * num_units)))
-                    else:
-                        block_layers.append([])
-
-            elif stage_in_block%2 == 1 and units[stage_in_block] != []:
-                block_layers.append( DenseTCN(num_blocks=1,
-                                            num_layers_per_block=len(units[stage_in_block]),
-                                            growth_rate=units[stage_in_block][0],
-                                            squeeze_factor=0.7,
-                                            use_dropout = use_dropout,
-                                            dropout_rate=dropout_rate,
-                                              downsample_rate=downsample_rate,
-                                            use_norm=use_norm,
-                                            kernel_sizes=[3]))
-                self.all_layers.append(block_layers)
-            elif units[stage_in_block] == []:
-                block_layers.append([])
-                self.all_layers.append(block_layers)
-
-    def call(self, input, attention_query=None, attention_value=None):
-        out = input
-        for num_block in range(len(self.all_layers)):
-            # block_layer in encoder case: [attention, norm, dropout, tcn]
-            # block_layer in decoder case [attention, norm, dropout, attention, norm, dropout, tcn]
-
-            # self attention stage
-            out = self.all_layers[num_block][0](out, value=out)
-            if self.use_norm:
-                out = self.all_layers[num_block][1](out)
-            if self.use_dropout:
-                out = self.all_layers[num_block][2](out, training=tf.keras.backend.learning_phase())
-
-            # context attention stage
-            if self.mode == 'decoder' or self.mode =='Decoder' or self.mode=='D':
-                out = self.all_layers[num_block][3](out, value=attention_value)
-
-                if self.use_norm:
-                    out = self.all_layers[num_block][4](out)
-                if self.use_dropout:
-                    out = self.all_layers[num_block][5](out, training=tf.keras.backend.learning_phase())
-
-            if self.all_layers[num_block][-1] != []:
-                out = self.all_layers[num_block][-1](out)
-
-        return out
 
 class WeightNormalization(tf.keras.layers.Wrapper):
     """This wrapper reparameterizes a layer by decoupling the weight's

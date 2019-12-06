@@ -21,10 +21,10 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
         for run in range(2):
             model_kwargs = {'model_type': 'Densegenerator',
                             'model_size' : 'generator',
-                            'use_dropout' : True, 'dropout_rate' : 0.4,
+                            'use_dropout' : False, 'dropout_rate' : 0.10,
                             'use_norm' : False,
                             }
-            train_kwargs = {'batch_size': 128}
+            train_kwargs = {'batch_size': 128+32}
 
             experiment = Model_Container(dataset_folder=set,
                                       model_kwargs=model_kwargs,

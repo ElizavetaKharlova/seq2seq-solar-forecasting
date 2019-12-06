@@ -78,6 +78,10 @@ class Model_Container():
         # print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
         # # strategy = tf.distribute.experimental.CentralStorageStrategy()
         # with strategy.scope():
+        #tf.debugging.set_log_device_placement(True)
+
+        # strategy = tf.distribute.MirroredStrategy()
+        # with strategy.scope():
         self.__build_model(**self.model_kwargs)
 
         self.__train_model(**self.train_kwargs)
@@ -210,12 +214,12 @@ class Model_Container():
 
             # does this order make any fucking sense at all?!?!?!?
             if train_mode:
-                dataset = dataset.map(__read_and_process_train_samples, num_parallel_calls=10)
+                dataset = dataset.map(__read_and_process_train_samples, num_parallel_calls=20)
             else:
-                dataset = dataset.map(__read_and_process_normal_samples, num_parallel_calls=10)
+                dataset = dataset.map(__read_and_process_normal_samples, num_parallel_calls=20)
             dataset = dataset.repeat()
-            dataset = dataset.shuffle(6 * batch_size)
-            dataset = dataset.prefetch(4 * batch_size)
+            dataset = dataset.shuffle(20 * batch_size)
+            dataset = dataset.prefetch(10 * batch_size)
             dataset = dataset.batch(batch_size, drop_remainder=False)
             return dataset
 
@@ -469,10 +473,10 @@ class Model_Container():
                             'use_norm': use_norm}
 
             encoder_specs = copy.deepcopy(common_specs)
-            encoder_specs['units'] = [[48], [64], [80]]
+            encoder_specs['units'] = [[32], [48], [64]]
 
             decoder_specs = copy.deepcopy(common_specs)
-            decoder_specs['units'] = [[40], [40]]
+            decoder_specs['units'] = [[32], [32]]
             decoder_specs['projection'] = tf.keras.layers.Conv1D(filters=out_shape[-1],
                                                 kernel_size=1,
                                                 strides=1,
@@ -518,16 +522,19 @@ class Model_Container():
                                      history_shape=history_shape)
         elif model_type == 'Densegenerator' or model_type == 'DenseGenerator':
             print('building E-D')
-            common_specs = {'attention_heads': 2,
+            common_specs = {'attention_heads': 4,
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
                             'use_norm': use_norm}
 
             encoder_specs = copy.deepcopy(common_specs)
-            encoder_specs['units'] = [[32,32,32], [48,48,48], [64,64]]
+            encoder_specs['units'] = [[16, 16, 16, 16, 16, 1*4*16],
+                                      [16, 16, 16, 16, 16, 2*4*16],
+                                      [16, 16, 16, 16, 16, 3*4*16]]
 
             decoder_specs = copy.deepcopy(common_specs)
-            decoder_specs['units'] = [[32,32], [32,32]]
+            decoder_specs['units'] = [[16, 16, 16, 16, 16, 3*16],
+                                      [16, 16, 16, 16, 16, 4*16]]
             decoder_specs['projection'] = tf.keras.layers.Conv1D(filters=out_shape[-1],
                                                 kernel_size=1,
                                                 strides=1,
@@ -547,7 +554,14 @@ class Model_Container():
         else:
             print('trying to build with', model_size, model_type, 'but failed')
         from Losses_and_Metrics import loss_wrapper
-        self.model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=5*1e-4,
+        # learning_rate = tf.keras.experimental.CosineDecayRestarts(3*1e-3,
+        #                                                         20*self.train_steps_epr_epoch,
+        #                                                         t_mul=1.0,
+        #                                                         m_mul=1.0,
+        #                                                         alpha=1e-5,
+        #                                                         name=None
+        #                                                     )
+        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=1e-3,
                                                               #clipnorm=1.0,
                                                               ),
                       # loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='tile-to-forecast'),
@@ -564,20 +578,21 @@ class Model_Container():
     def __train_model(self, batch_size=64):
         self.metrics = {}
         callbacks = []
+        epochs = 150
         callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=10,
+                                                                   patience=epochs,
                                                                    mode='min',
                                                                    restore_best_weights=True))
-        callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='loss',
-                                                               factor=0.50,
-                                                               patience=5,
-                                                               verbose=True,
-                                                               mode='min',
-                                                               cooldown=5))
+        # callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='loss',
+        #                                                        factor=0.50,
+        #                                                        patience=5,
+        #                                                        verbose=True,
+        #                                                        mode='min',
+        #                                                        cooldown=5))
         print('starting to train model')
         train_history = self.model.fit(self.train_dataset_generator(),
                                        steps_per_epoch=self.train_steps_epr_epoch,
-                                      epochs=100,
+                                      epochs=epochs,
                                       verbose=2,
                                       validation_data=self.val_dataset_generator(),
                                        validation_steps=self.val_steps_epr_epoch,

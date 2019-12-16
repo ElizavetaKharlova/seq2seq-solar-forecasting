@@ -7,6 +7,7 @@ import numpy as np
 ########################################################################################################################
 '''General help functions, lowest level'''
 initializer = tf.keras.initializers.glorot_uniform()
+activation = tf.nn.relu
 def drop_features_of_signal(input, dropout_rate):
     batch_dim = tf.shape(input)[0]
     # if batch_dim is None:
@@ -462,7 +463,7 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         else:
             self.projection = True
             self.projection_layer = tf.keras.layers.Conv1D(project_to_units,
-                                         #activation=tf.nn.elu,
+                                         #activation=tf.nn.relu,
                                          strides=1,
                                          kernel_size=1,
                                          kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
@@ -481,6 +482,7 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                                   key_kernel=1 if kernel_size==None else kernel_size[head],
                                   use_dropout=use_dropout,
                                   dropout_rate=dropout_rate,
+                                  L2=L2, L1=L1,
                                   only_context=True)
             # if self.use_dropout:
             #     attention = Dropout_wrapper(attention, dropout_rate=dropout_rate)
@@ -504,25 +506,6 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         return multihead_out
 
 ########################################################################################################################
-class peusod_fucked_TCN(tf.keras.layers.Layer):
-    def __init__(self, units=[[12,12,12]]):
-        super(peusod_fucked_TCN, self).__init__()
-
-        self.units = units
-        self.dyllllllated_stack = []
-
-        for deth in range(len(units[0])):
-            layer = tf.keras.layers.Conv1D(filters=units[0][deth],
-                                      kernel_size=2,
-                                      dilation_rate=2**deth,
-                                      kernel_initializer=initializer,
-                                      padding='causal')
-            self.dyllllllated_stack.append(layer)
-
-    def call(self, useless_info):
-        for layer in self.dyllllllated_stack:
-            useless_info = layer(useless_info)
-        return useless_info
 
 class FFW_block(tf.keras.layers.Layer):
     def __init__(self,
@@ -538,7 +521,7 @@ class FFW_block(tf.keras.layers.Layer):
         for block in range(len(units)):
             for layer_num in range(len(units[block])):
                 layer = tf.keras.layers.Dense(units[block][layer_num],
-                                              activation=tf.nn.elu,
+                                              activation=activation,
                                               use_bias=True,
                                               kernel_initializer=initializer,
                                               bias_initializer='zeros',
@@ -572,15 +555,16 @@ class FFW_block(tf.keras.layers.Layer):
         return out
 
 class preactivated_CNN(tf.keras.layers.Layer):
-    def __init__(self, num_features, kernel_size, dilation_rate, stride=1):
+    def __init__(self, num_features, kernel_size, dilation_rate, stride=1, L1=0.0, L2=0.0):
         super(preactivated_CNN, self).__init__()
         self.layer =  tf.keras.layers.Conv1D(filters=num_features,
                                       kernel_size=kernel_size,
+                                        activation=activation,
                                       dilation_rate=dilation_rate,
                                       kernel_initializer=initializer,
+                                     kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                       padding='causal')
     def call(self, signal):
-        signal = tf.keras.activations.elu(signal)
         return self.layer(signal)
 
 class DenseTCN(tf.keras.layers.Layer):
@@ -599,6 +583,7 @@ class DenseTCN(tf.keras.layers.Layer):
                 use_dropout=False,
                 dropout_rate=0.0,
                 use_norm=False,
+                 L1=0.0, L2=0.0,
                 downsample_rate=1,
                 kernel_sizes=[2, 4],
                 residual=False,
@@ -606,6 +591,8 @@ class DenseTCN(tf.keras.layers.Layer):
         super(DenseTCN, self).__init__()
 
         self.units = units
+        self.L1 = L1
+        self.L2 = L2
         self.num_blocks = len(units)
         self.growth_rate = growth_rate
         # bottleneck features are the 1x1 conv size for each layer
@@ -631,7 +618,7 @@ class DenseTCN(tf.keras.layers.Layer):
     def build_layer(self, num_layer, kernel_size):
         layer = {}
         #Bottleneck features
-        bottleneck_layer = preactivated_CNN(self.bottleneck_features, kernel_size=1, dilation_rate=1)
+        bottleneck_layer = preactivated_CNN(self.bottleneck_features, kernel_size=1, dilation_rate=1, L2=self.L2, L1=self.L1)
         if self.use_norm:
             bottleneck_layer = Norm_wrapper(bottleneck_layer, norm='batch')
         if self.use_dropout:
@@ -639,7 +626,7 @@ class DenseTCN(tf.keras.layers.Layer):
         layer['bottleneck_layer'] = bottleneck_layer
 
         # Growth feature layer
-        growth_layer = preactivated_CNN(self.growth_rate, kernel_size=kernel_size, dilation_rate=2**num_layer)
+        growth_layer = preactivated_CNN(self.growth_rate, kernel_size=kernel_size, dilation_rate=2**num_layer, L2=self.L2, L1=self.L1)
         if self.use_norm:
             growth_layer = Norm_wrapper(growth_layer, norm='batch')
         if self.use_dropout:
@@ -677,7 +664,7 @@ class DenseTCN(tf.keras.layers.Layer):
             else:
                 num_features = int(self.squeeze_factor*(num_features + self.num_layers_per_block*self.growth_rate))
             # create stack of squeeze layers
-            squeeze_layer = preactivated_CNN(num_features, kernel_size=1, dilation_rate=1, stride=1)
+            squeeze_layer = preactivated_CNN(num_features, kernel_size=1, dilation_rate=1, stride=1, L2=self.L2, L1=self.L1)
             if self.use_norm:
                 squeeze_layer = Norm_wrapper(squeeze_layer, norm='batch')
             if self.use_dropout:
@@ -746,19 +733,21 @@ class project_input_to_4k_layer(tf.keras.layers.Layer):
                  kernel=3,
                  use_dropout=True,
                  dropout_rate=0.2,
+                 L1=0.0,
+                 L2=0.0,
                  use_norm=False,
                  ):
         super(project_input_to_4k_layer, self).__init__()
         self.input_to_4k_features =  preactivated_CNN(num_features=4*growth_rate,
                                                       kernel_size=2,
-                                                      dilation_rate=1)
+                                                      dilation_rate=1,
+                                                      L2=L2, L1=L1)
         if use_norm:
             self.input_to_4k_features = Norm_wrapper(self.input_to_4k_features, norm='batch')
         if use_dropout:
             self.input_to_4k_features = Dropout_wrapper(self.input_to_4k_features, dropout_rate)
 
     def call(self, signal):
-        signal = tf.keras.activations.elu(signal)
         signal = self.input_to_4k_features(signal)
         return signal
 
@@ -1279,6 +1268,7 @@ class fixed_attentive_TCN(tf.keras.layers.Layer):
                                                           kernel=kernel_size,
                                                           use_dropout=use_dropout,
                                                           dropout_rate=dropout_rate,
+                                                          L1=L1, L2=L2,
                                                           use_norm=use_norm)
         self.transform = []
         self.self_attention = []
@@ -1288,7 +1278,8 @@ class fixed_attentive_TCN(tf.keras.layers.Layer):
                             'growth_rate': units[block][0],
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
-                            # 'L1':L1, 'L2':L2,
+                            'L1':L1,
+                            'L2':L2,
                             'use_norm': use_norm,
                             'kernel_sizes': kernel_size,
                             'residual':True,
@@ -1299,7 +1290,7 @@ class fixed_attentive_TCN(tf.keras.layers.Layer):
                 transform = Norm_wrapper(transform, norm='batch')
             self.transform.append(transform)
 
-            attn_units_per_head = [int(attention_heads*units[block][-1]/(attention_heads+1))] * attention_heads
+            attn_units_per_head = [int(attention_heads / (attention_heads + 1) * units[block][-1])] * attention_heads
             self_attention = multihead_attentive_layer(units_per_head=attn_units_per_head,
                                                        use_norm=use_norm,
                                                        norm_type='batch',
@@ -1347,12 +1338,14 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
         self.self_attention = []
         self.self_attention_context = [[]]*len(units)
         self.before_transform_history = []
+        self.post_history = []
         for block in range(len(units)):
             Dense_params = {'units': [units[block][:-1]],
                             'growth_rate': units[block][0],
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
-                            # 'L1':L1, 'L2':L2,
+                            'L1':L1,
+                            'L2':L2,
                             'use_norm': use_norm,
                             'kernel_sizes': kernel_size,
                             'residual':True,
@@ -1364,8 +1357,9 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
                 transform = Norm_wrapper(transform, norm='batch')
             self.transform.append(transform)
             self.before_transform_history.append([])
+            self.post_history.append([])
 
-            attn_units_per_head = [int(attention_heads*units[block][-1]/(attention_heads+1))] * attention_heads
+            attn_units_per_head = [int(attention_heads/(attention_heads+1) * units[block][-1])] * attention_heads
             self_attention = multihead_attentive_layer(units_per_head=attn_units_per_head,
                                                        use_norm=use_norm,
                                                        norm_type='batch',
@@ -1388,7 +1382,7 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
                 attn = Norm_wrapper(attn, norm='batch')
             self.attention.append(attn)
 
-
+    #ToDo: Fix signal flow here ... if we are teacher forcing were not actually seeing the full signal you dumbass idiot!!
     def process(self, input_data):
         # Input to first transformation layer, assign last state and out
         input_num_timesteps = input_data.shape[1]
@@ -1407,7 +1401,15 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
                 self.before_transform_history[block] = out
             else:
                 self.before_transform_history[block] = tf.concat([self.before_transform_history[block], out], axis=1)
-            out = self.transform[block](self.before_transform_history[block][:, -self.history_length:,:])
+
+            if self.before_transform_history[block].shape[1] < self.history_length + self.forecast_timesteps-1:
+                steps_to_pad = self.history_length + self.forecast_timesteps-1 - self.before_transform_history[block].shape[1]
+                zero_pad = tf.zeros(shape=[tf.shape(input_data)[0], steps_to_pad, self.before_transform_history[block].shape[2]])
+
+                out = tf.concat([zero_pad, self.before_transform_history[block]], axis=1)
+            else:
+                out = self.before_transform_history[block]
+            out = self.transform[block](out)
             out = out[:, -input_num_timesteps:, :]
 
             # Self-attention or pseudo self-attention, depending on wether we are unrolling or not
@@ -1430,6 +1432,7 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
     def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
         self.attention_value = attention_value
         self.history_length= history.shape[1]
+        self.forecast_timesteps = forecast_timesteps
 
         forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
                                         alt=self.validation_call(history, forecast_timesteps),
@@ -1449,6 +1452,7 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
     def validation_call(self, history, forecast_timesteps):
         self.transform_states = [None]*len(self.transform)
         self.previous_history_exists = False
+
         self.process(history)
 
         self.previous_history_exists = True

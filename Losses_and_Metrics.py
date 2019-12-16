@@ -70,7 +70,7 @@ def loss_wrapper(last_output_dim_size, loss_type='nME', normalizer_value=1.0):
 def __calculate_expected_value(signal, last_output_dim_size):
     indices = tf.range(last_output_dim_size, dtype=tf.float32) # (last_output_dim_size)
     weighted_signal = tf.multiply(signal, indices) # (batches, timesteps, last_output_dim_size)
-    expected_value = tf.reduce_sum(weighted_signal, axis=-1, keepdims=True)
+    expected_value = tf.reduce_sum(weighted_signal, axis=-1)
     return expected_value
 
 def __pdf_to_cdf(pdf, last_output_dim_size):
@@ -83,41 +83,7 @@ def __pdf_to_cdf(pdf, last_output_dim_size):
 
     return cdf
 
-def calculate_E_MSE(target, prediction, last_output_dim_size):
-    if last_output_dim_size > 1:
-        target = __calculate_expected_value(target, last_output_dim_size)
-        prediction = __calculate_expected_value(prediction, last_output_dim_size)
-    expected_nMSE = tf.subtract(target, prediction)
-    expected_nMSE = tf.square(expected_nMSE)
 
-    return tf.reduce_mean(expected_nMSE)
-
-def calculate_EMD(target, prediction, last_output_dim_size):
-    EMD_tiles = tf.zeros(shape=[tf.shape(target)[0], tf.shape(target)[1], 1])
-    x_entropy = -target*tf.math.log(tf.maximum(prediction, 1e-12)/tf.maximum(target, 1e-12))
-    for tile in range(last_output_dim_size):
-        EMD_next_tile = EMD_tiles[:,:,tile] + x_entropy[:,:,tile]
-        EMD_next_tile = tf.expand_dims(EMD_next_tile, axis=-1)
-        EMD_tiles = tf.concat([EMD_tiles, EMD_next_tile], axis=-1)
-
-    #EMD_tiles = tf.square(EMD_tiles)
-    EMD = tf.reduce_sum(tf.abs(EMD_tiles), axis=-1)
-    #EMD = tf.square(EMD)
-    return tf.reduce_mean(EMD)
-
-def calculate_KS_weighted_KL(target, prediction, last_output_dim_size):
-    KL_non_weighted = tf.maximum(prediction, 1e-8) / tf.maximum(target, 1e-8)
-    KL_non_weighted = -tf.math.log(KL_non_weighted)
-    #KL_non_weighted = tf.abs(KL_non_weighted)
-
-    KS_diff = __pdf_to_cdf(prediction, last_output_dim_size) - __pdf_to_cdf(target, last_output_dim_size)
-    KS_diff = tf.abs(KS_diff)
-    KS_weighted_KL_loss = KS_diff * KL_non_weighted
-    # KS_weighted_KL_loss = tf.reduce_sum(KS_weighted_KL_loss, axis=-1)
-
-
-    # KS_weighted_KL_loss = tf.square(KS_weighted_KL_loss)
-    return tf.reduce_mean(KS_weighted_KL_loss, axis=-1)
 
 def calculate_KS(target, prediction, last_output_dim_size):
 
@@ -131,37 +97,49 @@ def calculate_KS(target, prediction, last_output_dim_size):
 def calculate_CRPS(target, prediction, last_output_dim_size):
     forecast_cdf = __pdf_to_cdf(prediction, last_output_dim_size)
     target_cdf = __pdf_to_cdf(target, last_output_dim_size)
-    CRPS = tf.subtract(forecast_cdf, target_cdf)
-    CRPS = tf.square(CRPS)
-    CRPS = tf.reduce_sum(CRPS, axis=-1)
-    return tf.reduce_mean(CRPS)
+
+    CRPS = tf.square(target_cdf - forecast_cdf) #(batches, timesteps, features)
+    CRPS = tf.reduce_sum(CRPS, axis=-1) #(batches, timesteps_)
+    CRPS = tf.reduce_mean(CRPS, axis=-1) #(batches)
+    return CRPS
+
+def calculate_KL_Divergence(target, prediction, last_output_dim_size):
+    target = tf.maximum(target, 1e-15)
+    prediction = tf.maximum(prediction, 1e-15)
+    KL_D = -target * tf.math.log(prediction/target) #(batches, timesteps, features)
+    KL_D = tf.reduce_sum(KL_D, axis=-1) #(batches, timesteps)
+    KL_D = tf.reduce_mean(KL_D, axis=-1) #(batches)
+    return KL_D
 
 def calculate_E_nRMSE(target, prediction, last_output_dim_size, normalizer_value):
     # if pdfs, convert to expected values
     if last_output_dim_size > 1:
         target = __calculate_expected_value(target, last_output_dim_size)
         prediction = __calculate_expected_value(prediction, last_output_dim_size)
-        normalizer_value = last_output_dim_size
+        normalizer_value = tf.cast(last_output_dim_size, dtype=tf.float32)
+    else:
+        normalizer_value = 1.0
 
-    expected_nMSE = tf.subtract(target, prediction)
-    expected_nMSE = tf.square(expected_nMSE)
-    expected_nMSE = tf.reduce_mean(expected_nMSE)
-    expected_nRMSE = tf.sqrt(expected_nMSE)
+    expected_nMSE = tf.square(target - prediction) #(batches, timesteps)
+    expected_nMSE = tf.reduce_mean(expected_nMSE, axis=-1) #(batches)
+    expected_nRMSE = tf.sqrt(expected_nMSE) #(bactehs)
 
-    return tf.divide(expected_nRMSE, tf.cast(normalizer_value, dtype=tf.float32))
+    return expected_nRMSE / normalizer_value
 
 def calculate_E_nME(target, prediction, last_output_dim_size, normalizer_value):
     # if pdfs, convert to expected values
     if last_output_dim_size > 1:
         target = __calculate_expected_value(target, last_output_dim_size)
         prediction = __calculate_expected_value(prediction, last_output_dim_size)
-        normalizer_value = last_output_dim_size
+        normalizer_value = tf.cast(last_output_dim_size, dtype=tf.float32)
+    else:
+        normalizer_value = 1.0
 
-    expected_nME = tf.subtract(target, prediction)
-    expected_nME = tf.abs(expected_nME)
-    expected_nME = tf.reduce_mean(expected_nME)
+    expected_nME = tf.abs(target - prediction) #(batches, timesteps)
+    expected_nME = tf.reduce_mean(expected_nME, axis=-1) #(batches)
+    expected_nME = expected_nME / normalizer_value
 
-    return tf.divide(expected_nME, tf.cast(normalizer_value, dtype=tf.float32))
+    return expected_nME
 
 def calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size):
     absolute_probability_errors = tf.subtract(prediction, target)
@@ -193,11 +171,42 @@ def calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size):
     print(loss)
     return loss
 
-def calculate_KL_Divergence(target, prediction, last_output_dim_size):
-    KL_D = -target * tf.math.log(tf.maximum(prediction, 1e-15)/tf.maximum(target, 1e-15))
-    KL_D = tf.reduce_sum(KL_D, axis=-1)
+def calculate_E_MSE(target, prediction, last_output_dim_size):
+    if last_output_dim_size > 1:
+        target = __calculate_expected_value(target, last_output_dim_size)
+        prediction = __calculate_expected_value(prediction, last_output_dim_size)
+    expected_nMSE = tf.subtract(target, prediction)
+    expected_nMSE = tf.square(expected_nMSE)
+    expected_nMSE = tf.reduce_mean(expected_nMSE, axis=-1)
+    expected_nMSE = tf.reduce_mean(expected_nMSE, axis=-1)
+    return expected_nMSE
 
-    return tf.reduce_mean(KL_D)
+def calculate_EMD(target, prediction, last_output_dim_size):
+    EMD_tiles = tf.zeros(shape=[tf.shape(target)[0], tf.shape(target)[1], 1])
+    x_entropy = -target*tf.math.log(tf.maximum(prediction, 1e-12)/tf.maximum(target, 1e-12))
+    for tile in range(last_output_dim_size):
+        EMD_next_tile = EMD_tiles[:,:,tile] + x_entropy[:,:,tile]
+        EMD_next_tile = tf.expand_dims(EMD_next_tile, axis=-1)
+        EMD_tiles = tf.concat([EMD_tiles, EMD_next_tile], axis=-1)
+
+    #EMD_tiles = tf.square(EMD_tiles)
+    EMD = tf.reduce_sum(tf.abs(EMD_tiles), axis=-1)
+    #EMD = tf.square(EMD)
+    return tf.reduce_mean(EMD)
+
+def calculate_KS_weighted_KL(target, prediction, last_output_dim_size):
+    KL_non_weighted = tf.maximum(prediction, 1e-8) / tf.maximum(target, 1e-8)
+    KL_non_weighted = -tf.math.log(KL_non_weighted)
+    #KL_non_weighted = tf.abs(KL_non_weighted)
+
+    KS_diff = __pdf_to_cdf(prediction, last_output_dim_size) - __pdf_to_cdf(target, last_output_dim_size)
+    KS_diff = tf.abs(KS_diff)
+    KS_weighted_KL_loss = KS_diff * KL_non_weighted
+    # KS_weighted_KL_loss = tf.reduce_sum(KS_weighted_KL_loss, axis=-1)
+
+
+    # KS_weighted_KL_loss = tf.square(KS_weighted_KL_loss)
+    return tf.reduce_mean(KS_weighted_KL_loss, axis=-1)
 
 def __calculatate_skillscore_baseline(set_targets, sample_spacing_in_mins=5, normalizer_value=1.0, persistent_forecast=None):
 

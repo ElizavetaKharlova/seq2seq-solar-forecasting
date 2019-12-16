@@ -18,13 +18,14 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
     metrics = {}
     for set in datasets:
         metrics[set] = []
-        for run in range(2):
+        for run in range(1):
             model_kwargs = {'model_type': 'Densegenerator',
                             'model_size' : 'generator',
-                            'use_dropout' : False, 'dropout_rate' : 0.10,
+                            'use_dropout' : False, 'dropout_rate' : 0.0,
+                            'L1': 0.0, 'L2': 1e-6,
                             'use_norm' : False,
                             }
-            train_kwargs = {'batch_size': 128+32}
+            train_kwargs = {'batch_size': 1*(64+64+64)}
 
             experiment = Model_Container(dataset_folder=set,
                                       model_kwargs=model_kwargs,
@@ -34,7 +35,7 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
             del experiment
             tf.keras.backend.clear_session()
 
-    experiment_name = 'Test_AttnDropout_small_gen'
+    experiment_name = 'TCN_gen_L1L2'
     with open(experiment_name+'.pickle', 'wb') as handle:
         pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
 

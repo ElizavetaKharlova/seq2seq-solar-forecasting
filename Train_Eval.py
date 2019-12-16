@@ -9,6 +9,7 @@ import glob
 import os
 import pickle
 from random import shuffle
+from datetime import datetime
 
 class Model_Container():
     def __init__(self,
@@ -79,12 +80,13 @@ class Model_Container():
         # # strategy = tf.distribute.experimental.CentralStorageStrategy()
         # with strategy.scope():
         #tf.debugging.set_log_device_placement(True)
+        # cross_ops = tf.distribute.ReductionToOneDevice()
+        cross_ops = tf.distribute.HierarchicalCopyAllReduce()
+        strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
+        with strategy.scope():
+            self.__build_model(**self.model_kwargs)
 
-        # strategy = tf.distribute.MirroredStrategy()
-        # with strategy.scope():
-        self.__build_model(**self.model_kwargs)
-
-        self.__train_model(**self.train_kwargs)
+            self.__train_model(**self.train_kwargs)
         del self.train_kwargs
         del self.model
 
@@ -259,7 +261,9 @@ class Model_Container():
                       input_shape=None,
                       model_type='MiMo-sth',
                       model_size='small',
-                      use_dropout=False, dropout_rate=0.0, use_hw=False, use_norm=False, use_quasi_dense=False, #general architecture stuff
+                      L1=0.0, L2=0.0,
+                      use_dropout=False, dropout_rate=0.0,
+                      use_hw=False, use_norm=False, use_quasi_dense=False, #general architecture stuff
                       use_attention=False, attention_hidden=False, self_recurrent=False, # E-D stuff
                       downsample=True, mode='snip', #MiMo stuff
                       ):
@@ -522,24 +526,28 @@ class Model_Container():
                                      history_shape=history_shape)
         elif model_type == 'Densegenerator' or model_type == 'DenseGenerator':
             print('building E-D')
-            common_specs = {'attention_heads': 4,
+            common_specs = {'attention_heads': 5,
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
+                            'L1': L1, 'L2': L2,
                             'use_norm': use_norm}
-
+            growth = 18
             encoder_specs = copy.deepcopy(common_specs)
-            encoder_specs['units'] = [[16, 16, 16, 16, 16, 1*4*16],
-                                      [16, 16, 16, 16, 16, 2*4*16],
-                                      [16, 16, 16, 16, 16, 3*4*16]]
-
+            encoder_specs['units'] = [[growth, growth, growth, growth, growth, 6*growth],
+                                      [growth, growth, growth, growth, growth, 9*growth],
+                                      [growth, growth, growth, growth, growth, 12*growth],
+                                      ]
             decoder_specs = copy.deepcopy(common_specs)
-            decoder_specs['units'] = [[16, 16, 16, 16, 16, 3*16],
-                                      [16, 16, 16, 16, 16, 4*16]]
+            decoder_specs['units'] = [[growth, growth, growth, growth, growth, 5*growth],
+                                      [growth, growth, growth, growth, growth, 5*growth],
+                                      ]
+
             decoder_specs['projection'] = tf.keras.layers.Conv1D(filters=out_shape[-1],
                                                 kernel_size=1,
                                                 strides=1,
                                                 padding='causal',
                                                 activation=tf.keras.layers.Softmax(axis=-1),
+                                                 kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                                 kernel_initializer='glorot_uniform')
 
             from Building_Blocks import fixed_attentive_TCN, fixed_generator_Dense_block
@@ -561,31 +569,54 @@ class Model_Container():
         #                                                         alpha=1e-5,
         #                                                         name=None
         #                                                     )
-        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=1e-3,
+
+        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=3*1e-3,
                                                               #clipnorm=1.0,
                                                               ),
-                      # loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='tile-to-forecast'),
-                      #loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='KS'),
+                    # loss=tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.SUM)
                     loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='KL_D'),
                       metrics=[loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nME',
                                             normalizer_value=normalizer_value),
                                loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nRMSE',
                                             normalizer_value=normalizer_value),
                                loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='CRPS'),
-                               ])  # compile, print summary
+                               ],
+                           )  # compile, print summary
         self.model.summary()
 
     def __train_model(self, batch_size=64):
         self.metrics = {}
         callbacks = []
-        epochs = 150
+        epochs = 500
+        # def scheduler(epoch):
+        #     max_lr = 3*1e-2
+        #     min_lr = 5*1e-4
+        #     up_down_length=40
+        #
+        #     where_in_cycle = epoch%up_down_length
+        #     if where_in_cycle <= up_down_length/2:
+        #         alpha = min_lr + where_in_cycle*(max_lr - min_lr)/(up_down_length/2)
+        #         return alpha
+        #     if where_in_cycle > up_down_length/2:
+        #         alpha = max_lr - where_in_cycle*(max_lr - min_lr)/(up_down_length/2)
+        #         return alpha
+
+        logdir =  os.path.join("tboard_logs")
+        print('copy paste for tboard:', logdir)
         callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
                                                                    patience=epochs,
                                                                    mode='min',
                                                                    restore_best_weights=True))
+        callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,
+                                                        write_graph=False,
+                                                        #update_freq='epoch',
+                                                        ))
+
+        #callbacks.append(tf.keras.callbacks.LearningRateScheduler(scheduler))
         # callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='loss',
-        #                                                        factor=0.50,
-        #                                                        patience=5,
+        #                                                        factor=2,
+        #                                                        patience=20,
+        #                                                       min_delta=0.05,
         #                                                        verbose=True,
         #                                                        mode='min',
         #                                                        cooldown=5))

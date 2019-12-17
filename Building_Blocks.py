@@ -137,9 +137,9 @@ class ZoneoutWrapper(tf.keras.layers.Wrapper):
         state_c = tf.keras.backend.in_train_phase(x=zone_state_c(), alt=no_zone_state_c())
         return output, state_h, state_c
 
-class Residual_LSTM_wrapper(tf.keras.layers.Wrapper):
+class LSTM_Residual_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer):
-        super(Residual_LSTM_wrapper, self).__init__(layer)
+        super(LSTM_Residual_wrapper, self).__init__(layer)
         # self.transform_gate = tf.keras.layers.TimeDistributed(self.transform_gate )
 
     def call(self, input, initial_states=None):
@@ -147,9 +147,9 @@ class Residual_LSTM_wrapper(tf.keras.layers.Wrapper):
         output[-1] = output[-1]+input
         return output, states
 
-class Highway_LSTM_wrapper(tf.keras.layers.Wrapper):
+class LSTM_Highway_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, units, iniital_bias):
-        super(Highway_LSTM_wrapper, self).__init__(layer)
+        super(LSTM_Highway_wrapper, self).__init__(layer)
         self.transform_gate  = tf.keras.layers.Dense(units,
                                                      activation='sigmoid',
                                                      kernel_initializer=initializer,
@@ -162,9 +162,9 @@ class Highway_LSTM_wrapper(tf.keras.layers.Wrapper):
         hw_out = tf.add(tf.multiply(H_x, T_x), tf.multiply((1.0-T_x), input))
         return hw_out, state_h, state_c
 
-class Norm_LSTM_wrapper(tf.keras.layers.Wrapper):
+class LSTM_Norm_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, norm_type='Layer norm'):
-        super(Norm_LSTM_wrapper, self).__init__(layer)
+        super(LSTM_Norm_wrapper, self).__init__(layer)
         if norm_type == 'Layer norm':
             self.norm = tf.keras.layers.LayerNormalization(axis=-1,
                                                            center=True,
@@ -190,11 +190,12 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
     and the states at the last step
     '''
     def __init__(self, units=[[20, 20], [20,20]],
-                 use_dropout=True,
+                 use_dropout=False,
                  dropout_rate=0.0,
-                 use_norm=True,
+                 use_norm=False,
                  use_hw=False,
-                 use_quasi_dense=False,
+                 use_residuals = False,
+                 return_all_states = True,
                  L1=0.0,
                  L2=0.0):
         super(MultiLayer_LSTM, self).__init__()
@@ -204,24 +205,13 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
         self.dropout_rate = dropout_rate
         self.use_norm = use_norm
         self.use_hw = use_hw
-        self.use_quasi_dense = use_quasi_dense
+        self.use_residuals = use_residuals
+        self.return_all_states = return_all_states
 
         self.LSTM_list_o_lists = []  # Multiple layers work easiest as a list of layers, so here we start
-        if self.use_norm:
-            self.LSTM_norm_list_o_lists = []
-        if self.use_dropout:
-            self.LSTM_dropout_list_o_lists = []
-        if self.use_hw:
-            self.T_x_list_o_lists = []
-        if self.use_quasi_dense:
-            self.dense_drop = tf.keras.layers.Dropout(rate=dropout_rate)
 
         for block in range(len(self.units)):
             LSTM_list = []
-            LSTM_norm_list = []
-            LSTM_dropout_list = []
-            T_x_list = []
-
             for layer in range(len(self.units[block])):
                 # get one LSTM layer per layer we speciefied, with the units we need
                 # Do we need to initialize the layer in the loop?
@@ -246,86 +236,45 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                     very_last_layer = True
                 else:
                     very_last_layer = False
-
-                # do we wanna norm
-                if self.use_norm and not very_last_layer:
-                    LSTM_norm_list.append(tf.keras.layers.LayerNormalization(axis=-1,
-                                                           center=True,
-                                                           scale=True))
-
                 # do we wanna highway
                 if self.use_hw:
-                    if layer == 0:
-                        T_x = None
-                    elif units[block][layer-1] == units[block][layer]:
-                        T_x = tf.keras.layers.Dense(units[block][layer], activation='sigmoid',
-                                                                    bias_initializer=tf.initializers.constant(-1.5))
-                    else:
-                        T_x = None
-                    T_x_list.append(T_x)
-
-                    # if self.units[block][layer] == self.units[block][layer-1]:
-                    #     one_LSTM_layer = Highway_LSTM_wrapper(one_LSTM_layer, self.units[block][layer], -1.5)
+                    one_LSTM_layer = LSTM_Highway_wrapper(one_LSTM_layer)
+                elif self.use_residulals:
+                    one_LSTM_layer = LSTM_Residual_wrapper(one_LSTM_layer)
+                # do we wanna norm
+                if self.use_norm and not very_last_layer:
+                    one_LSTM_layer = LSTM_Norm_wrapper(one_LSTM_layer)
 
                 LSTM_list.append(one_LSTM_layer) # will be len(layers_in_block)
             self.LSTM_list_o_lists.append(LSTM_list)
-            if self.use_norm:
-                self.LSTM_norm_list_o_lists.append(LSTM_norm_list)
-            if self.use_hw:
-                self.T_x_list_o_lists.append(T_x_list)
 
-    def call(self, inputs, initial_states=None):
 
-        if initial_states is None:  # ToDo: think about noisy initialization?
+    def call(self, signal, initial_states=None):
+
+        # Initialize as zero states if No state is given
+        if initial_states is None:
             initial_states = []
             for block in range(len(self.units)):
                 initial_states_block = []
                 for layer in range(len(self.units[block])):
-                    state_h = tf.zeros([tf.shape(inputs)[0], self.units[block][layer]])
-                    state_c = tf.zeros([tf.shape(inputs)[0], self.units[block][layer]])
+                    state_h = tf.zeros([tf.shape(signal)[0], self.units[block][layer]])
+                    state_c = tf.zeros([tf.shape(signal)[0], self.units[block][layer]])
                     initial_states_block.append([state_h, state_c])
                 initial_states.append(initial_states_block)
 
-        all_out = []  # again, we are working with lists, so we might just as well do the same for the outputs
-        states_list_o_lists = []
+        all_states = []
         # just a simple trick to prevent usage of one if_else loop for the first layer
-        inputs_next_layer = inputs
         for block in range(len(self.units)):
-            inputs_next_block = inputs_next_layer
-            states_list = []
+            block_states = []
 
             for layer in range(len(self.units[block])):
 
-                layer_out, state_h, state_c = self.LSTM_list_o_lists[block][layer](inputs_next_layer, initial_state=initial_states[block][layer])
+                signal, state_h, state_c = self.LSTM_list_o_lists[block][layer](signal, initial_state=initial_states[block][layer])
 
-                if self.use_hw and self.T_x_list_o_lists[block][layer] is not None:
-                    t_x = self.T_x_list_o_lists[block][layer](inputs_next_layer)
-                    layer_out = t_x*layer_out + (1.0-t_x)*inputs_next_layer
+                block_states.append([state_h, state_c])
 
-                # norm if norming and not the very last layer
-                if block < (len(self.units) + 1) or layer < (len(self.units[block])):
-                    very_last_layer = True
-                else:
-                    very_last_layer = False
-
-                # if self.use_dropout:
-                #    layer_out = drop_features_of_signal(layer_out, self.dropout_rate)
-
-                if self.use_norm and not very_last_layer:
-                    print('norming')
-                    layer_out = self.LSTM_norm_list_o_lists[block][layer](layer_out)
-
-                if layer == len(self.units[block])-1 and self.use_quasi_dense:
-                    inputs_next_layer = tf.concat([inputs_next_block, layer_out], axis=-1)
-                    inputs_next_layer = self.dense_drop(inputs_next_layer, training=tf.keras.backend.learning_phase())
-                else:
-                    inputs_next_layer = layer_out
-
-                all_out.append(inputs_next_layer)
-                states_list.append([state_h, state_c])
-
-            states_list_o_lists.append(states_list)
-        return all_out, states_list_o_lists
+            all_states.append(block_states)
+        return signal, all_states
 
 ########################################################################################################################
 
@@ -759,49 +708,24 @@ class block_LSTM(tf.keras.layers.Layer):
                  dropout_rate=0.0,
                  use_norm=False,
                  use_hw=False,
-                 use_quasi_dense=False,
-                 return_state=True,
-                 only_last_layer_output=True):
+                 return_state=True):
         super(block_LSTM, self).__init__()
-        self.only_last_layer_output = only_last_layer_output
         self.return_state = return_state
         ml_LSTM_params = {'units': units,
                         'use_dropout': use_dropout,
+                        'use_hw': use_hw,
                         'dropout_rate': dropout_rate,
                         'use_norm': use_norm,
                         }
         self.multilayer_LSTMs = MultiLayer_LSTM(**ml_LSTM_params)
-        if use_norm:
-            self.use_norm = use_norm
-            self.last_layer_norm = tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True)
-        heads=4
-        attention_kwargs = {'units_per_head': [int(units[-1][-1]/(heads+1))] * heads,
-                            'project_to_units': units[-1][-1],
-                            'use_norm': use_norm,
-                            'use_dropout': use_dropout,
-                            'dropout_rate': dropout_rate}
-        self_attention = multihead_attentive_layer(**attention_kwargs)
-        self_attention = Residual_wrapper(self_attention)
-        if use_norm:
-            self_attention = Norm_wrapper(self_attention)
-        self.self_attention = self_attention
 
+    def call(self, signal, initial_states=None):
+        signal, block_states = self.multilayer_LSTMs(signal, initial_states=initial_states)
 
-
-
-
-    def call(self, encoder_inputs, initial_states=None):
-        block_output, block_states = self.multilayer_LSTMs(encoder_inputs, initial_states=initial_states)
-
-        if self.use_norm:
-            block_output[-1] = self.last_layer_norm(block_output[-1])
-        if self.only_last_layer_output:
-            block_output =  block_output[-1]
-        block_output = self.self_attention(block_output)
         if self.return_state:
-            return block_output, block_states
+            return signal, block_states
         else:
-            return block_output
+            return signal
 
 class decoder_LSTM_block(tf.keras.layers.Layer):
     def __init__(self,
@@ -810,7 +734,6 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                  dropout_rate=0.0,
                  use_hw=True,
                  use_norm=True,
-                 use_quasi_dense=True,
                  use_attention=False,
                  return_state=True,
                  attention_hidden=False,
@@ -828,7 +751,6 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                         'dropout_rate': dropout_rate,
                         'use_norm': use_norm,
                         'use_hw': use_hw,
-                        'use_quasi_dense': use_quasi_dense
                         }
 
         if self.use_attention:

@@ -239,7 +239,7 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                 # do we wanna highway
                 if self.use_hw:
                     one_LSTM_layer = LSTM_Highway_wrapper(one_LSTM_layer)
-                elif self.use_residulals:
+                elif self.use_residuals:
                     one_LSTM_layer = LSTM_Residual_wrapper(one_LSTM_layer)
                 # do we wanna norm
                 if self.use_norm and not very_last_layer:
@@ -458,7 +458,7 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
 
 class FFW_block(tf.keras.layers.Layer):
     def __init__(self,
-                 units=[[96,96]],
+                 units=[96,96],
                  use_dropout=True,
                  dropout_rate=0.2,
                  use_norm=True,
@@ -467,35 +467,34 @@ class FFW_block(tf.keras.layers.Layer):
 
         self.layers = []
         self.residuals=False
-        for block in range(len(units)):
-            for layer_num in range(len(units[block])):
-                layer = tf.keras.layers.Dense(units[block][layer_num],
-                                              activation=activation,
-                                              use_bias=True,
-                                              kernel_initializer=initializer,
-                                              bias_initializer='zeros',
-                                              kernel_regularizer=None,
-                                              bias_regularizer=None,
-                                              activity_regularizer=None,
-                                              kernel_constraint=None,
-                                              bias_constraint=None)
-                if use_dropout:
-                    layer = Dropout_wrapper(layer, dropout_rate, units[block][layer_num])
+        for layer_num in range(len(units)):
+            layer = tf.keras.layers.Dense(units[layer_num],
+                                            activation=activation,
+                                            use_bias=True,
+                                            kernel_initializer=initializer,
+                                            bias_initializer='zeros',
+                                            kernel_regularizer=None,
+                                            bias_regularizer=None,
+                                            activity_regularizer=None,
+                                            kernel_constraint=None,
+                                            bias_constraint=None)
+            if use_dropout:
+                layer = Dropout_wrapper(layer, dropout_rate, units[layer_num])
 
-                # if layer_num > 0: #can we even residuals
-                #     if self.residuals and units[block][layer_num-1] == units[block][layer_num]:
-                #         layer = Residual_wrapper(layer)
+            # if layer_num > 0: #can we even residuals
+            #     if self.residuals and units[layer_num-1] == units[layer_num]:
+            #         layer = Residual_wrapper(layer)
 
-                # norm if norming and not the very last layer
-                if block < (len(units) + 1) or layer < (len(units[block])):
-                    very_last_layer = True
-                else:
-                    very_last_layer = False
+            # norm if norming and not the very last layer
+            if layer < (len(units)):
+                very_last_layer = True
+            else:
+                very_last_layer = False
 
-                if use_norm and not very_last_layer:
-                    layer = Norm_wrapper(layer)
+            if use_norm and not very_last_layer:
+                layer = Norm_wrapper(layer)
 
-                self.layers.append(layer)
+            self.layers.append(layer)
 
     def call(self, input):
         out = input
@@ -736,7 +735,6 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                  use_norm=True,
                  use_attention=False,
                  return_state=True,
-                 attention_hidden=False,
                  only_last_layer_output=True,
                  self_recurrent=True):
         super(decoder_LSTM_block, self).__init__()
@@ -744,7 +742,6 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
         self.self_recurrent = self_recurrent
         self.only_last_layer_output = only_last_layer_output
         self.use_attention = use_attention
-        self.attention_hidden = attention_hidden
         self.built =False
         self.ml_LSTM_params = {'units': units,
                         'use_dropout': use_dropout,
@@ -754,34 +751,12 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                         }
 
         if self.use_attention:
-            if self.attention_hidden:
-                # ToDo: implement luong attention call method:
-                self.h_attention = []
-                self.c_attention = []
-                self.h_attn_list = []
-                self.c_attn_list = []
-                self.augment_h = []
-                self.augment_c = []
-                self.w_h = []
-                self.w_c = []
-                for block in range(len(self.units)):
-                    for layer in range(len(self.units[block])):
-                        self.h_attn_list.append(Attention(self.units[block][layer], mode='Transformer', context_mode='force singular step'))
-                        self.c_attn_list.append(Attention(self.units[block][layer], mode='Transformer', context_mode='force singular step'))
-                        self.w_h.append(tf.keras.layers.Dense(units[block][layer], kernel_initializer='glorot_uniform', use_bias=False))
-                        self.w_c.append(tf.keras.layers.Dense(units[block][layer], kernel_initializer='glorot_uniform', use_bias=False))
-                    self.augment_h.append(self.w_h)
-                    self.augment_c.append(self.w_c)
-                    self.h_attention.append(self.h_attn_list)
-                    self.c_attention.append(self.c_attn_list)
-
-            else:
-                units = units[-1][-1]
-                heads=2
-                self.attention = multihead_attentive_layer(units_per_head=[int(units/heads)]*heads,
-                                                           kernel_size=[1,1],
-                                                           use_norm=use_norm,
-                                                           ) # choose the attention style (Bahdanau, Transformer)
+            units = units[-1][-1]
+            heads=2
+            self.attention = multihead_attentive_layer(units_per_head=[int(units/heads)]*heads,
+                                                        kernel_size=[1,1],
+                                                        use_norm=use_norm,
+                                                        ) # choose the attention style (Bahdanau, Transformer)
             if self.self_recurrent:
                 self.self_attention = Attention(self.units[0][0], mode='Transformer')
         self.decoder = MultiLayer_LSTM(**self.ml_LSTM_params)
@@ -794,46 +769,15 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
         # decoder_inputs_step = tf.expand_dims(decoder_inputs[:,-1,:], axis=1)
 
         if self.use_attention and attention_value is not None:
-            if not self.attention_hidden:
-                if self.self_recurrent:
-                    self_attn = self.self_attention(attention_query, value=attention_query)
-                    # does this make sense??
-                    attention_query = tf.concat([attention_query, self_attn], axis=-1)
-                context_vector = self.attention(attention_query, value=attention_value)
-                # add attention to the input
-                decoder_inputs = tf.concat([context_vector, decoder_inputs], axis=-1)
+            if self.self_recurrent:
+                self_attn = self.self_attention(attention_query, value=attention_query)
+                # does this make sense??
+                attention_query = tf.concat([attention_query, self_attn], axis=-1)
+            context_vector = self.attention(attention_query, value=attention_value)
+            # add attention to the input
+            decoder_inputs = tf.concat([context_vector, decoder_inputs], axis=-1)
 
         decoder_out, decoder_state = self.decoder(decoder_inputs, initial_states=decoder_init_state)
-
-        # Luong attention to find an augmented state based on current hidden state and encoder outputs
-        if self.attention_hidden:
-            decoder_attn_augmented_state = decoder_state #TODO: don't do overwrite, fix this to append
-            for block in range(len(self.units)):
-                for layer in range(len(self.units[block])):
-                    state_h = decoder_state[block][layer][0]
-                    state_c = decoder_state[block][layer][1]
-                    # calculate attention on hidden state and encoder outputs
-                    context_h = self.h_attention[block][layer](state_h, value=attention_value)
-                    context_c = self.c_attention[block][layer](state_c, value=attention_value)
-                    # concat context vector and hidden state
-                    context_h = tf.concat([context_h, state_h], axis=-1)
-                    context_c = tf.concat([context_c, state_c], axis=-1)
-                    # calculate new state
-                    context_h = self.augment_h[block][layer](context_h)
-                    context_c = self.augment_c[block][layer](context_c)
-                    augmented_state_h = tf.nn.tanh(context_h)
-                    augmented_state_c = tf.nn.tanh(context_c)
-                    # save the attention augmented states
-                    decoder_attn_augmented_state[block][layer] = [augmented_state_h, augmented_state_c]
-
-            # get new output with augmented states
-            decoder_out, decoder_state = self.decoder(decoder_inputs,
-                                                        initial_states=decoder_attn_augmented_state)
-
-
-        #TODO: why repeat?
-        if self.self_recurrent:
-            decoder_state = decoder_init_state
 
         if self.self_recurrent:
             decoder_state = decoder_init_state
@@ -842,63 +786,7 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
 
         return decoder_out, decoder_state
 
-class sa_encoder_LSTM(tf.keras.layers.Layer):
-    def __init__(self,
-                 units=None,
-                 use_dropout=False,
-                 dropout_rate=0.0,
-                 attention_heads=4,
-                 L1=0.0, L2=0.0,
-                 use_norm=False,):
-        super(sa_encoder_LSTM, self).__init__()
-        self.use_norm = use_norm
-        self.use_dropout = use_dropout
-        self.dropout_rate = dropout_rate
-        #ToDo: Figure out how we want to do the parameter growth thingie
 
-
-        self.transform = []
-        self.transform_norm = []
-        self.self_attention = []
-        self.self_attention_context = [[]]*len(units)
-
-        for block in range(len(units)):
-
-            ml_LSTM_params = {'units': [[units[block][-1]]],
-                             'use_dropout': use_dropout,
-                             'dropout_rate': dropout_rate,
-                              'L1':L1, 'L2':L2,
-                             'use_norm': use_norm,
-                             }
-            transform = MultiLayer_LSTM(**ml_LSTM_params)
-            # transform = Residual_LSTM_wrapper(transform)
-            self.transform.append(transform)
-            if self.use_norm:
-                self.transform_norm.append(tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True))
-
-            attn_units_per_head = [int(attention_heads*units[block][-1]/(attention_heads+1))] * attention_heads
-            self_attention = multihead_attentive_layer(units_per_head=attn_units_per_head,
-                                                       use_norm=use_norm,
-                                                       L1=L1, L2=L2,
-                                                       project_to_units=units[block][-1],
-                                                       use_dropout=use_dropout, dropout_rate=dropout_rate)
-            self_attention = Residual_wrapper(self_attention)
-            if use_norm:
-                self_attention=Norm_wrapper(self_attention)
-            self.self_attention.append(self_attention)
-
-    def call(self, inputs):
-        # Input to first transformation layer, assign last state and out
-        out = inputs
-
-        for block in range(len(self.transform)):
-            out, block_states = self.transform[block](out)
-            out = out[-1] #unlist
-            if self.use_norm:
-                out = self.transform_norm[block](out)
-            out = self.self_attention[block](out)
-
-        return out
 
 class fixed_generator_LSTM_block(tf.keras.layers.Layer):
     def __init__(self,
@@ -1029,7 +917,7 @@ class FFW_encoder(tf.keras.layers.Layer):
         self.transform = []
 
         for block in units:
-            block_kwargs = {'units': [[block[-1]]],
+            block_kwargs = {'units': [block[-1]],
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
                             'use_norm': use_norm,
@@ -1080,7 +968,7 @@ class FFW_generator(tf.keras.layers.Layer):
 
         self.after_transform_in_history = None
         for block in units:
-            block_kwargs = {'units': [[block[-1]]],
+            block_kwargs = {'units': [block[-1]],
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
                             'use_norm': use_norm,

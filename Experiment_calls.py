@@ -19,13 +19,14 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
     for set in datasets:
         metrics[set] = []
         for run in range(1):
-            model_kwargs = {'model_type': 'Densegenerator',
-                            'model_size' : 'generator',
+            model_kwargs = {'model_type': 'E-D',
+                            'units' : [[96], [96]],
                             'use_dropout' : False, 'dropout_rate' : 0.0,
-                            'L1': 0.0, 'L2': 1e-6,
+                            'use_attention': False,
+                            'L1': 0.0, 'L2': 0.0,
                             'use_norm' : False,
                             }
-            train_kwargs = {'batch_size': 1*(64+64+64)}
+            train_kwargs = {'batch_size': 1*(1024+1024)}
 
             experiment = Model_Container(dataset_folder=set,
                                       model_kwargs=model_kwargs,

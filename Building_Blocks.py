@@ -706,21 +706,18 @@ class block_LSTM(tf.keras.layers.Layer):
                  use_dropout=False,
                  dropout_rate=0.0,
                  use_norm=False,
-                 use_hw=False,
+                 use_hw=False, use_residual=False,
+                 L1=0.0, L2=0.0,
                  return_state=True):
         super(block_LSTM, self).__init__()
         self.return_state = return_state
-        ml_LSTM_params = {'units': units,
-                        'use_dropout': use_dropout,
-                        'use_hw': use_hw,
-                        'dropout_rate': dropout_rate,
-                        'use_norm': use_norm,
-                        }
-        self.multilayer_LSTMs = MultiLayer_LSTM(**ml_LSTM_params)
+        self.multilayer_LSTMs = MultiLayer_LSTM(units=units,
+                                                use_dropout=use_dropout, dropout_rate=dropout_rate,
+                                                use_residuals=use_residual, use_hw=use_hw,
+                                                use_norm=use_norm, L1=L1, L2=L2)
 
     def call(self, signal, initial_states=None):
         signal, block_states = self.multilayer_LSTMs(signal, initial_states=initial_states)
-
         if self.return_state:
             return signal, block_states
         else:
@@ -731,326 +728,70 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                  units=[[20, 20], [20,20]],
                  use_dropout=False,
                  dropout_rate=0.0,
-                 use_hw=True,
-                 use_norm=True,
-                 use_attention=False,
-                 return_state=True,
-                 only_last_layer_output=True,
-                 self_recurrent=True):
+                 use_hw=False, use_residual=False,
+                 use_norm=False,
+                 L1=0.0, L2=0.0,
+                 use_attention=False, attention_heads=3,
+                 projection_layer=None):
         super(decoder_LSTM_block, self).__init__()
         self.units = units
-        self.self_recurrent = self_recurrent
-        self.only_last_layer_output = only_last_layer_output
         self.use_attention = use_attention
-        self.built =False
-        self.ml_LSTM_params = {'units': units,
-                        'use_dropout': use_dropout,
-                        'dropout_rate': dropout_rate,
-                        'use_norm': use_norm,
-                        'use_hw': use_hw,
-                        }
+        self.projection_layer=projection_layer
 
-        if self.use_attention:
-            units = units[-1][-1]
-            heads=2
-            self.attention = multihead_attentive_layer(units_per_head=[int(units/heads)]*heads,
-                                                        kernel_size=[1,1],
-                                                        use_norm=use_norm,
-                                                        ) # choose the attention style (Bahdanau, Transformer)
-            if self.self_recurrent:
-                self.self_attention = Attention(self.units[0][0], mode='Transformer')
-        self.decoder = MultiLayer_LSTM(**self.ml_LSTM_params)
-        self.built = True
+        if not self.use_attention:
+            self.decoder = MultiLayer_LSTM(units=units,
+                                                use_dropout=use_dropout, dropout_rate=dropout_rate,
+                                                use_norm=use_norm,
+                                                use_hw=use_hw, use_residuals=use_residual,
+                                                L1=L1, L2=L2)
 
-    def call(self, decoder_inputs, decoder_init_state, attention_value=None, attention_query=None):
-
-        # add the Attention context vector
-        # decoder inputs is the whole forecast!!
-        # decoder_inputs_step = tf.expand_dims(decoder_inputs[:,-1,:], axis=1)
-
-        if self.use_attention and attention_value is not None:
-            if self.self_recurrent:
-                self_attn = self.self_attention(attention_query, value=attention_query)
-                # does this make sense??
-                attention_query = tf.concat([attention_query, self_attn], axis=-1)
-            context_vector = self.attention(attention_query, value=attention_value)
-            # add attention to the input
-            decoder_inputs = tf.concat([context_vector, decoder_inputs], axis=-1)
-
-        decoder_out, decoder_state = self.decoder(decoder_inputs, initial_states=decoder_init_state)
-
-        if self.self_recurrent:
-            decoder_state = decoder_init_state
-        if self.only_last_layer_output:
-            decoder_out = decoder_out[-1]
-
-        return decoder_out, decoder_state
-
-
-
-class fixed_generator_LSTM_block(tf.keras.layers.Layer):
-    def __init__(self,
-                 units=None,
-                 use_dropout=False,
-                 dropout_rate=0.0,
-                 attention_heads=4,
-                 L1=0.0, L2=0.0,
-                 use_norm=False,
-                 projection=tf.keras.layers.Dense(20)):
-        super(fixed_generator_LSTM_block, self).__init__()
-        self.use_norm = use_norm
-        #ToDo: Figure out how we want to do the parameter growth thingie
-
-        self.projection = projection
-
-        # Self attention and attention layers
-        self.transform = []
-        if self.use_norm:
-            self.transform_norm = []
-        self.attention = []
-        self.self_attention = []
-        self.self_attention_context = [[]]*len(units)
-
-        for block in range(len(units)):
-            ml_LSTM_params = {'units': [[units[block][-1]]],
-                             'use_dropout': use_dropout,
-                             'dropout_rate': dropout_rate,
-                              'L1':L1, 'L2':L2,
-                             'use_norm': use_norm,
-                             }
-            transform = MultiLayer_LSTM(**ml_LSTM_params)
-            # transform = Residual_LSTM_wrapper(transform)
-            self.transform.append(transform)
-            if self.use_norm:
-                self.transform_norm.append(tf.keras.layers.LayerNormalization(axis=-1, scale=True, center=True))
-
-            attn_units_per_head = [int(attention_heads*units[block][-1]/(attention_heads+1))] * attention_heads
-            self_attention = multihead_attentive_layer(units_per_head=attn_units_per_head,
-                                                       use_norm=use_norm,
-                                                       L1=L1, L2=L2,
-                                                       project_to_units=units[block][-1],
-                                                       use_dropout=use_dropout, dropout_rate=dropout_rate)
-            self_attention = Residual_wrapper(self_attention)
-            if use_norm:
-                self_attention=Norm_wrapper(self_attention)
-            self.self_attention.append(self_attention)
-
-            attn = multihead_attentive_layer(units_per_head=attn_units_per_head,
-                                               use_norm=use_norm,
-                                                L1=L1, L2=L2,
-                                               project_to_units=units[block][-1],
-                                               use_dropout=use_dropout, dropout_rate=dropout_rate)  # choose the attention style (Bahdanau, Transformer
-            attn = Residual_wrapper(attn)
-            if self.use_norm:
-                attn = Norm_wrapper(attn)
-            self.attention.append(attn)
-
-
-
-    def process(self, input_steps):
-        # Input to first transformation layer, assign last state and out
-        out = input_steps
-
-        for block in range(len(self.transform)):
-            out, self.transform_states[block] = self.transform[block](out, initial_states=self.transform_states[block])
-            out = out[-1]  # LSTM specific bcyz multilayerlstm
-            if self.use_norm:
-                out = self.transform_norm[block](out)
-
-            if not self.previous_history_exists:  # parallelization wins, this covers teacher forcing and all non-unrolling scenarios with normal SA
-                self.self_attention_context[block] = out
-                out_sa = self.self_attention[block](self.self_attention_context[block])
-            else:
-                out_sa = self.self_attention[block](out, value=self.self_attention_context[block])
-                self.self_attention_context[block] = tf.concat([self.self_attention_context[block], out], axis=1)  # add to the context for the next unrolling steppuru
-
-            out = out_sa[:,-out.shape[1]:,:]
-            # TODO: this is to test the generator without the encoder features
-            out = self.attention[block](out, value=self.attention_value)
-
-        if not self.previous_history_exists:
-            self.forecast = self.projection(out)
         else:
-            self.forecast = tf.concat([self.forecast, self.projection(out)], axis=1)
-        # print(self.forecast)
+            self.attention_blocks = []
+            self.decoder_blocks = []
+            for block in units:
+                self.decoder_blocks.append(MultiLayer_LSTM(units=[block],
+                                                    use_dropout=use_dropout, dropout_rate=dropout_rate,
+                                                    use_norm=use_norm,
+                                                    use_hw=use_hw, use_residuals=use_residual,
+                                                    L1=L1, L2=L2))
+            
+                # attention_units = block[-1] #equivalent to the dimensionality of attention heads
+                # self.attention_blocks.append(multihead_attentive_layer(units_per_head=[int(attention_units)]*attention_heads,
+                #                                                 project_to_units=attention_units,
+                #                                                 use_norm=use_norm,
+                #                                                 L1=L1, L2=L2,
+                #                                                 use_dropout=use_dropout, dropout_rate=dropout_rate)
+                #                       )
 
-    def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
-        self.attention_value = attention_value
+    def call(self, zeroth_step, decoder_init_state, attention_value=None, timesteps=12):
+        signal = zeroth_step
+        decoder_state = decoder_init_state # [[[state_h, state_c]]] #(blocks, layers_in_block, 2)
+        # decoder state is supposed to be the storage for the states
+        # block state is the temporal buffer, because the layout suxx
+        # ToDo: this is throwing errors for anything with
+        for timestep in range(timesteps):
+            if self.use_attention:
+                pass
+                for num_block in range(len(self.decoder_blocks)):
 
-        # forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
-        #                                 alt=self.validation_call(history, forecast_timesteps),
-        #                                 training=tf.keras.backend.learning_phase())
-        forecast = self.validation_call(history, forecast_timesteps)
-        return forecast
+                    signal, block_state = self.decoder_blocks[num_block](signal, initial_states=[decoder_state[num_block]])
+                    block_state = block_state[0]
+                    decoder_state[num_block] = block_state
+                    print('decoder state buffer', block_state, 'needs to be placed in ', decoder_state[num_block])
 
-    def training_call(self, history_and_teacher, forecast_timesteps):
+                    signal = self.attention_blocks[num_block](signal, value=attention_value)
 
-        self.transform_states = [None]*len(self.transform)
-        self.previous_history_exists = False
-        self.process(history_and_teacher)
-        self.previous_history_exists = True
-        forecast = self.forecast[:, -forecast_timesteps:, :]
-        return forecast
-
-    def validation_call(self, history, forecast_timesteps):
-        self.transform_states = [None]*len(self.transform)
-        self.previous_history_exists = False
-        self.process(history)
-
-        self.previous_history_exists = True
-        for step in range(forecast_timesteps - 1):
-            self.process(self.forecast[:, -1:, :])
-        forecast = self.forecast[:, -forecast_timesteps:, :]
-        return forecast
-
-########################################################################################################################
-
-class FFW_encoder(tf.keras.layers.Layer):
-    def __init__(self,
-                 units=[[96],[96]],
-                 use_dropout=True,
-                 dropout_rate=0.2,
-                 use_norm=True,
-                 ):
-        super(FFW_encoder, self).__init__()
-        self.self_attention = []
-        self.transform = []
-
-        for block in units:
-            block_kwargs = {'units': [block[-1]],
-                            'use_dropout': use_dropout,
-                            'dropout_rate': dropout_rate,
-                            'use_norm': use_norm,
-                            }
-
-            transform = FFW_block(**block_kwargs)
-            if use_norm:
-                transform = Norm_wrapper(transform)
-            self.transform.append(transform)
-
-            attention_kwargs = {'units_per_head': [block[-1]] * 3,
-                                'project_to_units': block[-1],
-                                'use_norm': use_norm,
-                                'use_dropout': use_dropout,
-                                'dropout_rate': dropout_rate}
-            self_attention=multihead_attentive_layer(**attention_kwargs)
-            self_attention=Residual_wrapper(self_attention)
-            if use_norm:
-                self_attention=Norm_wrapper(self_attention)
-            self.self_attention.append(self_attention)
-
-
-    def call(self, inputs):
-        outputs = inputs
-        for block in range(len(self.self_attention)):
-            outputs = self.transform[block](outputs)
-            outputs = self.self_attention[block](outputs)
-
-        return outputs
-
-class FFW_generator(tf.keras.layers.Layer):
-
-    def __init__(self,
-                 units=[[96], [96]],
-                 use_dropout=True,
-                 dropout_rate=0.2,
-                 use_norm=True,
-                 projection=tf.keras.layers.Dense(20)
-                 ):
-        super(FFW_generator, self).__init__()
-        self.dropout_rate = dropout_rate
-        self.use_dropout = use_dropout
-
-        self.self_attention_context = [[]]*(len(units))
-        self.self_attention = []
-        self.attention = []
-        self.transform = []
-
-        self.after_transform_in_history = None
-        for block in units:
-            block_kwargs = {'units': [block[-1]],
-                            'use_dropout': use_dropout,
-                            'dropout_rate': dropout_rate,
-                            'use_norm': use_norm,
-                            }
-
-
-            transform = FFW_block(**block_kwargs)
-            if use_norm:
-                transform=Norm_wrapper(transform)
-            self.transform.append(transform)
-
-            attention_kwargs = {'units_per_head': [block[-1]] * 3,
-                                'project_to_units': block[-1],
-                                'use_norm': use_norm,
-                                'use_dropout': use_dropout,
-                                'dropout_rate': dropout_rate}
-
-            self_attention = multihead_attentive_layer(**attention_kwargs)
-            self_attention = Residual_wrapper(self_attention)
-            if use_norm:
-                self_attention=Norm_wrapper(self_attention)
-            self.self_attention.append(self_attention)
-
-            attention = multihead_attentive_layer(**attention_kwargs)
-            attention = Residual_wrapper(attention)
-            if use_norm:
-                attention=Norm_wrapper(attention)
-            self.attention.append(attention)
-
-
-        self.pre_projection_history = None
-
-        self.projection = projection
-
-
-    def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
-
-        self.attention_value = attention_value
-        #forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
-        #                                alt=self.validation_call(history, forecast_timesteps),
-        #                                training=tf.keras.backend.learning_phase())
-        forecast = self.validation_call(history, forecast_timesteps)
-        return forecast
-
-    # information flow for a single processing step,
-    def process_inputs(self, inputs):
-        # transform the raw input signal
-        out = inputs
-        # create temporal context, residual, norm
-        for block in range(len(self.self_attention)):
-            out = self.transform[block](out)
-            if not self.previous_history_exists:
-                out = self.self_attention[block](out)
-                self.self_attention_context[block] = out
             else:
-                out = self.self_attention[block](out, value=self.self_attention_context[block])
-                self.self_attention_context[block] = tf.concat([self.self_attention_context[block], out], axis=1)
+                signal, decoder_state = self.decoder(signal, initial_states=decoder_state)
 
-            out = self.attention[block](out, value=self.attention_value)
+            if timestep == 0:
+                signal = self.projection_layer(signal)
+                decoder_out = signal
+            else:
+                signal = self.projection_layer(signal)
+                decoder_out = tf.concat([decoder_out, signal], axis=1)
 
-        if not self.previous_history_exists:
-            self.pre_projection_history = out
-        else:
-            self.pre_projection_history = tf.concat([self.pre_projection_history, out[:,-inputs.shape[1]:,:]], axis=1)
-
-    def training_call(self, history_and_teacher, forecast_timesteps):
-        self.previous_history_exists = False
-        self.process_inputs(history_and_teacher)
-        self.previous_history_exists = True
-         #technically not needed, since we dont have any followup calls anymore
-        return self.projection(self.pre_projection_history[:,-forecast_timesteps:,:])
-
-    def validation_call(self, history, forecast_timesteps):
-        self.previous_history_exists = False
-        self.process_inputs(history)
-        self.previous_history_exists = True
-
-        for step in range(forecast_timesteps - 1):
-            next_input = self.projection(self.pre_projection_history[:, -1:, :])
-            self.process_inputs(next_input)
-
-        return self.projection(self.pre_projection_history[:,-forecast_timesteps:,:])
+        return decoder_out
 
 ########################################################################################################################
 

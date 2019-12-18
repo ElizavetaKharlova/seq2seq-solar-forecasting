@@ -114,47 +114,6 @@ class Model_Container():
 
         real_support_length = self.model_kwargs['support_shape'][0]
         real_history_length = self.model_kwargs['history_shape'][0]
-        def __read_and_process_train_samples(example):
-
-            features = {'nwp_input': tf.io.FixedLenFeature(flattened_nwp_shape, tf.float32),
-                        'raw_historical_input': tf.io.FixedLenFeature(pv_input_shape, tf.float32),
-                        'pdf_historical_input': tf.io.FixedLenFeature(self.pdf_history_shape[0] * self.pdf_history_shape[1], tf.float32),
-                        'pdf_target': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),
-                        'pdf_teacher': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),
-                        }
-            unadjusted_example = tf.io.parse_single_example(example, features)
-            nwp_inputs = tf.reshape(tensor=unadjusted_example['nwp_input'], shape=[nwp_shape[0], nwp_shape[1]])
-
-            target = tf.reshape(tensor=unadjusted_example['pdf_target'], shape=[output_shape[0], output_shape[1]])
-
-
-            # ToDo: Current Dev Stack
-            if 'generator' in self.model_kwargs['model_type']:
-                print('yaaay', self.model_kwargs['model_type'], 'time!!!!')
-
-                history_pdf = tf.reshape(tensor=unadjusted_example['pdf_historical_input'],
-                                         shape=[self.pdf_history_shape[0], self.pdf_history_shape[1]])
-                teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
-                                     shape=[output_shape[0], output_shape[1]])
-                adjusted_train_target = tf.concat([history_pdf[1:, :], target], axis=0)
-                print(adjusted_train_target)
-                return{'support_input': nwp_inputs,
-                       'history_input': history_pdf,
-                       'teacher_input': teacher}, adjusted_train_target
-
-            elif self.model_kwargs['model_type'] == 'Encoder-Decoder' or self.model_kwargs['model_type'] == 'E-D' or 'MiMo' in self.model_kwargs['model_type'] or 'E-D' in self.model_kwargs['model_type']:
-                history_pv = tf.reshape(tensor=unadjusted_example['raw_historical_input'], shape=[self.nwp_downsampling_rate, int(self.sw_len_samples/self.nwp_downsampling_rate)])
-                history_pv = tf.transpose(history_pv, [1,0])
-                history_pv = tf.reduce_mean(history_pv, axis=-1, keepdims=True)
-                nwp_inputs = nwp_inputs[int(self.fc_len_samples/self.nwp_downsampling_rate):,:]
-                inputs =tf.concat([nwp_inputs, history_pv], axis=-1)
-                if 'MiMo' in self.model_kwargs['model_type']:
-                    return inputs, target
-                else:
-                    teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
-                                         shape=[output_shape[0], output_shape[1]])
-                    return {'inputs_input': inputs, 'teacher_input': teacher}, target
-
         def __read_and_process_normal_samples(example):
             # 'nwp_input':
             # 'raw_historical_input':
@@ -175,15 +134,15 @@ class Model_Container():
 
             target = tf.reshape(tensor=unadjusted_example['pdf_target'], shape=[output_shape[0], output_shape[1]])
 
+            history_pdf = tf.reshape(tensor=unadjusted_example['pdf_historical_input'],
+                                     shape=[self.pdf_history_shape[0], self.pdf_history_shape[1]])
+            teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
+                                 shape=[output_shape[0], output_shape[1]])
 
             # ToDo: Current Dev Stack
             if 'generator' in self.model_kwargs['model_type']:
                 print('yaaay', self.model_kwargs['model_type'], 'time!!!!')
 
-                history_pdf = tf.reshape(tensor=unadjusted_example['pdf_historical_input'],
-                                         shape=[self.pdf_history_shape[0], self.pdf_history_shape[1]])
-                teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
-                                     shape=[output_shape[0], output_shape[1]])
                 nwp_inputs = nwp_inputs[-real_support_length:,:]
                 history_pdf = history_pdf[-real_history_length:,:]
                 # ATM sampling last 2days plus forecast day from NWP and last 2 days from history
@@ -191,7 +150,7 @@ class Model_Container():
                        'history_input': history_pdf,
                        'teacher_input': teacher}, target
 
-            elif self.model_kwargs['model_type'] == 'Encoder-Decoder' or self.model_kwargs['model_type'] == 'E-D' or 'MiMo' in self.model_kwargs['model_type'] or 'E-D' in self.model_kwargs['model_type']:
+            else:
                 history_pv = tf.reshape(tensor=unadjusted_example['raw_historical_input'], shape=[self.nwp_downsampling_rate, int(self.sw_len_samples/self.nwp_downsampling_rate)])
                 history_pv = tf.transpose(history_pv, [1,0])
                 history_pv = tf.reduce_mean(history_pv, axis=-1, keepdims=True)
@@ -200,11 +159,9 @@ class Model_Container():
                 if 'MiMo' in self.model_kwargs['model_type']:
                     return inputs, target
                 else:
-                    teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
-                                         shape=[output_shape[0], output_shape[1]])
-                    return {'inputs_input': inputs, 'teacher_input': teacher}, target
+                    return {'encoder_inputs': inputs, 'teacher_inputs': teacher}, target
 
-        def get_batched_dataset(file_list, batch_size, train_mode=False):
+        def get_batched_dataset(file_list, batch_size):
             option_no_order = tf.data.Options()
             option_no_order.experimental_deterministic = False
 
@@ -215,10 +172,8 @@ class Model_Container():
             #                              num_parallel_calls=20)
 
             # does this order make any fucking sense at all?!?!?!?
-            if train_mode:
-                dataset = dataset.map(__read_and_process_train_samples, num_parallel_calls=20)
-            else:
-                dataset = dataset.map(__read_and_process_normal_samples, num_parallel_calls=20)
+
+            dataset = dataset.map(__read_and_process_normal_samples, num_parallel_calls=20)
             dataset = dataset.repeat()
             dataset = dataset.shuffle(20 * batch_size)
             dataset = dataset.prefetch(10 * batch_size)
@@ -239,19 +194,19 @@ class Model_Container():
 
         def get_training_dataset():
             #ToDo: revert to train_list instead of val_list
-            return get_batched_dataset(train_list, batch_size, train_mode=False)
+            return get_batched_dataset(train_list, batch_size,)
         self.train_dataset_generator = get_training_dataset
         self.train_steps_epr_epoch = int(len(train_list)/batch_size)
 
 
         def get_val_dataset():
-            return get_batched_dataset(val_list, batch_size, train_mode=False)
+            return get_batched_dataset(val_list, batch_size)
         self.val_dataset_generator = get_val_dataset
         self.val_steps_epr_epoch = int(np.ceil(len(val_list) / batch_size))
 
 
         def get_test_dataset():
-            return get_batched_dataset(test_list, batch_size, train_mode=False)
+            return get_batched_dataset(test_list, batch_size)
         self.test_dataset_generator = get_test_dataset
         self.test_steps_epr_epoch = int(np.ceil(len(test_list) / batch_size))
 
@@ -260,28 +215,17 @@ class Model_Container():
                       support_shape, history_shape,
                       input_shape=None,
                       model_type='MiMo-sth',
-                      model_size='small',
+                      units=[[96],[96],[96]],
                       L1=0.0, L2=0.0,
                       use_dropout=False, dropout_rate=0.0,
-                      use_hw=False, use_norm=False, use_quasi_dense=False, #general architecture stuff
-                      use_attention=False, attention_hidden=False, self_recurrent=False, # E-D stuff
+                      use_hw=False, use_norm=False, use_residual=False, #general architecture stuff
+                      use_attention=False, attention_heads=3,
                       downsample=True, mode='snip', #MiMo stuff
                       ):
 
-        # MiMo LSTMS, downsampled
-        if model_size == 'small':
-            units = [[32, 32, 32]]
-        elif model_size =='medium' or model_size == 'med':
-            units = [[64, 64, 64, 64, 64]]
-        elif model_size == 'big':
-            units = [[128, 128, 128]]
-        elif model_size == 'large':
-            units = [[256, 256]]
-        elif model_size == 'generator':
-            units = [[128]]
 
         if model_type == 'MiMo-LSTM':
-            print('building a', model_size, model_type)
+            print('building a', units, model_type)
             from Building_Blocks import block_LSTM
             encoder_specs = {'units': units,
                              'use_dropout': use_dropout,
@@ -289,7 +233,6 @@ class Model_Container():
                              'use_norm': use_norm,
                              'use_hw': use_hw,
                              'return_state': False,
-                             'use_quasi_dense': use_quasi_dense,
                              'only_last_layer_output': True}
 
             from Models import mimo_model
@@ -300,237 +243,35 @@ class Model_Container():
                                downsampling_rate=(60 / 5),
                                mode=mode)
 
-        elif model_type == 'MiMo-attn-tcn':
-            print('building a', model_size, model_type)
-            from Building_Blocks import fixed_attentive_TCN
-            encoder_specs = {'units': [[32,32,32], [48,48], [64,64]],
-                            'attention_heads': 2,
-                            'use_dropout': use_dropout,
-                            'dropout_rate': dropout_rate,
-                            'use_norm': use_norm}
-
-            from Models import mimo_model
-            self.model = mimo_model(function_block=fixed_attentive_TCN(**encoder_specs),
-                               input_shape=input_shape,
-                               output_shape=out_shape,
-                               downsample_input=False,
-                               downsampling_rate=(60 / 5),
-                               mode='project')
-
-        elif model_type == 'MiMo-just-tcn':
-            print('building a', model_size, model_type)
-            from Building_Blocks import DenseTCN
-            encoder_specs = {'num_blocks': 3,
-                             'num_layers_per_block': 3,
-                            'growth_rate': 12,
-                            'use_dropout': False,
-                            'dropout_rate': 0.0,
-                            'use_norm': False,
-                            'downsample_rate': 1}
-
-
-            from Models import mimo_model
-            self.model = mimo_model(function_block=DenseTCN(**encoder_specs),
-                               input_shape=input_shape,
-                               output_shape=out_shape,
-                               downsample_input=False,
-                               downsampling_rate=(60 / 5),
-                               mode='project')
-
-        elif model_type == 'Encoder-TCN' or model_type == 'E-TCN':
-            common_specs = {'units': units,
-                            'use_dropout': use_dropout,
-                            'dropout_rate': dropout_rate,
-                            'use_norm': use_norm,
-                            'use_hw': use_hw,
-                            'use_quasi_dense': use_quasi_dense,
-                            'only_last_layer_output': True}
-
-            # encoder_specs = copy.deepcopy(common_specs)
-            decoder_specs = copy.deepcopy(common_specs)
-            encoder_specs = {'units': [[32],[32],[32]],
-                             'use_dropout': use_dropout,
-                             'dropout_rate': dropout_rate,
-                             'use_norm': use_norm}
-            decoder_specs['use_attention'] = use_attention
-            decoder_specs['attention_hidden'] = attention_hidden
-            decoder_specs['self_recurrent'] = self_recurrent
-
-            projection_model = tf.keras.layers.Dense(units=out_shape[-1],
-                                                     activation=tf.keras.layers.Softmax(axis=-1))
-            projection_model = tf.keras.layers.TimeDistributed(projection_model)
-
-            from Building_Blocks import attentive_TCN, decoder_LSTM_block
-            model_kwargs = {'encoder_block': attentive_TCN(**encoder_specs),
-                            "encoder_stateful": False,
-                            'decoder_block': decoder_LSTM_block(**decoder_specs),
-                            'use_teacher': True,
-                            'decoder_uses_attention_on': decoder_specs['use_attention'],
-                            'decoder_stateful': True,
-                            'self_recurrent_decoder': decoder_specs['self_recurrent'],
-                            'projection_block': projection_model,
-                            'input_shape': input_shape,
-                            'output_shape': out_shape}
-
-            from Models import encoder_decoder_model
-            self.model = encoder_decoder_model(**model_kwargs)
-
-        elif model_type =='whatcouldgowrong':
-            from decoder_idea import DenseTCN, whatever
-            from Models import forecaster_model
-            units_tcn = [[10,10,10,10],[10,10,10,10]]
-            encoder = DenseTCN(num_blocks=len(units_tcn),
-                                            num_layers_per_block=len(units_tcn[0]),
-                                            growth_rate=units_tcn[0][0],
-                                            squeeze_factor=0.5,
-                                            use_dropout = use_dropout,
-                                            dropout_rate=dropout_rate,
-                                            use_norm=use_norm,
-                                            kernel_sizes=[3])
-
-            projection = tf.keras.layers.Conv1D(filters=out_shape[-1],
-                                                kernel_size=1,
-                                                strides=1,
-                                                padding='causal',
-                                                activation=tf.keras.layers.Softmax(axis=-1),
-                                                kernel_initializer='glorot_uniform')
-            self.model = forecaster_model(encoder_block=encoder,
-                                     decoder_block=whatever(),
-                                     projection_block=projection,
-                                    use_teacher=True,
-                                     output_shape=out_shape,
-                                     support_shape=self.raw_nwp_shape,
-                                     history_shape=history_shape)
-
-        elif model_type == 'Encoder-Decoder-TCN' or model_type == 'E-D-TCN':
-            common_specs = {'use_dropout': use_dropout,
-                            'dropout_rate': dropout_rate,
-                            'use_norm': use_norm}
-
-            decoder_specs = copy.deepcopy(common_specs)
-
-            decoder_specs['use_attention'] = True
-            decoder_specs['mode'] = 'decoder'
-
-            projection_model = tf.keras.layers.Dense(units=out_shape[-1],
-                                                     activation=tf.keras.layers.Softmax(axis=-1))
-            projection_model = tf.keras.layers.TimeDistributed(projection_model)
-            projection_layer = tf.keras.layers.Conv1D(filters=out_shape[-1],
-                                                kernel_size=1,
-                                                strides=1,
-                                                padding='causal',
-                                                activation=tf.keras.layers.Softmax(axis=-1),
-                                                kernel_initializer='glorot_uniform')
-
-            from Building_Blocks import attentive_TCN
-            encoder = attentive_TCN(use_norm=use_norm,
-                                  use_dropout=use_dropout,
-                                  dropout_rate=dropout_rate)
-
-            model_kwargs = {'encoder_block': attentive_TCN(**common_specs),
-                            'decoder_block': attentive_TCN(**decoder_specs),
-                            'projection_block': projection_layer,
-                            'input_shape': input_shape,
-                            'output_shape': out_shape,
-                            'encoder_stateful': False,
-                            'use_teacher': True,
-                            'decoder_uses_attention_on': decoder_specs['use_attention'],
-                            'decoder_stateful': False,}
-
-            from Models import encoder_decoder_model
-            self.model = encoder_decoder_model(**model_kwargs)
-
         elif model_type == 'Encoder-Decoder' or model_type == 'E-D':
+            from Building_Blocks import block_LSTM, decoder_LSTM_block
+            from Models import S2S_model
             print('building E-D')
             common_specs = {'units': units,
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
-                            'use_norm': use_norm,
-                            'use_hw': use_hw,}
+                            'use_norm': use_norm, 'use_hw': use_hw, 'use_residual': use_residual,
+                            'L1': L1, 'L2': L2,
+                            }
 
             encoder_specs = copy.deepcopy(common_specs)
+            encoder = block_LSTM(**encoder_specs)
             decoder_specs = copy.deepcopy(common_specs)
             decoder_specs['use_attention'] = use_attention
-            decoder_specs['self_recurrent'] = self_recurrent
-
-            projection_model = tf.keras.layers.Conv1D(filters=out_shape[-1],
+            decoder_specs['attention_heads'] = attention_heads
+            decoder_specs['projection_layer'] = tf.keras.layers.Conv1D(filters=out_shape[-1],
                                                 kernel_size=1,
                                                 strides=1,
                                                 padding='causal',
                                                 activation=tf.keras.layers.Softmax(axis=-1),
                                                  kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                                 kernel_initializer='glorot_uniform')
+            decoder = decoder_LSTM_block(**decoder_specs)
+            self.model = S2S_model(encoder_block=encoder,
+                                   decoder_block=decoder,
+                                   input_shape=input_shape,
+                                   output_shape=out_shape)
 
-            from Building_Blocks import block_LSTM, decoder_LSTM_block
-            model_kwargs = {'encoder_block': block_LSTM(**encoder_specs),
-                            'encoder_stateful': True,
-                            'decoder_block': decoder_LSTM_block(**decoder_specs),
-                            'use_teacher': True,
-                            'decoder_uses_attention_on': decoder_specs['use_attention'],
-                            'decoder_stateful': True,
-                            'self_recurrent_decoder': decoder_specs['self_recurrent'],
-                            'projection_block': projection_model,
-                            'input_shape': input_shape,
-                            'output_shape': out_shape}
-
-            from Models import encoder_decoder_model
-            self.model = encoder_decoder_model(**model_kwargs)
-
-        elif model_type == 'generator' or model_type == 'Generator':
-            print('building E-D')
-            common_specs = {'attention_heads': 3,
-                            'use_dropout': use_dropout,
-                            'dropout_rate': dropout_rate,
-                            'use_norm': use_norm}
-
-            encoder_specs = copy.deepcopy(common_specs)
-            encoder_specs['units'] = [[32], [48], [64]]
-
-            decoder_specs = copy.deepcopy(common_specs)
-            decoder_specs['units'] = [[32], [32]]
-            decoder_specs['projection'] = tf.keras.layers.Conv1D(filters=out_shape[-1],
-                                                kernel_size=1,
-                                                strides=1,
-                                                padding='causal',
-                                                activation=tf.keras.layers.Softmax(axis=-1),
-                                                kernel_initializer='glorot_uniform')
-
-            from Building_Blocks import sa_encoder_LSTM, fixed_generator_LSTM_block
-            from Models import forecaster_model
-            self.model = forecaster_model(encoder_block=sa_encoder_LSTM(**encoder_specs),
-                                     decoder_block=fixed_generator_LSTM_block(**decoder_specs),
-                                    use_teacher=True,
-                                     output_shape=out_shape,
-                                     support_shape=support_shape,
-                                     history_shape=history_shape)
-        elif model_type == 'FFWgenerator' or model_type == 'FFWGenerator':
-            print('building E-D')
-
-            projection_layer = tf.keras.layers.Conv1D(filters=out_shape[-1],
-                                                kernel_size=1,
-                                                strides=1,
-                                                padding='causal',
-                                                activation=tf.keras.layers.Softmax(axis=-1),
-                                                kernel_initializer='glorot_uniform')
-
-            from Building_Blocks import FFW_encoder, FFW_generator
-            encoder = FFW_encoder(units=[[64], [96], [128]],
-                                  use_norm=use_norm,
-                                  use_dropout=use_dropout,
-                                  dropout_rate=dropout_rate)
-
-            generator = FFW_generator(units=[[48], [48]],
-                                    use_norm=use_norm,
-                                    use_dropout=use_dropout,
-                                      dropout_rate=dropout_rate,
-                                      projection=projection_layer)
-            from Models import forecaster_model
-            self.model = forecaster_model(encoder_block=encoder,
-                                     decoder_block=generator,
-                                    use_teacher=True,
-                                     output_shape=out_shape,
-                                     support_shape=support_shape,
-                                     history_shape=history_shape)
         elif model_type == 'Densegenerator' or model_type == 'DenseGenerator':
             print('building E-D')
             common_specs = {'attention_heads': 5,
@@ -538,7 +279,7 @@ class Model_Container():
                             'dropout_rate': dropout_rate,
                             'L1': L1, 'L2': L2,
                             'use_norm': use_norm}
-            growth = 18
+            growth = 16
             encoder_specs = copy.deepcopy(common_specs)
             encoder_specs['units'] = [[growth, growth, growth, growth, growth, 6*growth],
                                       [growth, growth, growth, growth, growth, 9*growth],
@@ -567,17 +308,10 @@ class Model_Container():
                                      history_shape=history_shape)
 
         else:
-            print('trying to build with', model_size, model_type, 'but failed')
+            print('trying to buid', model_type, 'but failed')
         from Losses_and_Metrics import loss_wrapper
-        # learning_rate = tf.keras.experimental.CosineDecayRestarts(3*1e-3,
-        #                                                         20*self.train_steps_epr_epoch,
-        #                                                         t_mul=1.0,
-        #                                                         m_mul=1.0,
-        #                                                         alpha=1e-5,
-        #                                                         name=None
-        #                                                     )
 
-        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=3*1e-3,
+        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=1e-3,
                                                               #clipnorm=1.0,
                                                               ),
                     # loss=tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.SUM)

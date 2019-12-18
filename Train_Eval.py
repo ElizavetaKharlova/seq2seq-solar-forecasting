@@ -403,33 +403,39 @@ class Model_Container():
                                      history_shape=history_shape)
 
         elif model_type == 'Encoder-Decoder-TCN' or model_type == 'E-D-TCN':
-            common_specs = {'units': [[32],[32],[32]],
-                            'use_dropout': use_dropout,
+            common_specs = {'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
-                            'use_norm': True}
+                            'use_norm': use_norm}
 
-            encoder_specs = copy.deepcopy(common_specs)
             decoder_specs = copy.deepcopy(common_specs)
 
             decoder_specs['use_attention'] = True
-            decoder_specs['self_recurrent'] = self_recurrent
             decoder_specs['mode'] = 'decoder'
 
             projection_model = tf.keras.layers.Dense(units=out_shape[-1],
                                                      activation=tf.keras.layers.Softmax(axis=-1))
             projection_model = tf.keras.layers.TimeDistributed(projection_model)
+            projection_layer = tf.keras.layers.Conv1D(filters=out_shape[-1],
+                                                kernel_size=1,
+                                                strides=1,
+                                                padding='causal',
+                                                activation=tf.keras.layers.Softmax(axis=-1),
+                                                kernel_initializer='glorot_uniform')
 
             from Building_Blocks import attentive_TCN
-            model_kwargs = {'encoder_block': attentive_TCN(**encoder_specs),
-                            "encoder_stateful": False,
+            encoder = attentive_TCN(use_norm=use_norm,
+                                  use_dropout=use_dropout,
+                                  dropout_rate=dropout_rate)
+
+            model_kwargs = {'encoder_block': attentive_TCN(**common_specs),
                             'decoder_block': attentive_TCN(**decoder_specs),
+                            'projection_block': projection_layer,
+                            'input_shape': input_shape,
+                            'output_shape': out_shape,
+                            'encoder_stateful': False,
                             'use_teacher': True,
                             'decoder_uses_attention_on': decoder_specs['use_attention'],
-                            'decoder_stateful': False,
-                            'self_recurrent_decoder': decoder_specs['self_recurrent'],
-                            'projection_block': projection_model,
-                            'input_shape': input_shape,
-                            'output_shape': out_shape}
+                            'decoder_stateful': False,}
 
             from Models import encoder_decoder_model
             self.model = encoder_decoder_model(**model_kwargs)
@@ -440,23 +446,24 @@ class Model_Container():
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
                             'use_norm': use_norm,
-                            'use_hw': use_hw,
-                            'use_quasi_dense': use_quasi_dense,
-                            'only_last_layer_output': True}
+                            'use_hw': use_hw,}
 
             encoder_specs = copy.deepcopy(common_specs)
             decoder_specs = copy.deepcopy(common_specs)
             decoder_specs['use_attention'] = use_attention
-            decoder_specs['attention_hidden'] = attention_hidden
             decoder_specs['self_recurrent'] = self_recurrent
 
-            projection_model = tf.keras.layers.Dense(units=out_shape[-1],
-                                                     activation=tf.keras.layers.Softmax(axis=-1))
-            projection_model = tf.keras.layers.TimeDistributed(projection_model)
+            projection_model = tf.keras.layers.Conv1D(filters=out_shape[-1],
+                                                kernel_size=1,
+                                                strides=1,
+                                                padding='causal',
+                                                activation=tf.keras.layers.Softmax(axis=-1),
+                                                 kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                                kernel_initializer='glorot_uniform')
 
             from Building_Blocks import block_LSTM, decoder_LSTM_block
             model_kwargs = {'encoder_block': block_LSTM(**encoder_specs),
-                            "encoder_stateful": True,
+                            'encoder_stateful': True,
                             'decoder_block': decoder_LSTM_block(**decoder_specs),
                             'use_teacher': True,
                             'decoder_uses_attention_on': decoder_specs['use_attention'],

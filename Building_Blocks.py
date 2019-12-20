@@ -230,19 +230,13 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                                                       recurrent_initializer='orthogonal',
                                                       bias_initializer='zeros')
 
-                # if it is the first layer of we do not want to use dropout, we won't
-                # norm if norming and not the very last layer
-                if block < (len(self.units) + 1) or layer < (len(self.units[block])):
-                    very_last_layer = True
-                else:
-                    very_last_layer = False
                 # do we wanna highway
                 if self.use_hw:
                     one_LSTM_layer = LSTM_Highway_wrapper(one_LSTM_layer)
                 elif self.use_residuals:
                     one_LSTM_layer = LSTM_Residual_wrapper(one_LSTM_layer)
                 # do we wanna norm
-                if self.use_norm and not very_last_layer:
+                if self.use_norm:
                     one_LSTM_layer = LSTM_Norm_wrapper(one_LSTM_layer)
 
                 LSTM_list.append(one_LSTM_layer) # will be len(layers_in_block)
@@ -485,13 +479,7 @@ class FFW_block(tf.keras.layers.Layer):
             #     if self.residuals and units[layer_num-1] == units[layer_num]:
             #         layer = Residual_wrapper(layer)
 
-            # norm if norming and not the very last layer
-            if layer < (len(units)):
-                very_last_layer = True
-            else:
-                very_last_layer = False
-
-            if use_norm and not very_last_layer:
+            if use_norm:
                 layer = Norm_wrapper(layer)
 
             self.layers.append(layer)
@@ -755,13 +743,12 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                                                     use_hw=use_hw, use_residuals=use_residual,
                                                     L1=L1, L2=L2))
             
-                # attention_units = block[-1] #equivalent to the dimensionality of attention heads
-                # self.attention_blocks.append(multihead_attentive_layer(units_per_head=[int(attention_units)]*attention_heads,
-                #                                                 project_to_units=attention_units,
-                #                                                 use_norm=use_norm,
-                #                                                 L1=L1, L2=L2,
-                #                                                 use_dropout=use_dropout, dropout_rate=dropout_rate)
-                #                       )
+                attention_units = block[-1] #equivalent to the dimensionality of attention heads
+                self.attention_blocks.append(multihead_attentive_layer(units_per_head=[int(attention_units)]*attention_heads,
+                                                                project_to_units=attention_units,
+                                                                use_norm=use_norm,
+                                                                L1=L1, L2=L2,
+                                                                use_dropout=use_dropout, dropout_rate=dropout_rate))
 
     def call(self, zeroth_step, decoder_init_state, attention_value=None, timesteps=12):
         signal = zeroth_step
@@ -771,15 +758,15 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
         # ToDo: this is throwing errors for anything with
         for timestep in range(timesteps):
             if self.use_attention:
-                pass
+                # Create an empty list to get states on the LSTM from between 
+                # attention layers and assign those to the decoder states later.
+                block_states = []
                 for num_block in range(len(self.decoder_blocks)):
-
                     signal, block_state = self.decoder_blocks[num_block](signal, initial_states=[decoder_state[num_block]])
-                    block_state = block_state[0]
-                    decoder_state[num_block] = block_state
-                    print('decoder state buffer', block_state, 'needs to be placed in ', decoder_state[num_block])
+                    block_states.append(block_state[0])
 
                     signal = self.attention_blocks[num_block](signal, value=attention_value)
+                decoder_state = block_states
 
             else:
                 signal, decoder_state = self.decoder(signal, initial_states=decoder_state)

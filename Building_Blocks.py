@@ -726,29 +726,26 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
         self.use_attention = use_attention
         self.projection_layer=projection_layer
 
-        if not self.use_attention:
-            self.decoder = MultiLayer_LSTM(units=units,
+        if self.use_attention:
+            self.attention_blocks = []
+        self.decoder_blocks = []
+
+        for block in units:
+            self.decoder_blocks.append(MultiLayer_LSTM(units=[block],
                                                 use_dropout=use_dropout, dropout_rate=dropout_rate,
                                                 use_norm=use_norm,
                                                 use_hw=use_hw, use_residuals=use_residual,
-                                                L1=L1, L2=L2)
-
-        else:
-            self.attention_blocks = []
-            self.decoder_blocks = []
-            for block in units:
-                self.decoder_blocks.append(MultiLayer_LSTM(units=[block],
-                                                    use_dropout=use_dropout, dropout_rate=dropout_rate,
-                                                    use_norm=use_norm,
-                                                    use_hw=use_hw, use_residuals=use_residual,
-                                                    L1=L1, L2=L2))
-            
+                                                L1=L1, L2=L2))
+            if self.use_attention:
                 attention_units = block[-1] #equivalent to the dimensionality of attention heads
-                self.attention_blocks.append(multihead_attentive_layer(units_per_head=[int(attention_units)]*attention_heads,
+                units_per_head = [int(2*attention_units/3)] * attention_heads
+                attention = multihead_attentive_layer(units_per_head=units_per_head,
                                                                 project_to_units=attention_units,
                                                                 use_norm=use_norm,
                                                                 L1=L1, L2=L2,
-                                                                use_dropout=use_dropout, dropout_rate=dropout_rate))
+                                                                use_dropout=use_dropout, dropout_rate=dropout_rate)
+                attention = Residual_wrapper(attention)
+                self.attention_blocks.append(attention)
 
     def call(self, zeroth_step, decoder_init_state, attention_value=None, timesteps=12):
         signal = zeroth_step
@@ -757,19 +754,16 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
         # block state is the temporal buffer, because the layout suxx
         # ToDo: this is throwing errors for anything with
         for timestep in range(timesteps):
-            if self.use_attention:
-                # Create an empty list to get states on the LSTM from between 
-                # attention layers and assign those to the decoder states later.
-                block_states = []
-                for num_block in range(len(self.decoder_blocks)):
-                    signal, block_state = self.decoder_blocks[num_block](signal, initial_states=[decoder_state[num_block]])
-                    block_states.append(block_state[0])
 
+            # Create an empty list to get states on the LSTM from between
+            # attention layers and assign those to the decoder states later.
+            block_states = []
+            for num_block in range(len(self.decoder_blocks)):
+                signal, block_state = self.decoder_blocks[num_block](signal, initial_states=[decoder_state[num_block]])
+                block_states.append(block_state[0])
+                if self.use_attention:
                     signal = self.attention_blocks[num_block](signal, value=attention_value)
-                decoder_state = block_states
-
-            else:
-                signal, decoder_state = self.decoder(signal, initial_states=decoder_state)
+            decoder_state = block_states
 
             if timestep == 0:
                 signal = self.projection_layer(signal)

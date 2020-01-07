@@ -13,10 +13,10 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
     # ToDo: do the dataset one folder up
     #hmmm...
     metrics = {}
-    experiment_name = 'S2S_96x96_run_1'
+    experiment_name = 'S2SATTN_64x64_run_1'
 
     model_kwargs = {'model_type': 'E-D',
-                    'units' : [[96], [96]],
+                    'units' : [[32], [48], [64]],
                     'use_dropout' : False, 'dropout_rate' : 0.0,
                     'use_attention': False,
                     'attention_heads': 2,
@@ -71,7 +71,7 @@ def train_on_LD():
     with open(experiment_name+'.pickle', 'wb') as handle:
         pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-    __plot_training_curves(metrics, experiment_name=experiment_name)
+    # __plot_training_curves(metrics, experiment_name=experiment_name)
 
 
 def __plot_training_curves(metrics, experiment_name):

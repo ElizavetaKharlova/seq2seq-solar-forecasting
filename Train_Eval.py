@@ -14,11 +14,14 @@ from datetime import datetime
 class Model_Container():
     def __init__(self,
                  dataset_folder,
+
                  model_kwargs, #see __build_model
                  train_kwargs, #currently only batch size
+                 experiment_name='Default_Name',
                  try_distribution_across_GPUs=True,
                  ):
         self.dataset_path = dataset_folder
+        self.experiment_name = experiment_name
         #if try_distribution_across_GPUs:
 
         self.strategy = tf.distribute.MirroredStrategy()
@@ -311,7 +314,9 @@ class Model_Container():
             print('trying to buid', model_type, 'but failed')
         from Losses_and_Metrics import loss_wrapper
 
-        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=1e-3,
+        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=1e-2,
+                                                             momentum=0.9,
+                                                             nesterov=True,
                                                               #clipnorm=1.0,
                                                               ),
                     # loss=tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.SUM)
@@ -328,21 +333,9 @@ class Model_Container():
     def __train_model(self, batch_size=64):
         self.metrics = {}
         callbacks = []
-        epochs = 500
-        # def scheduler(epoch):
-        #     max_lr = 3*1e-2
-        #     min_lr = 5*1e-4
-        #     up_down_length=40
-        #
-        #     where_in_cycle = epoch%up_down_length
-        #     if where_in_cycle <= up_down_length/2:
-        #         alpha = min_lr + where_in_cycle*(max_lr - min_lr)/(up_down_length/2)
-        #         return alpha
-        #     if where_in_cycle > up_down_length/2:
-        #         alpha = max_lr - where_in_cycle*(max_lr - min_lr)/(up_down_length/2)
-        #         return alpha
+        epochs = 200
 
-        logdir =  os.path.join("tboard_logs")
+        logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
         callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
                                                                    patience=epochs,
@@ -390,6 +383,11 @@ class Model_Container():
         self.metrics['val_CRPS_skill'] = 1 - (self.metrics['val_CRPS'][saved_epoch] / self.dataset_info['val_baseline']['CRPS'])
         self.metrics['test_nRMSE_skill'] = 1 - (self.metrics['test_nRMSE'] / self.dataset_info['test_baseline']['nRMSE'])
         self.metrics['test_CRPS_skill'] = 1 - (self.metrics['test_CRPS'] / self.dataset_info['test_baseline']['CRPS'])
+        print('Val bets values: ',
+              'Loss: ', self.metrics['val_loss'][saved_epoch], '///',
+              'NRMSE: ', self.metrics['val_nRMSE'][saved_epoch], '///',
+              'NME: ', self.metrics['val_nME'][saved_epoch],  '///',
+              'CRPS: ', self.metrics['val_CRPS'][saved_epoch],)
         print('val_skill nRMSE', self.metrics['val_nRMSE_skill'] )
         print('val_skill CRPS', self.metrics['val_CRPS_skill'])
         print('test_skill nRMSE', self.metrics['test_nRMSE_skill'])

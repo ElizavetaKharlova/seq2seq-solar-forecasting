@@ -12,32 +12,28 @@ import tensorflow as tf
 def train_LSTM_baseline_3fold_on_Daniel_data():
     # ToDo: do the dataset one folder up
     #hmmm...
-    datasets = [
-                'Daniels_Dataset_1',
-            ]
     metrics = {}
-    for set in datasets:
-        metrics[set] = []
-        for run in range(1):
-            model_kwargs = {'model_type': 'E-D',
-                            'units' : [[96], [96]],
-                            'use_dropout' : False, 'dropout_rate' : 0.0,
-                            'use_attention': True,
-                            'attention_heads': 2,
-                            'L1': 0.0, 'L2': 0.0,
-                            'use_norm' : False,
-                            }
-            train_kwargs = {'batch_size': 2**8}
+    experiment_name = 'S2S_96x96_run_1'
 
-            experiment = Model_Container(dataset_folder=set,
-                                      model_kwargs=model_kwargs,
-                                      train_kwargs=train_kwargs,
-                                      try_distribution_across_GPUs=False,)
-            metrics[set].append(experiment.get_results())
-            del experiment
-            tf.keras.backend.clear_session()
+    model_kwargs = {'model_type': 'E-D',
+                    'units' : [[96], [96]],
+                    'use_dropout' : False, 'dropout_rate' : 0.0,
+                    'use_attention': False,
+                    'attention_heads': 2,
+                    'L1': 0.0, 'L2': 0.0,
+                    'use_norm' : False,
+                    }
+    train_kwargs = {'batch_size': 2**11}
 
-    experiment_name = 'TCN_gen_L1L2'
+    experiment = Model_Container(dataset_folder='Daniels_Dataset_1',
+                                 experiment_name=experiment_name,
+                              model_kwargs=model_kwargs,
+                              train_kwargs=train_kwargs,)
+    metrics = experiment.get_results()
+    del experiment
+    tf.keras.backend.clear_session()
+
+
     with open(experiment_name+'.pickle', 'wb') as handle:
         pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
 

@@ -223,7 +223,7 @@ class Model_Container():
                       use_dropout=False, dropout_rate=0.0,
                       use_hw=False, use_norm=False, use_residual=False, #general architecture stuff
                       use_attention=False, attention_heads=3,
-                      downsample=True, mode='snip', #MiMo stuff
+                      downsample=False, mode='project', #MiMo stuff
                       ):
 
 
@@ -235,11 +235,25 @@ class Model_Container():
                              'dropout_rate': dropout_rate,
                              'use_norm': use_norm,
                              'use_hw': use_hw,
-                             'return_state': False,
-                             'only_last_layer_output': True}
+                             'return_state': False}
 
             from Models import mimo_model
             self.model = mimo_model(function_block=block_LSTM(**encoder_specs),
+                               input_shape=input_shape,
+                               output_shape=out_shape,
+                               downsample_input=downsample,
+                               downsampling_rate=(60 / 5),
+                               mode=mode)
+        elif model_type == 'MiMo-FFW':
+            print('building a', units, model_type)
+            from Building_Blocks import FFW_block
+            encoder_specs = {'units': units,
+                             'use_dropout': use_dropout,
+                             'dropout_rate': dropout_rate,
+                             'use_norm': use_norm,}
+
+            from Models import mimo_model
+            self.model = mimo_model(function_block=FFW_block(**encoder_specs),
                                input_shape=input_shape,
                                output_shape=out_shape,
                                downsample_input=downsample,
@@ -314,8 +328,8 @@ class Model_Container():
             print('trying to buid', model_type, 'but failed')
         from Losses_and_Metrics import loss_wrapper
 
-        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=1e-2,
-                                                             momentum=0.9,
+        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=7*1e-3,
+                                                             momentum=0.8,
                                                              nesterov=True,
                                                               #clipnorm=1.0,
                                                               ),
@@ -338,7 +352,7 @@ class Model_Container():
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
         callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=epochs,
+                                                                   patience=30,
                                                                    mode='min',
                                                                    restore_best_weights=True))
         callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,

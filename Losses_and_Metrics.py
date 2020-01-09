@@ -1,25 +1,37 @@
 # will contain losses and metrics used to analyse whatever we wanna train
 import tensorflow as tf
 
-def loss_wrapper(last_output_dim_size, loss_type='nME', normalizer_value=1.0):
+def loss_wrapper(last_output_dim_size, loss_type='nME', normalizer_value=1.0, target_as_expected_value=False, forecast_as_expected_value=False):
     if loss_type == 'NME' or loss_type == 'nME' or loss_type == 'nme':
         def nME(target, prediction):
             target = tf.cast(target, dtype=tf.float32)
+            if not target_as_expected_value:
+                target = __calculate_expected_value(target, last_output_dim_size)
             prediction = tf.cast(prediction, dtype=tf.float32)
+            if not forecast_as_expected_value:
+                prediction = __calculate_expected_value(prediction, last_output_dim_size)
             return calculate_E_nME(target, prediction, last_output_dim_size, normalizer_value)
         return nME
 
     elif loss_type == 'NRMSE' or loss_type == 'nRMSE' or loss_type == 'nrmse':
         def nRMSE(target, prediction):
             target = tf.cast(target, dtype=tf.float32)
+            if not target_as_expected_value:
+                target = __calculate_expected_value(target, last_output_dim_size)
             prediction = tf.cast(prediction, dtype=tf.float32)
+            if not forecast_as_expected_value:
+                prediction = __calculate_expected_value(prediction, last_output_dim_size)
             return calculate_E_nRMSE(target, prediction, last_output_dim_size, normalizer_value)
         return nRMSE
 
     elif loss_type == 'MSE' or loss_type == 'mse':
         def MSE(target, prediction):
             target = tf.cast(target, dtype=tf.float32)
+            if not target_as_expected_value:
+                target = __calculate_expected_value(target, last_output_dim_size)
             prediction = tf.cast(prediction, dtype=tf.float32)
+            if not forecast_as_expected_value:
+                prediction = __calculate_expected_value(prediction, last_output_dim_size)
             return calculate_E_MSE(target, prediction, last_output_dim_size)
         return MSE
 
@@ -114,8 +126,6 @@ def calculate_KL_Divergence(target, prediction, last_output_dim_size):
 def calculate_E_nRMSE(target, prediction, last_output_dim_size, normalizer_value):
     # if pdfs, convert to expected values
     if last_output_dim_size > 1:
-        target = __calculate_expected_value(target, last_output_dim_size)
-        prediction = __calculate_expected_value(prediction, last_output_dim_size)
         normalizer_value = tf.cast(last_output_dim_size, dtype=tf.float32)
     else:
         normalizer_value = 1.0
@@ -129,8 +139,6 @@ def calculate_E_nRMSE(target, prediction, last_output_dim_size, normalizer_value
 def calculate_E_nME(target, prediction, last_output_dim_size, normalizer_value):
     # if pdfs, convert to expected values
     if last_output_dim_size > 1:
-        target = __calculate_expected_value(target, last_output_dim_size)
-        prediction = __calculate_expected_value(prediction, last_output_dim_size)
         normalizer_value = tf.cast(last_output_dim_size, dtype=tf.float32)
     else:
         normalizer_value = 1.0
@@ -172,9 +180,6 @@ def calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size):
     return loss
 
 def calculate_E_MSE(target, prediction, last_output_dim_size):
-    if last_output_dim_size > 1:
-        target = __calculate_expected_value(target, last_output_dim_size)
-        prediction = __calculate_expected_value(prediction, last_output_dim_size)
     expected_nMSE = tf.subtract(target, prediction)
     expected_nMSE = tf.square(expected_nMSE)
     expected_nMSE = tf.reduce_mean(expected_nMSE, axis=-1)

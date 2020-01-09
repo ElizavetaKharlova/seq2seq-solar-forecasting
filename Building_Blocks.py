@@ -406,7 +406,7 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         else:
             self.projection = True
             self.projection_layer = tf.keras.layers.Conv1D(project_to_units,
-                                         #activation=tf.nn.relu,
+                                         activation=tf.nn.sigmoid,
                                          strides=1,
                                          kernel_size=1,
                                          kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
@@ -738,7 +738,7 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                                                 L1=L1, L2=L2))
             if self.use_attention:
                 attention_units = block[-1] #equivalent to the dimensionality of attention heads
-                units_per_head = [int(2*attention_units/3)] * attention_heads
+                units_per_head = [int(3*attention_units/2)] * attention_heads
                 attention = multihead_attentive_layer(units_per_head=units_per_head,
                                                                 project_to_units=attention_units,
                                                                 use_norm=use_norm,

@@ -9,14 +9,14 @@ import tensorflow as tf
 #ToDo: Experiment3 is to check for layer depth in Encoder and Decoder
 
 
-def train_LSTM_baseline_3fold_on_Daniel_data():
+def train():
     # ToDo: do the dataset one folder up
     #hmmm...
     metrics = {}
-    experiment_name = 'S2S_Attn_128x2'
+    experiment_name = 'S2S_No_Attn_128x2'
 
     model_kwargs = {'model_type': 'E-D',
-                    'units' : [[110], [110]], #[units, units...] for FFNN, else [[block_units, block_units...],[block_units...]]
+                    'units' : [[128], [128]], #[units, units...] for FFNN, else [[block_units, block_units...],[block_units...]]
                     'downsample': False, 'mode': 'project',
                     'use_dropout' : False, 'dropout_rate' : 0.0,
                     'use_attention': True,

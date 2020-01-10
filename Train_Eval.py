@@ -261,7 +261,7 @@ class Model_Container():
                                mode=mode)
 
         elif model_type == 'Encoder-Decoder' or model_type == 'E-D':
-            from Building_Blocks import block_LSTM, decoder_LSTM_block
+            from Building_Blocks import block_LSTM, classic_attn_decoder_LSTM_block
             from Models import S2S_model
             print('building E-D')
             common_specs = {'units': units,
@@ -283,7 +283,7 @@ class Model_Container():
                                                 activation=tf.keras.layers.Softmax(axis=-1),
                                                  kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                                 kernel_initializer='glorot_uniform')
-            decoder = decoder_LSTM_block(**decoder_specs)
+            decoder = classic_attn_decoder_LSTM_block(**decoder_specs)
             self.model = S2S_model(encoder_block=encoder,
                                    decoder_block=decoder,
                                    input_shape=input_shape,

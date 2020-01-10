@@ -178,8 +178,8 @@ class Model_Container():
 
             dataset = dataset.map(__read_and_process_normal_samples, num_parallel_calls=20)
             dataset = dataset.repeat()
-            dataset = dataset.shuffle(20 * batch_size)
-            dataset = dataset.prefetch(10 * batch_size)
+            dataset = dataset.shuffle(10 * batch_size)
+            # dataset = dataset.prefetch(10 * batch_size)
             dataset = dataset.batch(batch_size, drop_remainder=False)
             return dataset
 
@@ -328,8 +328,8 @@ class Model_Container():
             print('trying to buid', model_type, 'but failed')
         from Losses_and_Metrics import loss_wrapper
 
-        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=7*1e-3,
-                                                             momentum=0.8,
+        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=1e-3,
+                                                             momentum=0.75,
                                                              nesterov=True,
                                                               #clipnorm=1.0,
                                                               ),

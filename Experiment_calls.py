@@ -13,18 +13,18 @@ def train_LSTM_baseline_3fold_on_Daniel_data():
     # ToDo: do the dataset one folder up
     #hmmm...
     metrics = {}
-    experiment_name = 'FFNN_(256)x4_Nodownsample_project'
+    experiment_name = 'S2S_Attn_128x2'
 
-    model_kwargs = {'model_type': 'MiMo-FFW',
-                    'units' : [256+100, 256+100, 256+100, 256+100], #[units, units...] for FFNN, else [[block_units, block_units...],[block_units...]]
+    model_kwargs = {'model_type': 'E-D',
+                    'units' : [[110], [110]], #[units, units...] for FFNN, else [[block_units, block_units...],[block_units...]]
                     'downsample': False, 'mode': 'project',
                     'use_dropout' : False, 'dropout_rate' : 0.0,
                     'use_attention': True,
-                    'attention_heads': 2,
+                    'attention_heads': 3,
                     'L1': 0.0, 'L2': 0.0,
                     'use_norm' : False,
                     }
-    train_kwargs = {'batch_size': 2**10}
+    train_kwargs = {'batch_size': 2**7}
 
     experiment = Model_Container(dataset_folder='Daniels_Dataset_1',
                                  experiment_name=experiment_name,

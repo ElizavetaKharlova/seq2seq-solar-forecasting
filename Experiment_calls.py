@@ -13,7 +13,7 @@ def train():
     # ToDo: do the dataset one folder up
     #hmmm...
     metrics = {}
-    experiment_name = 'S2S_No_Attn_128x2'
+    experiment_name = 'Large_S2S_ATNN'
 
     model_kwargs = {'model_type': 'E-D',
                     'units' : [[128], [128]], #[units, units...] for FFNN, else [[block_units, block_units...],[block_units...]]
@@ -21,7 +21,7 @@ def train():
                     'use_dropout' : False, 'dropout_rate' : 0.0,
                     'use_attention': True,
                     'attention_heads': 3,
-                    'L1': 0.0, 'L2': 0.0,
+                    'L1': 0.0, 'L2': 1e-6,
                     'use_norm' : False,
                     }
     train_kwargs = {'batch_size': 2**7}

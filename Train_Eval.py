@@ -244,7 +244,7 @@ class Model_Container():
                                downsample_input=downsample,
                                downsampling_rate=(60 / 5),
                                mode=mode)
-        elif model_type == 'MiMo-FFW':
+        elif model_type == 'MiMo-FFNN':
             print('building a', units, model_type)
             from Building_Blocks import FFW_block
             encoder_specs = {'units': units,
@@ -261,7 +261,7 @@ class Model_Container():
                                mode=mode)
 
         elif model_type == 'Encoder-Decoder' or model_type == 'E-D':
-            from Building_Blocks import block_LSTM, classic_attn_decoder_LSTM_block
+            from Building_Blocks import block_LSTM, decoder_LSTM_block
             from Models import S2S_model
             print('building E-D')
             common_specs = {'units': units,
@@ -283,7 +283,7 @@ class Model_Container():
                                                 activation=tf.keras.layers.Softmax(axis=-1),
                                                  kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                                 kernel_initializer='glorot_uniform')
-            decoder = classic_attn_decoder_LSTM_block(**decoder_specs)
+            decoder = decoder_LSTM_block(**decoder_specs)
             self.model = S2S_model(encoder_block=encoder,
                                    decoder_block=decoder,
                                    input_shape=input_shape,
@@ -328,7 +328,7 @@ class Model_Container():
             print('trying to buid', model_type, 'but failed')
         from Losses_and_Metrics import loss_wrapper
 
-        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=1e-3,
+        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=3*1e-3,
                                                              momentum=0.75,
                                                              nesterov=True,
                                                               #clipnorm=1.0,
@@ -352,7 +352,7 @@ class Model_Container():
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
         callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=30,
+                                                                   patience=20,
                                                                    mode='min',
                                                                    restore_best_weights=True))
         callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,

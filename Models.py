@@ -51,12 +51,19 @@ def S2S_model(encoder_block, decoder_block,
     encoder_inputs = tf.keras.layers.Input(shape=(in_tsteps, in_dims), name='encoder_inputs')
     # we need to define this outside, because at inference time we will provide the 0th innput of the decoder, as it is a value thats already known
     # at inference time, the teacher would be concat([1,out_dims], nan*[rest, out_dims]
-    encoder_outputs, encoder_end_state = encoder_block(encoder_inputs)
+    encoder_outputs, encoder_states= encoder_block(encoder_inputs)
     teacher = tf.keras.layers.Input(shape=(out_tsteps, out_dims), name='teacher_inputs')
-    forecast = decoder_block(tf.expand_dims(teacher[:,0,:], axis=1),
-                             decoder_init_state=encoder_end_state,
-                             attention_value=encoder_outputs,
-                             timesteps=out_tsteps)
+    if use_teacher:
+        forecast = decoder_block(tf.expand_dims(teacher[:, 0, :], axis=1),
+                                 teacher=teacher,
+                                 decoder_init_state=encoder_states,
+                                 attention_value=encoder_outputs,
+                                 timesteps=out_tsteps)
+    else:
+        forecast = decoder_block(tf.expand_dims(teacher[:,0,:], axis=1),
+                                 decoder_init_state=encoder_states,
+                                 attention_value=encoder_outputs,
+                                 timesteps=out_tsteps)
 
     return tf.keras.Model([encoder_inputs, teacher], forecast)
 
@@ -138,6 +145,4 @@ def mimo_model(function_block, input_shape, output_shape, mode='project', downsa
             return tf.keras.Model(inputs, mimo_output)
     else:
         print('wrong mode, please select either project or snip')
-
-
 

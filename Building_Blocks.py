@@ -737,32 +737,52 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                                                 use_hw=use_hw, use_residuals=use_residual,
                                                 L1=L1, L2=L2))
             if self.use_attention:
-                attention_units = block[-1] #equivalent to the dimensionality of attention heads
-                units_per_head = [int(attention_units/2)] * attention_heads
-                attention = multihead_attentive_layer(units_per_head=units_per_head,
-                                                                project_to_units=attention_units,
-                                                                use_norm=use_norm,
-                                                                L1=L1, L2=L2,
-                                                                use_dropout=use_dropout, dropout_rate=dropout_rate)
-                attention = Residual_wrapper(attention)
+                attention_units = int(block[-1]/2) #equivalent to the dimensionality of attention heads
+                attention = Attention(attention_units,
+                                    mode='Transformer',
+                                    query_kernel= 1,
+                                    key_kernel=1,
+                                    use_dropout=use_dropout,
+                                    dropout_rate=dropout_rate,
+                                    L2=L2, L1=L1,
+                                    only_context=True)
                 self.attention_blocks.append(attention)
 
-    def call(self, zeroth_step, decoder_init_state, attention_value=None, timesteps=12):
-        signal = zeroth_step
+    def call(self, zeroth_step, decoder_init_state, teacher=None, attention_value=None, timesteps=12):
+
         decoder_state = decoder_init_state # [[[state_h, state_c]]] #(blocks, layers_in_block, 2)
         # decoder state is supposed to be the storage for the states
         # block state is the temporal buffer, because the layout suxx
         # ToDo: this is throwing errors for anything with
         for timestep in range(timesteps):
+            if timestep == 0:
+                signal = zeroth_step
+            elif teacher is not None:
+                signal = tf.keras.backend.in_train_phase(teacher[:,timestep,:],
+                                                         alt=decoder_out[:, timestep-1,:],
+                                                         training=tf.keras.backend.learning_phase())
+                signal = tf.expand_dims(signal, axis=1)
+            else:
+                signal = decoder_out[:, timestep-1,:]
+                signal = tf.expand_dims(signal, axis=1)
 
             # Create an empty list to get states on the LSTM from between
             # attention layers and assign those to the decoder states later.
             block_states = []
             for num_block in range(len(self.decoder_blocks)):
+                if self.use_attention:
+                    if num_block > 0:
+                        prev_layer_state = block_state[0][-1]
+                        query = tf.concat(prev_layer_state, axis=-1)
+                        query = tf.expand_dims(query, axis=1)
+                    else:
+                        query = signal
+                    attention_context = self.attention_blocks[num_block](query, value=attention_value)
+                    signal = tf.concat([signal, attention_context], axis=-1)
+
                 signal, block_state = self.decoder_blocks[num_block](signal, initial_states=[decoder_state[num_block]])
                 block_states.append(block_state[0])
-                if self.use_attention:
-                    signal = self.attention_blocks[num_block](signal, value=attention_value)
+
             decoder_state = block_states
 
             if timestep == 0:

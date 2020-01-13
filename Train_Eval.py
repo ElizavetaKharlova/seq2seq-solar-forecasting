@@ -25,7 +25,7 @@ class Model_Container():
         #if try_distribution_across_GPUs:
 
         self.strategy = tf.distribute.MirroredStrategy()
-
+        self.forecast_mode = model_kwargs['forecast_mode']
         self.dataset_info = pickle.load(open(dataset_folder + '/dataset_info.pickle', 'rb'))
         print(self.dataset_info)
         self.sw_len_samples = self.dataset_info['sw_len_samples']
@@ -63,8 +63,7 @@ class Model_Container():
 
 
         model_kwargs['out_shape'] = self.target_shape
-        model_kwargs['normalizer_value'] = 1.0
-        # self.dataset_info['normalizer_value']
+        model_kwargs['normalizer_value'] = self.dataset_info['normalizer_value']
 
         self.model_kwargs = model_kwargs
         self.train_kwargs = train_kwargs
@@ -110,13 +109,21 @@ class Model_Container():
         for dimension_shape in nwp_shape:
             flattened_nwp_shape = flattened_nwp_shape * dimension_shape
         pv_input_shape = [self.sw_len_samples]
-        output_shape = self.target_shape
-        flattened_output_shape = 1
-        for dimension_shape in output_shape:
-            flattened_output_shape = flattened_output_shape * dimension_shape
+        pdf_output_shape = self.target_shape
+        flattened_pdf_output_shape = 1
+        for dimension_shape in pdf_output_shape:
+            flattened_pdf_output_shape = flattened_pdf_output_shape * dimension_shape
+
+        ev_output_shape = [self.target_shape[0], 1]
+        flattened_ev_output_shape = 1
+        for dimension_shape in ev_output_shape:
+            flattened_ev_output_shape = flattened_ev_output_shape * dimension_shape
 
         real_support_length = self.model_kwargs['support_shape'][0]
         real_history_length = self.model_kwargs['history_shape'][0]
+
+
+
         def __read_and_process_normal_samples(example):
             # 'nwp_input':
             # 'raw_historical_input':
@@ -125,27 +132,45 @@ class Model_Container():
             # 'pdf_historical_input':
             # 'pdf_teacher':
             # 'pdf_target':
+            def __calculate_expected_value(signal, last_output_dim_size):
+                indices = tf.range(last_output_dim_size, dtype=tf.float32)  # (last_output_dim_size)
+                weighted_signal = tf.multiply(signal, indices)  # (batches, timesteps, last_output_dim_size)
+                expected_value = tf.reduce_sum(weighted_signal, axis=-1, keepdims=True)
+                return expected_value / last_output_dim_size
 
             features = {'nwp_input': tf.io.FixedLenFeature(flattened_nwp_shape, tf.float32),
                         'raw_historical_input': tf.io.FixedLenFeature(pv_input_shape, tf.float32),
                         'pdf_historical_input': tf.io.FixedLenFeature(self.pdf_history_shape[0] * self.pdf_history_shape[1], tf.float32),
-                        'pdf_target': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),
-                        'pdf_teacher': tf.io.FixedLenFeature(flattened_output_shape, tf.float32),
+                        'pdf_target': tf.io.FixedLenFeature(flattened_pdf_output_shape, tf.float32),
+                        'pdf_teacher': tf.io.FixedLenFeature(flattened_pdf_output_shape, tf.float32),
+                        #'raw_target': tf.io.FixedLenFeature(flattened_ev_output_shape, tf.float32),
+                        #'raw_teacher': tf.io.FixedLenFeature(flattened_ev_output_shape, tf.float32),
                         }
-            unadjusted_example = tf.io.parse_single_example(example, features)
-            nwp_inputs = tf.reshape(tensor=unadjusted_example['nwp_input'], shape=[nwp_shape[0], nwp_shape[1]])
 
-            target = tf.reshape(tensor=unadjusted_example['pdf_target'], shape=[output_shape[0], output_shape[1]])
+            unadjusted_example = tf.io.parse_single_example(example, features)
+            nwp_inputs = tf.reshape(tensor=unadjusted_example['nwp_input'], shape=nwp_shape)
+
+            if self.forecast_mode == 'ev':
+                target = tf.reshape(tensor=unadjusted_example['pdf_target'], shape=pdf_output_shape)
+                target = __calculate_expected_value(target, pdf_output_shape[-1])
+                target = target * self.dataset_info['normalizer_value']
+                teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
+                                     shape=pdf_output_shape)
+                teacher = __calculate_expected_value(teacher, pdf_output_shape[-1])
+                teacher = teacher * self.dataset_info['normalizer_value']
+
+            else:
+                target = tf.reshape(tensor=unadjusted_example['pdf_target'], shape=pdf_output_shape)
+                teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
+                                     shape=pdf_output_shape)
 
             history_pdf = tf.reshape(tensor=unadjusted_example['pdf_historical_input'],
-                                     shape=[self.pdf_history_shape[0], self.pdf_history_shape[1]])
-            teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
-                                 shape=[output_shape[0], output_shape[1]])
+                                     shape=self.pdf_history_shape)
+
 
             # ToDo: Current Dev Stack
             if 'generator' in self.model_kwargs['model_type']:
                 print('yaaay', self.model_kwargs['model_type'], 'time!!!!')
-
                 nwp_inputs = nwp_inputs[-real_support_length:,:]
                 history_pdf = history_pdf[-real_history_length:,:]
                 # ATM sampling last 2days plus forecast day from NWP and last 2 days from history
@@ -217,6 +242,7 @@ class Model_Container():
                       out_shape, normalizer_value,
                       support_shape, history_shape,
                       input_shape=None,
+                      forecast_mode='pdf',
                       model_type='MiMo-sth',
                       units=[[96],[96],[96]],
                       L1=0.0, L2=0.0,
@@ -226,6 +252,24 @@ class Model_Container():
                       downsample=False, mode='project', #MiMo stuff
                       ):
 
+        if self.forecast_mode == 'pdf':
+            projection_block = tf.keras.layers.Conv1D(filters=out_shape[-1],
+                                                    kernel_size=1,
+                                                    strides=1,
+                                                    padding='causal',
+                                                    activation=tf.keras.layers.Softmax(axis=-1),
+                                                     kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                                    kernel_initializer='glorot_uniform')
+        elif self.forecast_mode =='ev':
+            projection_block = tf.keras.layers.Conv1D(filters=1,
+                                                    kernel_size=1,
+                                                    strides=1,
+                                                    padding='causal',
+                                                    activation=None,
+                                                     kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                                    kernel_initializer='glorot_uniform')
+        else:
+            print('wrong forecast mode flag, must be either pdf or ev')
 
         if model_type == 'MiMo-LSTM':
             print('building a', units, model_type)
@@ -242,8 +286,10 @@ class Model_Container():
                                input_shape=input_shape,
                                output_shape=out_shape,
                                downsample_input=downsample,
+                                projection_block=projection_block,
                                downsampling_rate=(60 / 5),
                                mode=mode)
+
         elif model_type == 'MiMo-FFNN':
             print('building a', units, model_type)
             from Building_Blocks import FFW_block
@@ -258,6 +304,7 @@ class Model_Container():
                                output_shape=out_shape,
                                downsample_input=downsample,
                                downsampling_rate=(60 / 5),
+                               projection_block = projection_block,
                                mode=mode)
 
         elif model_type == 'Encoder-Decoder' or model_type == 'E-D':
@@ -276,13 +323,7 @@ class Model_Container():
             decoder_specs = copy.deepcopy(common_specs)
             decoder_specs['use_attention'] = use_attention
             decoder_specs['attention_heads'] = attention_heads
-            decoder_specs['projection_layer'] = tf.keras.layers.Conv1D(filters=out_shape[-1],
-                                                kernel_size=1,
-                                                strides=1,
-                                                padding='causal',
-                                                activation=tf.keras.layers.Softmax(axis=-1),
-                                                 kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                                kernel_initializer='glorot_uniform')
+            decoder_specs['projection_layer'] = projection_block
             decoder = decoder_LSTM_block(**decoder_specs)
             self.model = S2S_model(encoder_block=encoder,
                                    decoder_block=decoder,
@@ -307,13 +348,7 @@ class Model_Container():
                                       [growth, growth, growth, growth, growth, 5*growth],
                                       ]
 
-            decoder_specs['projection'] = tf.keras.layers.Conv1D(filters=out_shape[-1],
-                                                kernel_size=1,
-                                                strides=1,
-                                                padding='causal',
-                                                activation=tf.keras.layers.Softmax(axis=-1),
-                                                 kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                                kernel_initializer='glorot_uniform')
+            decoder_specs['projection'] = projection_block
 
             from Building_Blocks import fixed_attentive_TCN, fixed_generator_Dense_block
             from Models import forecaster_model
@@ -326,22 +361,49 @@ class Model_Container():
 
         else:
             print('trying to buid', model_type, 'but failed')
+
         from Losses_and_Metrics import loss_wrapper
+        # assign the losses depending on scenario
+        if self.forecast_mode == 'pdf':
+            loss = loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='KL_D')
+            metrics = [loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nME',
+                                            normalizer_value=1.0,
+                                            target_as_expected_value=False,
+                                            forecast_as_expected_value=False),
+                               loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nRMSE',
+                                            normalizer_value=1.0,
+                                            target_as_expected_value=False,
+                                            forecast_as_expected_value=False
+                                            ),
+                               loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='CRPS',
+                                            target_as_expected_value=False,
+                                            forecast_as_expected_value=False
+                                            ),
+                               ]
+        elif self.forecast_mode =='ev':
+            loss = loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='MSE',
+                                target_as_expected_value=True,
+                                forecast_as_expected_value=True
+                                )
+            metrics = [loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nME',
+                                            normalizer_value=normalizer_value,
+                                            target_as_expected_value=True,
+                                            forecast_as_expected_value=True),
+                               loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nRMSE',
+                                            normalizer_value=normalizer_value,
+                                            target_as_expected_value=True,
+                                            forecast_as_expected_value=True
+                                            )
+                               ]
+        else:
+            print('forecast mode was not specified as either <pdf> or <ev>, no idea how it got this far but expect some issues!!')
 
         self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=3*1e-3,
                                                              momentum=0.75,
                                                              nesterov=True,
                                                               #clipnorm=1.0,
                                                               ),
-                    # loss=tf.keras.losses.MeanSquaredError(reduction=tf.keras.losses.Reduction.SUM)
-                    loss=loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='KL_D'),
-                      metrics=[loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nME',
-                                            normalizer_value=normalizer_value),
-                               loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nRMSE',
-                                            normalizer_value=normalizer_value),
-                               loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='CRPS'),
-                               ],
-                           )  # compile, print summary
+                            loss=loss,metrics=metrics,)  # compile, print summary
         self.model.summary()
 
     def __train_model(self, batch_size=64):

@@ -770,18 +770,15 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
             # attention layers and assign those to the decoder states later.
             block_states = []
             for num_block in range(len(self.decoder_blocks)):
-                if self.use_attention:
-                    if num_block > 0:
-                        prev_layer_state = block_state[0][-1]
-                        query = tf.concat(prev_layer_state, axis=-1)
-                        query = tf.expand_dims(query, axis=1)
-                    else:
-                        query = signal
-                    attention_context = self.attention_blocks[num_block](query, value=attention_value)
-                    signal = tf.concat([signal, attention_context], axis=-1)
 
                 signal, block_state = self.decoder_blocks[num_block](signal, initial_states=[decoder_state[num_block]])
                 block_states.append(block_state[0])
+                if self.use_attention:
+                    prev_layer_state = block_state[0]
+                    query = tf.concat(prev_layer_state, axis=-1)
+                    query = tf.expand_dims(query, axis=1)
+                    attention_context = self.attention_blocks[num_block](query, value=attention_value)
+                    signal = tf.concat([signal, attention_context], axis=-1)
 
             decoder_state = block_states
 

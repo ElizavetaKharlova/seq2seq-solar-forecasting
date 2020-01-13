@@ -414,7 +414,7 @@ class Model_Container():
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
         callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=20,
+                                                                   patience=15,
                                                                    mode='min',
                                                                    restore_best_weights=True))
         callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,
@@ -450,24 +450,31 @@ class Model_Container():
         self.metrics['test_loss'] = test_results[0]
         self.metrics['test_nME'] = test_results[1]
         self.metrics['test_nRMSE'] = test_results[2]
-        self.metrics['test_CRPS'] = test_results[3]
+        if not self.forecast_mode == 'ev':
+            self.metrics['test_CRPS'] = test_results[3]
 
 
     def __skill_metrics(self):
         saved_epoch = np.argmin(self.metrics['val_nRMSE'])
         self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_nRMSE'][saved_epoch] / self.dataset_info['val_baseline']['nRMSE'])
-        self.metrics['val_CRPS_skill'] = 1 - (self.metrics['val_CRPS'][saved_epoch] / self.dataset_info['val_baseline']['CRPS'])
+        if not self.forecast_mode == 'ev':
+            self.metrics['val_CRPS_skill'] = 1 - (self.metrics['val_CRPS'][saved_epoch] / self.dataset_info['val_baseline']['CRPS'])
         self.metrics['test_nRMSE_skill'] = 1 - (self.metrics['test_nRMSE'] / self.dataset_info['test_baseline']['nRMSE'])
-        self.metrics['test_CRPS_skill'] = 1 - (self.metrics['test_CRPS'] / self.dataset_info['test_baseline']['CRPS'])
-        print('Val bets values: ',
-              'Loss: ', self.metrics['val_loss'][saved_epoch], '///',
-              'NRMSE: ', self.metrics['val_nRMSE'][saved_epoch], '///',
-              'NME: ', self.metrics['val_nME'][saved_epoch],  '///',
-              'CRPS: ', self.metrics['val_CRPS'][saved_epoch],)
+        if not self.forecast_mode == 'ev':
+            self.metrics['test_CRPS_skill'] = 1 - (self.metrics['test_CRPS'] / self.dataset_info['test_baseline']['CRPS'])
+
+        print('Val bets values:')
+        print('Loss: ', self.metrics['val_loss'][saved_epoch], '///')
+        print('NRMSE: ', self.metrics['val_nRMSE'][saved_epoch], '///')
+        print('NME: ', self.metrics['val_nME'][saved_epoch],  '///')
+        if not self.forecast_mode == 'ev':
+            print('CRPS: ', self.metrics['val_CRPS'][saved_epoch],)
         print('val_skill nRMSE', self.metrics['val_nRMSE_skill'] )
-        print('val_skill CRPS', self.metrics['val_CRPS_skill'])
+        if not self.forecast_mode == 'ev':
+            print('val_skill CRPS', self.metrics['val_CRPS_skill'])
         print('test_skill nRMSE', self.metrics['test_nRMSE_skill'])
-        print('test_skill CRPS', self.metrics['test_CRPS_skill'])
+        if not self.forecast_mode == 'ev':
+            print('test_skill CRPS', self.metrics['test_CRPS_skill'])
 
 
 def __get_max_min_targets(train_targets, test_targets):

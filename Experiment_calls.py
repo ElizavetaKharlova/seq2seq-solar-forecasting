@@ -13,11 +13,11 @@ def train():
     # ToDo: do the dataset one folder up
     #hmmm...
     metrics = {}
-    experiment_name = 'EV_MiMo-LSTM'
+    experiment_name = 'PDF_S2S_Attn'
 
-    model_kwargs = {'model_type': 'MiMo-LSTM',
-                    'forecast_mode': 'ev',
-                    'units' : [[128+32+16+8],[128+32+16+8]], #[units, units...] for FFNN, else [[block_units, block_units...],[block_units...]]
+    model_kwargs = {'model_type': 'E-D',
+                    'forecast_mode': 'pdf',
+                    'units' :  [[115],[115]], #[units, units...] for FFNN, else [[block_units, block_units...],[block_units...]]
                     'downsample': False, 'mode': 'project',
                     'use_dropout' : False, 'dropout_rate' : 0.0,
                     'use_attention': True,

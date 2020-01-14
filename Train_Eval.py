@@ -63,6 +63,7 @@ class Model_Container():
 
 
         model_kwargs['out_shape'] = self.target_shape
+
         model_kwargs['normalizer_value'] = self.dataset_info['normalizer_value']
 
         self.model_kwargs = model_kwargs
@@ -149,26 +150,19 @@ class Model_Container():
 
             unadjusted_example = tf.io.parse_single_example(example, features)
             nwp_inputs = tf.reshape(tensor=unadjusted_example['nwp_input'], shape=nwp_shape)
-
-            if self.forecast_mode == 'ev':
-                target = tf.reshape(tensor=unadjusted_example['pdf_target'], shape=pdf_output_shape)
-                target = __calculate_expected_value(target, pdf_output_shape[-1])
-                target = target * self.dataset_info['normalizer_value']
-                teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
-                                     shape=pdf_output_shape)
-                teacher = __calculate_expected_value(teacher, pdf_output_shape[-1])
-                teacher = teacher * self.dataset_info['normalizer_value']
-
-            else:
-                target = tf.reshape(tensor=unadjusted_example['pdf_target'], shape=pdf_output_shape)
-                teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
-                                     shape=pdf_output_shape)
-
+            teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
+                                 shape=pdf_output_shape)
+            target = tf.reshape(tensor=unadjusted_example['pdf_target'], shape=pdf_output_shape)
             history_pdf = tf.reshape(tensor=unadjusted_example['pdf_historical_input'],
                                      shape=self.pdf_history_shape)
 
+            if self.forecast_mode == 'ev':
+                target = __calculate_expected_value(target, pdf_output_shape[-1])
+                target = target * self.dataset_info['normalizer_value']
+                teacher = __calculate_expected_value(teacher, pdf_output_shape[-1])
+                teacher = teacher * self.dataset_info['normalizer_value']
 
-            # ToDo: Current Dev Stack
+
             if 'generator' in self.model_kwargs['model_type']:
                 print('yaaay', self.model_kwargs['model_type'], 'time!!!!')
                 nwp_inputs = nwp_inputs[-real_support_length:,:]
@@ -328,7 +322,7 @@ class Model_Container():
             self.model = S2S_model(encoder_block=encoder,
                                    decoder_block=decoder,
                                    input_shape=input_shape,
-                                   output_shape=out_shape)
+                                   output_shape=[out_shape[0], 1] if self.forecast_mode =='ev' else out_shape)
 
         elif model_type == 'Densegenerator' or model_type == 'DenseGenerator':
             print('building E-D')

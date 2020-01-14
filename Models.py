@@ -68,7 +68,7 @@ def S2S_model(encoder_block, decoder_block,
     return tf.keras.Model([encoder_inputs, teacher], forecast)
 
 
-def mimo_model(function_block, input_shape, output_shape, mode='project', downsample_input=False, downsampling_rate=None, downsample_mode='sample'):
+def mimo_model(function_block, input_shape, output_shape, projection_block=None, mode='project', downsample_input=False, downsampling_rate=None, downsample_mode='sample'):
 
     # define some hepful variables
     in_tsteps = input_shape[-2]
@@ -113,36 +113,17 @@ def mimo_model(function_block, input_shape, output_shape, mode='project', downsa
 
     if mode=='project':
         squeeze_time = tf.keras.layers.Dense(out_tsteps)
-        if out_dims > 1:
-            squeeze_features = tf.keras.layers.Dense(units=out_dims, activation=tf.keras.layers.Softmax(axis=-1))
-        else:
-            squeeze_features = tf.keras.layers.Dense(out_dims)
 
         function_block_out = tf.transpose(function_block_out, perm=[0, 2, 1])
         function_block_out = squeeze_time(function_block_out)
         function_block_out = tf.transpose(function_block_out, perm=[0, 2, 1])
-
-        function_block_out = squeeze_features(function_block_out)
-
-        mimo_output = function_block_out
-        return tf.keras.Model(inputs, mimo_output)
-
-    elif mode=='snip':
-        function_block_out_snip = function_block_out[:,-out_tsteps:,:]
-
-        # If we have the wrong output dimensionality, we do a temporally disttributed transform
-        if function_block_out_snip.shape[-1] != out_dims:
-            if out_dims > 1:
-                squeeze_features = tf.keras.layers.Dense(units=out_dims, activation=tf.keras.layers.Softmax(axis=-1))
-            else:
-                squeeze_features = tf.keras.layers.Dense(out_dims)
-            squeeze_features = tf.keras.layers.TimeDistributed(squeeze_features)
-            mimo_output = squeeze_features(function_block_out_snip)
-            return tf.keras.Model(inputs, mimo_output)
-        # else we just keep it at that
-        else:
-            mimo_output = function_block_out_snip
-            return tf.keras.Model(inputs, mimo_output)
+    elif mode == 'snip':
+        function_block_out_snip = function_block_out[:, -out_tsteps:, :]
     else:
-        print('wrong mode, please select either project or snip')
+        print('wrong output mode specified, needs to be either snip or project')
+
+    forecast = projection_block(function_block_out)
+    return tf.keras.Model(inputs, forecast)
+
+
 

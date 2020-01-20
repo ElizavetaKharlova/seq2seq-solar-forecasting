@@ -55,7 +55,7 @@ def S2S_model(encoder_block, decoder_block,
     teacher = tf.keras.layers.Input(shape=(out_tsteps, out_dims), name='teacher_inputs')
     if use_teacher:
         forecast = decoder_block(tf.expand_dims(teacher[:, 0, :], axis=1),
-                                 teacher=teacher,
+                                 teacher=teacher[:,1:,:],
                                  decoder_init_state=encoder_states,
                                  attention_value=encoder_outputs,
                                  timesteps=out_tsteps)

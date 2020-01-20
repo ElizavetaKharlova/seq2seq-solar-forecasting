@@ -324,30 +324,29 @@ class Model_Container():
                                    input_shape=input_shape,
                                    output_shape=[out_shape[0], 1] if self.forecast_mode =='ev' else out_shape)
 
-        elif model_type == 'Densegenerator' or model_type == 'DenseGenerator':
+        elif model_type == 'LSTM-Generator':
+            from Building_Blocks import block_LSTM, decoder_LSTM_block
+            from Models import forecaster_model
             print('building E-D')
-            common_specs = {'attention_heads': 5,
+            common_specs = {'units': units,
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
+                            'use_norm': use_norm, 'use_hw': use_hw, 'use_residual': use_residual,
                             'L1': L1, 'L2': L2,
-                            'use_norm': use_norm}
-            growth = 16
+                            }
+
             encoder_specs = copy.deepcopy(common_specs)
-            encoder_specs['units'] = [[growth, growth, growth, growth, growth, 6*growth],
-                                      [growth, growth, growth, growth, growth, 9*growth],
-                                      [growth, growth, growth, growth, growth, 12*growth],
-                                      ]
+            encoder = block_LSTM(**encoder_specs)
             decoder_specs = copy.deepcopy(common_specs)
-            decoder_specs['units'] = [[growth, growth, growth, growth, growth, 5*growth],
-                                      [growth, growth, growth, growth, growth, 5*growth],
-                                      ]
+            decoder_specs['use_attention'] = use_attention
+            decoder_specs['attention_heads'] = attention_heads
+            decoder_specs['projection_layer'] = projection_block
+            decoder = decoder_LSTM_block(**decoder_specs)
 
             decoder_specs['projection'] = projection_block
 
-            from Building_Blocks import fixed_attentive_TCN, fixed_generator_Dense_block
-            from Models import forecaster_model
-            self.model = forecaster_model(encoder_block=fixed_attentive_TCN(**encoder_specs),
-                                     decoder_block=fixed_generator_Dense_block(**decoder_specs),
+            self.model = forecaster_model(encoder_block=encoder,
+                                     decoder_block=decoder,
                                     use_teacher=True,
                                      output_shape=out_shape,
                                      support_shape=support_shape,

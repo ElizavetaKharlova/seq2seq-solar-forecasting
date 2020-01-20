@@ -13,11 +13,11 @@ def train():
     # ToDo: do the dataset one folder up
     #hmmm...
     metrics = {}
-    experiment_name = 'PDF_S2S_Attn_Luong_NoInput'
+    experiment_name = 'PDF_S2S_Attn_ALl_L2'
 
     model_kwargs = {'model_type': 'E-D',
                     'forecast_mode': 'pdf',
-                    'units' :  [[112], [112]], #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
+                    'units' :  [[110], [110]], #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
                     'downsample': False, 'mode': 'project',
                     'use_dropout' : False, 'dropout_rate' : 0.0,
                     'use_attention': True,

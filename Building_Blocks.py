@@ -699,17 +699,28 @@ class block_LSTM(tf.keras.layers.Layer):
                  return_state=True):
         super(block_LSTM, self).__init__()
         self.return_state = return_state
-        self.multilayer_LSTMs = MultiLayer_LSTM(units=units,
+        self.encoder_blocks = []
+        for block in units:
+            self.encoder_blocks.append(MultiLayer_LSTM(units=[block],
                                                 use_dropout=use_dropout, dropout_rate=dropout_rate,
-                                                use_residuals=use_residual, use_hw=use_hw,
-                                                use_norm=use_norm, L1=L1, L2=L2)
+                                                use_norm=use_norm,
+                                                use_hw=use_hw, use_residuals=use_residual,
+                                                L1=L1, L2=L2))
 
     def call(self, signal, initial_states=None):
-        signal, block_states = self.multilayer_LSTMs(signal, initial_states=initial_states)
+        
+        encoder_outs = []
+        encoder_last_states = []
+        
+        for block in range(len(self.encoder_blocks)):
+            signal, block_states = self.encoder_blocks[block](signal, initial_states=initial_states)
+            encoder_outs.append(signal)
+            encoder_last_states.append(block_states[0])
+            
         if self.return_state:
-            return signal, block_states
+            return encoder_outs, encoder_last_states
         else:
-            return signal
+            return encoder_outs
 
 class decoder_LSTM_block(tf.keras.layers.Layer):
     def __init__(self,
@@ -728,14 +739,14 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
 
         if self.use_attention:
             self.attention_blocks = []
-            self.input_attention = Attention(int(units[0][0]/2),
-                                    mode='Transformer',
-                                    query_kernel= 1,
-                                    key_kernel=1,
-                                    use_dropout=use_dropout,
-                                    dropout_rate=dropout_rate,
-                                    L2=L2, L1=L1,
-                                    only_context=True)
+            # self.input_attention = Attention(int(units[0][0]/2),
+            #                         mode='Transformer',
+            #                         query_kernel= 1,
+            #                         key_kernel=1,
+            #                         use_dropout=use_dropout,
+            #                         dropout_rate=dropout_rate,
+            #                         L2=L2, L1=L1,
+            #                         only_context=True)
         self.decoder_blocks = []
 
         for block in units:
@@ -756,52 +767,58 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                                     only_context=True)
                 self.attention_blocks.append(attention)
 
-    def call(self, zeroth_step, decoder_init_state, teacher=None, attention_value=None, timesteps=12):
+    def call(self, prev_history, decoder_init_state, teacher=None, attention_value=None, timesteps=12):
 
         decoder_state = decoder_init_state # [[[state_h, state_c]]] #(blocks, layers_in_block, 2)
         # decoder state is supposed to be the storage for the states
         # block state is the temporal buffer, because the layout suxx
         # ToDo: this is throwing errors for anything with
-        for timestep in range(timesteps):
-            if timestep == 0:
-                signal = zeroth_step
-            elif teacher is not None:
-                signal = tf.keras.backend.in_train_phase(teacher[:,timestep,:],
-                                                         alt=decoder_out[:, timestep-1,:],
-                                                         training=tf.keras.backend.learning_phase())
-                signal = tf.expand_dims(signal, axis=1)
+        for timestep in range(timesteps + prev_history.shape[1] - 1):
+            if timestep < prev_history.shape[1]:
+                input = tf.expand_dims(prev_history[:,timestep,:], axis=1)
+                decoder_out, decoder_state = self.decoder_step(input, decoder_state, attention_value)
+                if timestep == prev_history.shape[1] - 1:
+                    forecast = self.project_and_concat(decoder_out, None, first_step=True)
             else:
-                signal = decoder_out[:, timestep-1,:]
-                signal = tf.expand_dims(signal, axis=1)
+
+                if teacher is not None:
+                    input = tf.keras.backend.in_train_phase(tf.expand_dims(teacher[:,timestep - prev_history.shape[1],:], axis=1),
+                                                             alt=tf.expand_dims(forecast[:,-1,:], axis=1),
+                                                             training=tf.keras.backend.learning_phase())
+                else:
+                    input = tf.expand_dims(forecast[:, -1, :], axis=1)
+                decoder_out, decoder_state = self.decoder_step(input, decoder_state, attention_value)
+                forecast = self.project_and_concat(decoder_out, forecast, first_step=False)
+
+        return forecast
 
 
-            #input attention
-            attention_context = self.input_attention(signal, value=attention_value)
-            signal = tf.concat([signal, attention_context], axis=-1)
-            # Create an empty list to get states on the LSTM from between
+    def decoder_step(self, input, decoder_state, attention_value):
             # attention layers and assign those to the decoder states later.
+            signal = input
+
             block_states = []
             for num_block in range(len(self.decoder_blocks)):
 
+                if self.use_attention:
+                    query = tf.concat(decoder_state[num_block][-1] , axis=-1)
+                    query = tf.expand_dims(query, axis=1)
+                    if num_block == 0:
+                        query = tf.concat([query, signal], axis=-1)
+                    attention_context = self.attention_blocks[num_block](query, value=attention_value[num_block])
+                    signal = tf.concat([signal, attention_context], axis=-1)
+                    
                 signal, block_state = self.decoder_blocks[num_block](signal, initial_states=[decoder_state[num_block]])
                 block_states.append(block_state[0])
 
-                if self.use_attention:
-                    query = tf.concat(block_state[0][-1] , axis=-1)
-                    query = tf.expand_dims(query, axis=1)
-                    attention_context = self.attention_blocks[num_block](query, value=attention_value)
-                    signal = tf.concat([signal, attention_context], axis=-1)
-
             decoder_state = block_states
+            return signal, decoder_state
 
-            if timestep == 0:
-                signal = self.projection_layer(signal)
-                decoder_out = signal
+    def project_and_concat(self, unprocessed_timestep, previous_processed_timesteps, first_step=True):
+            if first_step:
+                return self.projection_layer(unprocessed_timestep)
             else:
-                signal = self.projection_layer(signal)
-                decoder_out = tf.concat([decoder_out, signal], axis=1)
-
-        return decoder_out
+                return tf.concat([previous_processed_timesteps, self.projection_layer(unprocessed_timestep)], axis=1)
 
 class classic_attn_decoder_LSTM_block(tf.keras.layers.Layer):
     def __init__(self,
@@ -822,15 +839,15 @@ class classic_attn_decoder_LSTM_block(tf.keras.layers.Layer):
             self.attention_blocks = []
         self.decoder_blocks = []
 
-        # if self.use_attention:
-        #     self.attention = Attention(units[-1][-1],
-        #                             mode='Transformer',
-        #                             query_kernel= 1,
-        #                             key_kernel=1,
-        #                             use_dropout=use_dropout,
-        #                             dropout_rate=dropout_rate,
-        #                             L2=L2, L1=L1,
-        #                             only_context=True)
+        if self.use_attention:
+            self.attention = Attention(units[-1][-1],
+                                    mode='Transformer',
+                                    query_kernel= 1,
+                                    key_kernel=1,
+                                    use_dropout=use_dropout,
+                                    dropout_rate=dropout_rate,
+                                    L2=L2, L1=L1,
+                                    only_context=True)
 
         for block in units:
             self.decoder_blocks.append(MultiLayer_LSTM(units=[block],

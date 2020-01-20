@@ -56,12 +56,6 @@ def loss_wrapper(last_output_dim_size, loss_type='nME', normalizer_value=1.0, ta
             prediction = tf.cast(prediction, dtype=tf.float32)
             return calculate_KS(target, prediction, last_output_dim_size)
         return KS
-    elif loss_type == 'tile-to-forecast':
-        def designed(target, prediction):
-            target = tf.cast(target, dtype=tf.float32)
-            prediction = tf.cast(prediction, dtype=tf.float32)
-            return calculate_tile_to_pdf_loss(target, prediction, last_output_dim_size)
-        return designed
     #whatever experimental crap
     elif loss_type=='devset':
         def log_KS_test(target, prediction):

@@ -17,15 +17,15 @@ def train():
 
     model_kwargs = {'model_type': 'E-D',
                     'forecast_mode': 'pdf',
-                    'units' :  [[110], [110]], #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
+                    'units' :  [[256], [256], [256], [256]], #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
                     'downsample': False, 'mode': 'project',
                     'use_dropout' : False, 'dropout_rate' : 0.0,
                     'use_attention': True,
                     'attention_heads': 3,
-                    'L1': 0.0, 'L2': 0.0,
+                    'L1': 0.0, 'L2': 0,
                     'use_norm' : False,
                     }
-    train_kwargs = {'batch_size': 2**7}
+    train_kwargs = {'batch_size': 2**6}
 
     experiment = Model_Container(dataset_folder='Daniels_Dataset_1',
                                  experiment_name=experiment_name,

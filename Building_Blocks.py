@@ -739,14 +739,6 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
 
         if self.use_attention:
             self.attention_blocks = []
-            # self.input_attention = Attention(int(units[0][0]/2),
-            #                         mode='Transformer',
-            #                         query_kernel= 1,
-            #                         key_kernel=1,
-            #                         use_dropout=use_dropout,
-            #                         dropout_rate=dropout_rate,
-            #                         L2=L2, L1=L1,
-            #                         only_context=True)
         self.decoder_blocks = []
 
         for block in units:
@@ -767,58 +759,89 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                                     only_context=True)
                 self.attention_blocks.append(attention)
 
-    def call(self, prev_history, decoder_init_state, teacher=None, attention_value=None, timesteps=12):
+    def call(self, prev_history, decoder_init_state, teacher, attention_value, timesteps):
 
-        decoder_state = decoder_init_state # [[[state_h, state_c]]] #(blocks, layers_in_block, 2)
         # decoder state is supposed to be the storage for the states
         # block state is the temporal buffer, because the layout suxx
-        # ToDo: this is throwing errors for anything with
-        for timestep in range(timesteps + prev_history.shape[1] - 1):
-            if timestep < prev_history.shape[1]:
-                input = tf.expand_dims(prev_history[:,timestep,:], axis=1)
-                decoder_out, decoder_state = self.decoder_step(input, decoder_state, attention_value)
-                if timestep == prev_history.shape[1] - 1:
-                    forecast = self.project_and_concat(decoder_out, None, first_step=True)
-            else:
-
-                if teacher is not None:
-                    input = tf.keras.backend.in_train_phase(tf.expand_dims(teacher[:,timestep - prev_history.shape[1],:], axis=1),
-                                                             alt=tf.expand_dims(forecast[:,-1,:], axis=1),
-                                                             training=tf.keras.backend.learning_phase())
-                else:
-                    input = tf.expand_dims(forecast[:, -1, :], axis=1)
-                decoder_out, decoder_state = self.decoder_step(input, decoder_state, attention_value)
-                forecast = self.project_and_concat(decoder_out, forecast, first_step=False)
+        forecast = tf.keras.backend.in_train_phase(x=self.teacher_call(tf.concat([prev_history, teacher], axis=1),
+                                                                     decoder_init_state,
+                                                                     attention_value,
+                                                                     timesteps),
+                                                   alt=self.self_recurrent_call(prev_history,
+                                                                                decoder_init_state,
+                                                                                attention_value,
+                                                                                timesteps),
+                                                   training=tf.keras.backend.learning_phase())
 
         return forecast
 
+    def teacher_call(self, full_history, decoder_init_state, attention_value, timesteps):
+        unprojected_forecast = self.decode_layerwise(full_history, decoder_init_state, attention_value)
+        forecast = self.projection_layer(unprojected_forecast[:,-timesteps:,:])
+        return forecast
 
-    def decoder_step(self, input, decoder_state, attention_value):
+    def decode_layerwise(self, input, decoder_state, attention_value):
+        signal=input
+        for num_block in range(len(self.decoder_blocks)):
+            block_state = [decoder_state[num_block]]
+            for step in range(input.shape[1]):
+                signal_step = signal[:,step,:]
+                signal_step = tf.expand_dims(signal_step, axis=1)
+                signal_step, block_state = self.decoder_blocks[num_block](signal_step, initial_states=block_state)
+
+
+                if step == 0:
+                    concat_states = tf.concat(block_state[0][-1], axis=-1)
+                    concat_states = tf.expand_dims(concat_states, axis=1)
+                    states_history = concat_states
+                    out = signal_step
+                else:
+                    concat_states = tf.concat(block_state[0][-1], axis=-1)
+                    concat_states = tf.expand_dims(concat_states, axis=1)
+                    states_history = tf.concat([states_history, concat_states], axis=1)
+                    out = tf.concat([out, signal_step], axis=1)
+            signal = out
+            if self.use_attention:
+                attention_context = self.attention_blocks[num_block](states_history, value=attention_value[num_block])
+                signal = tf.concat([signal, attention_context], axis=-1)
+
+        return signal
+
+    def self_recurrent_call(self, prev_history, decoder_init_state, attention_value, timesteps):
+        decoder_state = decoder_init_state  # [[[state_h, state_c]]] #(blocks, layers_in_block, 2)
+
+        for timestep in range(timesteps + prev_history.shape[1] - 1):
+            if timestep < prev_history.shape[1]:
+                input = tf.expand_dims(prev_history[:,timestep,:], axis=1)
+                decoder_out, decoder_state = self.decode_stepwise(input, decoder_state, attention_value)
+                if timestep == prev_history.shape[1] - 1:
+                    forecast = self.projection_layer(decoder_out)
+            else:
+                input = tf.expand_dims(forecast[:, -1, :], axis=1)
+                decoder_out, decoder_state = self.decode_stepwise(input, decoder_state, attention_value)
+                forecast = tf.concat([forecast, self.projection_layer(decoder_out)], axis=1)
+
+        return forecast
+
+    def decode_stepwise(self, input, decoder_state, attention_value):
             # attention layers and assign those to the decoder states later.
             signal = input
 
             block_states = []
             for num_block in range(len(self.decoder_blocks)):
-
-                if self.use_attention:
-                    query = tf.concat(decoder_state[num_block][-1] , axis=-1)
-                    query = tf.expand_dims(query, axis=1)
-                    if num_block == 0:
-                        query = tf.concat([query, signal], axis=-1)
-                    attention_context = self.attention_blocks[num_block](query, value=attention_value[num_block])
-                    signal = tf.concat([signal, attention_context], axis=-1)
                     
                 signal, block_state = self.decoder_blocks[num_block](signal, initial_states=[decoder_state[num_block]])
                 block_states.append(block_state[0])
 
+                if self.use_attention:
+                    query = tf.concat(block_state[0][-1] , axis=-1)
+                    query = tf.expand_dims(query, axis=1)
+                    attention_context = self.attention_blocks[num_block](query, value=attention_value[num_block])
+                    signal = tf.concat([signal, attention_context], axis=-1)
+
             decoder_state = block_states
             return signal, decoder_state
 
-    def project_and_concat(self, unprocessed_timestep, previous_processed_timesteps, first_step=True):
-            if first_step:
-                return self.projection_layer(unprocessed_timestep)
-            else:
-                return tf.concat([previous_processed_timesteps, self.projection_layer(unprocessed_timestep)], axis=1)
 
 class classic_attn_decoder_LSTM_block(tf.keras.layers.Layer):
     def __init__(self,

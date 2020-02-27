@@ -13,16 +13,16 @@ def train():
     # ToDo: do the dataset one folder up
     #hmmm...
     metrics = {}
-    experiment_name = 'LSTM_gen_2_mhA'
+    experiment_name = 'PDF_S2S_Attn_ALl_L2'
 
-    model_kwargs = {'model_type': 'LSTM-Generator',
+    model_kwargs = {'model_type': 'E-D',
                     'forecast_mode': 'pdf',
-                    'units' :  [[128, 128], [128, 128]], #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
+                    'units' :  [[256], [256], [256], [256]], #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
                     'downsample': False, 'mode': 'project',
                     'use_dropout' : False, 'dropout_rate' : 0.0,
                     'use_attention': True,
-                    'attention_heads': 2,
-                    'L1': 0.0, 'L2': 0.0,
+                    'attention_heads': 3,
+                    'L1': 0.0, 'L2': 0,
                     'use_norm' : False,
                     }
     train_kwargs = {'batch_size': 2**6}

@@ -56,10 +56,10 @@ class Model_Container():
             self.actual_input_shape = [int(self.sw_len_samples / self.nwp_downsampling_rate),
                                        self.raw_nwp_shape[1] + 1]
             model_kwargs['input_shape'] = self.actual_input_shape
-        elif 'generator' in model_kwargs['model_type']:
+        elif 'Generator' in model_kwargs['model_type']:
             print(self.dataset_info['nwp_dims'])
-            model_kwargs['support_shape'] = [int(3*24*60/15), self.dataset_info['nwp_dims']]
-            model_kwargs['history_shape'] = [int(2*24), self.fc_tiles]
+            model_kwargs['support_shape'] = [int(5*24*60/15), self.dataset_info['nwp_dims']]
+            model_kwargs['history_shape'] = [int(4*24), self.fc_tiles]
 
 
         model_kwargs['out_shape'] = self.target_shape
@@ -163,7 +163,7 @@ class Model_Container():
                 teacher = teacher * self.dataset_info['normalizer_value']
 
 
-            if 'generator' in self.model_kwargs['model_type']:
+            if 'Generator' in self.model_kwargs['model_type']:
                 print('yaaay', self.model_kwargs['model_type'], 'time!!!!')
                 nwp_inputs = nwp_inputs[-real_support_length:,:]
                 history_pdf = history_pdf[-real_history_length:,:]
@@ -336,6 +336,8 @@ class Model_Container():
                             }
 
             encoder_specs = copy.deepcopy(common_specs)
+
+            encoder_specs['return_state'] = False
             encoder = block_LSTM(**encoder_specs)
             decoder_specs = copy.deepcopy(common_specs)
             decoder_specs['use_attention'] = use_attention
@@ -346,11 +348,41 @@ class Model_Container():
             decoder_specs['projection'] = projection_block
 
             self.model = forecaster_model(encoder_block=encoder,
-                                     decoder_block=decoder,
-                                    use_teacher=True,
-                                     output_shape=out_shape,
-                                     support_shape=support_shape,
-                                     history_shape=history_shape)
+                                        decoder_block=decoder,
+                                        use_teacher=True,
+                                        output_shape=out_shape,
+                                        support_shape=support_shape,
+                                        history_shape=history_shape)
+
+        elif model_type == 'TCN-Generator':
+            from Building_Blocks import fixed_attentive_TCN, fixed_generator_Dense_block
+            from Models import forecaster_model
+            print('building E-D')
+            common_specs = {'units': units,
+                            'use_dropout': use_dropout,
+                            'dropout_rate': dropout_rate,
+                            'use_norm': use_norm, 
+                            # 'use_hw': use_hw, 
+                            # 'use_residual': use_residual,
+                            'L1': L1, 'L2': L2,
+                            }
+
+            encoder_specs = copy.deepcopy(common_specs)
+            encoder = fixed_attentive_TCN(**encoder_specs)
+            decoder_specs = copy.deepcopy(common_specs)
+            # decoder_specs['use_attention'] = use_attention
+            decoder_specs['attention_heads'] = attention_heads
+            decoder_specs['projection'] = projection_block
+            decoder = fixed_generator_Dense_block(**decoder_specs)
+
+            decoder_specs['projection'] = projection_block
+
+            self.model = forecaster_model(encoder_block=encoder,
+                                        decoder_block=decoder,
+                                        use_teacher=True,
+                                        output_shape=out_shape,
+                                        support_shape=support_shape,
+                                        history_shape=history_shape)
 
         else:
             print('trying to buid', model_type, 'but failed')
@@ -402,7 +434,7 @@ class Model_Container():
     def __train_model(self, batch_size=64):
         self.metrics = {}
         callbacks = []
-        epochs = 200
+        epochs = 100
 
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
@@ -427,7 +459,7 @@ class Model_Container():
         train_history = self.model.fit(self.train_dataset_generator(),
                                        steps_per_epoch=self.train_steps_epr_epoch,
                                       epochs=epochs,
-                                      verbose=2,
+                                      verbose=1,
                                       validation_data=self.val_dataset_generator(),
                                        validation_steps=self.val_steps_epr_epoch,
                                       callbacks=callbacks)

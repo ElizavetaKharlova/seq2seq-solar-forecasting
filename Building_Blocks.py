@@ -366,6 +366,7 @@ class Attention(tf.keras.layers.Layer):
 
             # Trasformer style attention: score=Q*K/sqrt(dk)
             # in this case keys = values
+
             if len(query.shape) < len(key.shape):
                 query = tf.expand_dims(query,1)
 
@@ -494,12 +495,12 @@ class preactivated_CNN(tf.keras.layers.Layer):
     def __init__(self, num_features, kernel_size, dilation_rate, stride=1, L1=0.0, L2=0.0):
         super(preactivated_CNN, self).__init__()
         self.layer =  tf.keras.layers.Conv1D(filters=num_features,
-                                      kernel_size=kernel_size,
-                                        activation=activation,
-                                      dilation_rate=dilation_rate,
-                                      kernel_initializer=initializer,
-                                     kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                      padding='causal')
+                                            kernel_size=kernel_size,
+                                            activation=activation,
+                                            dilation_rate=dilation_rate,
+                                            kernel_initializer=initializer,
+                                            kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                            padding='causal')
     def call(self, signal):
         return self.layer(signal)
 
@@ -749,17 +750,16 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                                                 L1=L1, L2=L2))
             if self.use_attention:
                 attention_units = int(block[-1]/2) #equivalent to the dimensionality of attention heads
-                attention = Attention(attention_units,
-                                    mode='Transformer',
-                                    query_kernel= 1,
-                                    key_kernel=1,
-                                    use_dropout=use_dropout,
-                                    dropout_rate=dropout_rate,
-                                    L2=L2, L1=L1,
-                                    only_context=True)
+                attention = multihead_attentive_layer(units_per_head=[attention_units, attention_units, attention_units],
+                                                        use_norm=use_norm,
+                                                        norm_type='layer',
+                                                        L1=L1, L2=L2,
+                                                        use_dropout=use_dropout,
+                                                        dropout_rate=dropout_rate,
+                                                        project_to_units=block[-1])
                 self.attention_blocks.append(attention)
 
-    def call(self, prev_history, decoder_init_state, teacher, attention_value, timesteps):
+    def call(self, prev_history, teacher, attention_value, timesteps, decoder_init_state=None):
 
         # decoder state is supposed to be the storage for the states
         # block state is the temporal buffer, because the layout suxx
@@ -783,7 +783,7 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
     def decode_layerwise(self, input, decoder_state, attention_value):
         signal=input
         for num_block in range(len(self.decoder_blocks)):
-            block_state = [decoder_state[num_block]]
+            block_state = [decoder_state[num_block]] if decoder_state else None
             for step in range(input.shape[1]):
                 signal_step = signal[:,step,:]
                 signal_step = tf.expand_dims(signal_step, axis=1)
@@ -802,7 +802,8 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                     out = tf.concat([out, signal_step], axis=1)
             signal = out
             if self.use_attention:
-                attention_context = self.attention_blocks[num_block](states_history, value=attention_value[num_block])
+                value = tf.concat(attention_value[num_block], axis=-1)
+                attention_context = self.attention_blocks[num_block](states_history, value=value)
                 signal = tf.concat([signal, attention_context], axis=-1)
 
         return signal
@@ -830,13 +831,16 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
             block_states = []
             for num_block in range(len(self.decoder_blocks)):
                     
-                signal, block_state = self.decoder_blocks[num_block](signal, initial_states=[decoder_state[num_block]])
+                signal, block_state = self.decoder_blocks[num_block](signal,
+                                                                    initial_states=[decoder_state[num_block]] if decoder_state else None,
+                                                                    )
                 block_states.append(block_state[0])
 
                 if self.use_attention:
                     query = tf.concat(block_state[0][-1] , axis=-1)
                     query = tf.expand_dims(query, axis=1)
-                    attention_context = self.attention_blocks[num_block](query, value=attention_value[num_block])
+                    value = tf.concat(attention_value[num_block], axis=-1)
+                    attention_context = self.attention_blocks[num_block](query, value=value)
                     signal = tf.concat([signal, attention_context], axis=-1)
 
             decoder_state = block_states
@@ -929,7 +933,7 @@ class fixed_attentive_TCN(tf.keras.layers.Layer):
         self.use_dropout = use_dropout
         self.dropout_rate = dropout_rate
         #ToDo: Figure out how we want to do the parameter growth thingie
-        kernel_size = [2]
+        kernel_size = [2] # does this have to be a list?
         self.input_projection = project_input_to_4k_layer(growth_rate=units[0][0],
                                                           kernel=kernel_size,
                                                           use_dropout=use_dropout,
@@ -1068,8 +1072,8 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
             else:
                 self.before_transform_history[block] = tf.concat([self.before_transform_history[block], out], axis=1)
 
-            if self.before_transform_history[block].shape[1] < self.history_length + self.forecast_timesteps-1:
-                steps_to_pad = self.history_length + self.forecast_timesteps-1 - self.before_transform_history[block].shape[1]
+            if self.before_transform_history[block].shape[1] < self.history_length + self.timesteps-1:
+                steps_to_pad = self.history_length + self.timesteps-1 - self.before_transform_history[block].shape[1]
                 zero_pad = tf.zeros(shape=[tf.shape(input_data)[0], steps_to_pad, self.before_transform_history[block].shape[2]])
 
                 out = tf.concat([zero_pad, self.before_transform_history[block]], axis=1)
@@ -1095,36 +1099,36 @@ class fixed_generator_Dense_block(tf.keras.layers.Layer):
             self.forecast = tf.concat([self.forecast, self.projection(out)], axis=1)
         # print(self.forecast)
 
-    def call(self, history, attention_value, forecast_timesteps=12, teacher=None):
+    def call(self, history, attention_value, timesteps=12, teacher=None):
         self.attention_value = attention_value
         self.history_length= history.shape[1]
-        self.forecast_timesteps = forecast_timesteps
+        self.timesteps = timesteps
 
-        forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), forecast_timesteps),
-                                        alt=self.validation_call(history, forecast_timesteps),
+        forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1), timesteps),
+                                        alt=self.validation_call(history, timesteps),
                                         training=tf.keras.backend.learning_phase())
-        # forecast = self.validation_call(history, forecast_timesteps)
+        # forecast = self.validation_call(history, timesteps)
         return forecast
 
-    def training_call(self, history_and_teacher, forecast_timesteps):
+    def training_call(self, history_and_teacher, timesteps):
 
         self.transform_states = [None]*len(self.transform)
         self.previous_history_exists = False
         self.process(history_and_teacher)
         self.previous_history_exists = True
-        forecast = self.forecast[:, -forecast_timesteps:, :]
+        forecast = self.forecast[:, -timesteps:, :]
         return forecast
 
-    def validation_call(self, history, forecast_timesteps):
+    def validation_call(self, history, timesteps):
         self.transform_states = [None]*len(self.transform)
         self.previous_history_exists = False
 
         self.process(history)
 
         self.previous_history_exists = True
-        for step in range(forecast_timesteps - 1):
+        for step in range(timesteps - 1):
             self.process(self.forecast[:, -1:, :])
-        forecast = self.forecast[:, -forecast_timesteps:, :]
+        forecast = self.forecast[:, -timesteps:, :]
         return forecast
 
 ########################################################################################################################

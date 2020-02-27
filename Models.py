@@ -30,7 +30,7 @@ def forecaster_model(encoder_block, decoder_block,
     teacher = tf.keras.layers.Input(shape=(out_steps, out_dims), name='teacher_input')
     print('removing 0th step to prevent overlap between history and teacher!!')
 
-    forecast = decoder_block(history_input, attention_value=encoder_features, forecast_timesteps=out_steps,
+    forecast = decoder_block(history_input, attention_value=encoder_features, timesteps=out_steps,
                       teacher=teacher[:, 1:, :])
 
     print('final forecast', forecast)

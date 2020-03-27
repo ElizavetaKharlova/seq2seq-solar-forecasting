@@ -17,7 +17,7 @@ def train():
 
     model_kwargs = {'model_type': 'TCN-Generator',
                     'forecast_mode': 'pdf',
-                    'units' :  [[64], [64], [64], [64]], #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
+                    'units' :  [[32], [32]], #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
                     'downsample': False, 'mode': 'project',
                     'use_dropout' : False, 'dropout_rate' : 0.0,
                     'use_attention': True,
@@ -25,7 +25,7 @@ def train():
                     'L1': 0.0, 'L2': 0,
                     'use_norm' : False,
                     }
-    train_kwargs = {'batch_size': 46}
+    train_kwargs = {'batch_size': 2**7}
 
     experiment = Model_Container(dataset_folder='Daniels_Dataset_1',
                                  experiment_name=experiment_name,

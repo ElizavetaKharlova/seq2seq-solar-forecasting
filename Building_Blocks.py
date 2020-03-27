@@ -1113,12 +1113,12 @@ class generator_Dense_block(tf.keras.layers.Layer):
         return forecast
 
     def zero_pad(self, thing_to_pad, input_shape):
-        if thing_to_pad.shape[1] < self.history_length + self.forecast_timesteps -1:
+        if  not thing_to_pad.shape[1] < self.history_length + self.forecast_timesteps -1:
+            padded_out = thing_to_pad
+        else:
             steps_to_pad = self.history_length + self.forecast_timesteps-1 - thing_to_pad.shape[1]
             zero_pad = tf.zeros(shape=[input_shape[0], steps_to_pad, thing_to_pad.shape[2]])
             padded_out = tf.concat([zero_pad, thing_to_pad], axis=1)
-        else:
-            padded_out = thing_to_pad
         return padded_out
 
     def process_with_no_history(self, input_data):
@@ -1126,7 +1126,7 @@ class generator_Dense_block(tf.keras.layers.Layer):
         self.input_buffer = input_data
         out = self.input_projection(input_data)
         for block in range(len(self.transform)):
-            out = self.zero_pad(out, tf.shape(input_data))
+#            out = self.zero_pad(out, tf.shape(input_data))
             out = self.transform[block](out)
             self.self_attention_context[block] = out
             out = self.self_attention[block](out)
@@ -1139,7 +1139,7 @@ class generator_Dense_block(tf.keras.layers.Layer):
         self.input_buffer = tf.concat([self.input_buffer, input_data], axis=1)
         out = self.input_projection(self.input_buffer)
         for block in range(len(self.transform)):
-            out = self.zero_pad(out, tf.shape(input_data))
+#            out = self.zero_pad(out, tf.shape(input_data))
             out = self.transform[block](out) 
             # self.self_attention_context[block] = tf.concat([self.self_attention_context[block], out], axis=1)
             out = self.self_attention[block](out) #, value=self.self_attention_context[block])

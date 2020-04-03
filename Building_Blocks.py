@@ -494,12 +494,12 @@ class preactivated_CNN(tf.keras.layers.Layer):
     def __init__(self, num_features, kernel_size, dilation_rate, stride=1, L1=0.0, L2=0.0):
         super(preactivated_CNN, self).__init__()
         self.layer =  tf.keras.layers.Conv1D(filters=num_features,
-                                      kernel_size=kernel_size,
-                                        activation=activation,
-                                      dilation_rate=dilation_rate,
-                                      kernel_initializer=initializer,
-                                     kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                      padding='causal')
+                                            kernel_size=kernel_size,
+                                            activation=activation,
+                                            dilation_rate=dilation_rate,
+                                            kernel_initializer=initializer,
+                                            kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                            padding='causal')
     def call(self, signal):
         return self.layer(signal)
 
@@ -981,209 +981,102 @@ class attentive_TCN(tf.keras.layers.Layer):
         return out
 
 class generator_Dense_block(tf.keras.layers.Layer):
-    def __init__(self,
-                 units=None,
-                 use_dropout=False,
-                 dropout_rate=0.0,
-                 attention_heads=3,
-                 L1=0.0, L2=0.0,
-                 use_norm=False,
-                 projection=tf.keras.layers.Dense(20)):
-        super(generator_Dense_block, self).__init__()
-        self.use_norm = use_norm
-        #ToDo: Figure out how we want to do the parameter growth thingie
+def __init__(self,
+             units=None,
+             use_dropout=False,
+             dropout_rate=0.0,
+             attention_heads=3,
+             L1=0.0, L2=0.0,
+             use_norm=False,
+             projection=tf.keras.layers.Dense(20)):
+    super(generator_Dense_block, self).__init__()
+    self.use_norm = use_norm
+    self.projection = projection
 
-        self.projection = projection
+    self.input_projection = preactivated_CNN(units[0][0], kernel_size=2,dilation_rate=1)
+    
+    if self.use_norm:
+        self.input_projection = Norm_wrapper(self.input_projection)
 
-        kernel_size = [2]
-        self.input_projection = project_input_to_4k_layer(growth_rate=int(units[0][0]/4), # /4 to compensate for growth_rate*4
-                                                          kernel=kernel_size,
-                                                          use_dropout=use_dropout,
-                                                          dropout_rate=dropout_rate,
-                                                          use_norm=use_norm)
-        # Self attention and attention layers
-        self.transform = []
-        self.attention = []
-        self.self_attention = []
-        self.self_attention_context = [[]]*len(units)
-        self.before_transform_history = []
-        self.post_history = []
-        for block in range(len(units)):
-            Dense_params = {'units': [units[block][:-1]],
-                            'growth_rate': units[block][0],
-                            'use_dropout': use_dropout,
-                            'dropout_rate': dropout_rate,
-                            'L1':L1,
-                            'L2':L2,
-                            'use_norm': use_norm,
-                            'kernel_sizes': kernel_size,
-                            'residual':True,
-                            'project_to_features': units[block][-1]
-                             }
-            transform = DenseTCN(**Dense_params)
-            # transform = Residual_LSTM_wrapper(transform)
-            if self.use_norm:
-                transform = Norm_wrapper(transform, norm='batch')
-            self.transform.append(transform)
-            self.before_transform_history.append([])
-            self.post_history.append([])
+    self.transform = []
+    self.self_attention = []
+    self.attention = []
+    # initialize the transform and attention blocks
+    for block in range(len(units)):
+        transform = preactivated_CNN(units[block][-1], kernel_size=2, dilation_rate=2**block)
 
-            attn_units_per_head = [int(attention_heads/(attention_heads+1) * units[block][-1])] * attention_heads
-            self_attention = multihead_attentive_layer(units_per_head=attn_units_per_head,
-                                                       use_norm=use_norm,
-                                                       norm_type='batch',
-                                                       L1=L1, L2=L2,
-                                                       project_to_units=units[block][-1],
-                                                       use_dropout=use_dropout, dropout_rate=dropout_rate)
-            self_attention = Residual_wrapper(self_attention)
-            if use_norm:
-                self_attention=Norm_wrapper(self_attention, norm='batch')
-            self.self_attention.append(self_attention)
+        if self.use_norm:
+            transform = Norm_wrapper(transform, norm='batch')
+        self.transform.append(transform)
 
-            attn = multihead_attentive_layer(units_per_head=attn_units_per_head,
-                                               use_norm=use_norm,
-                                               norm_type='batch',
-                                                L1=L1, L2=L2,
-                                               project_to_units=units[block][-1],
-                                               use_dropout=use_dropout, dropout_rate=dropout_rate)  # choose the attention style (Bahdanau, Transformer
-            attn = Residual_wrapper(attn)
-            if self.use_norm:
-                attn = Norm_wrapper(attn, norm='batch')
-            self.attention.append(attn)
+        self_attn = Attention(units[block][-1])
+        if self.use_norm:
+            self_attn = Norm_wrapper(self_attn)
+        self.self_attention.append(self_attn)
 
-    #ToDo: Fix signal flow here ... if we are teacher forcing were not actually seeing the full signal you dumbass idiot!!
-    def process(self, input_data):
-        # Input to first transformation layer, assign last state and out
-        input_num_timesteps = input_data.shape[1]
-        if not self.previous_history_exists:
-            self.input_buffer = input_data
-        else:
-            self.input_buffer = tf.concat([self.input_buffer, input_data], axis=1)
+        attn = Attention(units[block][-1])
+        if self.use_norm:
+            attn = Norm_wrapper(attn)
+        self.attention.append(attn)
+        
+# zero padding
+def zero_pad(self, thing_to_pad, input_shape):
+    if  not thing_to_pad.shape[1] < self.history_length + self.forecast_timesteps -1:
+        padded_out = thing_to_pad
+    else:
+        steps_to_pad = self.history_length + self.forecast_timesteps-1 - thing_to_pad.shape[1]
+        zero_pad = tf.zeros(shape=[input_shape[0], steps_to_pad, thing_to_pad.shape[2]])
+        padded_out = tf.concat([zero_pad, thing_to_pad], axis=1)
+    return padded_out
+    
+# in case of teacher forcing or histoy processing
+def process_one_step(self, data):
+    self.buffer = data
+    out = self.input_projection(data)
+    out = self.zero_pad(out, tf.shape(data))
+    for block in range(len(self.transform)):
+        out = self.transform[block](out)
+        out = self.self_attention[block](out)
+        out = self.attention[block](out, value=self.attention_value)
+    self.forecast = self.projection(out)
+    return None
+    
+# use when validating and forecasting step by step
+def unroll(self, data):
+    self.buffer = tf.concat([self.buffer, data], axis=1)
+    out = self.input_projection(self.buffer)
+    out = self.zero_pad(out, tf.shape(data))
+    for block in range(len(self.transform)):
+        out = self.transform[block](out)
+        out = self.self_attention[block](out)
+        out = self.attention[block](out, value=self.attention_value)
+    out = self.projection(out)
+    self.forecast = tf.concat([self.forecast, out[:,-1:,:]], axis=1)
+    return None
 
-        out = self.input_projection(self.input_buffer)
-        out = out[:, -input_num_timesteps:, :]
+def training_call(self, history_and_teacher):
+    self.process_one_step(history_and_teacher)
+    forecast = self.forecast[:,-self.forecast_timesteps:,:]
+    return forecast
 
-        for block in range(len(self.transform)):
-            # Transformation step
-            # This needs to be logged to make sure we give the TCN enough data for the receptive windows to actually matter
-            if not self.previous_history_exists:
-                self.before_transform_history[block] = out
-            else:
-                self.before_transform_history[block] = tf.concat([self.before_transform_history[block], out], axis=1)
+def validation_call(self, history):
+    self.process_one_step(history)
+    for step in range(self.forecast_timesteps-1):
+        self.unroll(self.forecast[:,-1:,:])
+    forecast = self.forecast[:,-self.forecast_timesteps:,:]
+    return forecast
+        
 
-            if self.before_transform_history[block].shape[1] < self.history_length + self.forecast_timesteps-1:
-                steps_to_pad = self.history_length + self.forecast_timesteps-1 - self.before_transform_history[block].shape[1]
-                zero_pad = tf.zeros(shape=[tf.shape(input_data)[0], steps_to_pad, self.before_transform_history[block].shape[2]])
+def call(self, history, attention_value, teacher, timesteps=12):
+    self.attention_value = attention_value
+    self.forecast_timesteps = timesteps
+    self.history_length = history.shape[1]
 
-                out = tf.concat([zero_pad, self.before_transform_history[block]], axis=1)
-            else:
-                out = self.before_transform_history[block]
-            out = self.transform[block](out)
-            out = out[:, -input_num_timesteps:, :]
+    forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1)),
+                                    alt=self.validation_call(history),
+                                    training=tf.keras.backend.learning_phase())
 
-            # Self-attention or pseudo self-attention, depending on wether we are unrolling or not
-            if not self.previous_history_exists:  # parallelization wins, this covers teacher forcing and all non-unrolling scenarios with normal SA
-                out_sa = self.self_attention[block](out)
-                self.self_attention_context[block] = out
-            else:
-                out_sa = self.self_attention[block](out, value=self.self_attention_context[block])
-                self.self_attention_context[block] = tf.concat([self.self_attention_context[block], out], axis=1)  # add to the context for the next unrolling steppuru
-
-            # Attention on the context
-            out = self.attention[block](out_sa, value=self.attention_value)
-
-        if not self.previous_history_exists:
-            self.forecast = self.projection(out)
-        else:
-            self.forecast = tf.concat([self.forecast, self.projection(out)], axis=1)
-        # print(self.forecast)
-
-    def call(self, history, attention_value, timesteps=12, teacher=None):
-        self.attention_value = attention_value
-        self.history_length= history.shape[1]
-        self.forecast_timesteps = timesteps
-
-        # forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1)),
-        #                                 alt=self.validation_call(history),
-        #                                 training=tf.keras.backend.learning_phase())
-        forecast = tf.keras.backend.in_train_phase(self.training_call(history, teacher),
-                                        alt=self.validation_call(history),
-                                        training=tf.keras.backend.learning_phase())
-        # forecast = self.validation_call(history)
-        return forecast
-
-    def zero_pad(self, thing_to_pad, input_shape):
-        if  not thing_to_pad.shape[1] < self.history_length + self.forecast_timesteps -1:
-            padded_out = thing_to_pad
-        else:
-            steps_to_pad = self.history_length + self.forecast_timesteps-1 - thing_to_pad.shape[1]
-            zero_pad = tf.zeros(shape=[input_shape[0], steps_to_pad, thing_to_pad.shape[2]])
-            padded_out = tf.concat([zero_pad, thing_to_pad], axis=1)
-        return padded_out
-
-    def process_with_no_history(self, input_data):
-        input_num_timesteps = input_data.shape[1]
-        self.input_buffer = input_data
-        out = self.input_projection(input_data)
-        for block in range(len(self.transform)):
-#            out = self.zero_pad(out, tf.shape(input_data))
-            out = self.transform[block](out)
-            self.self_attention_context[block] = out
-            out = self.self_attention[block](out)
-            out = self.attention[block](out, value=self.attention_value)
-        self.forecast = self.projection(out)
-        return None
-
-    def unroll(self, input_data):
-        input_num_timesteps = input_data.shape[1]
-        self.input_buffer = tf.concat([self.input_buffer, input_data], axis=1)
-        out = self.input_projection(self.input_buffer)
-        for block in range(len(self.transform)):
-#            out = self.zero_pad(out, tf.shape(input_data))
-            out = self.transform[block](out) 
-            # self.self_attention_context[block] = tf.concat([self.self_attention_context[block], out], axis=1)
-            out = self.self_attention[block](out) #, value=self.self_attention_context[block])
-            out = self.attention[block](out, value=self.attention_value)
-        v = self.projection(out)
-        self.forecast = tf.concat([self.forecast, v[:,-1:,:]], axis=1)
-        return None
-
-    # def training_call(self, history_and_teacher):
-
-    #     self.transform_states = [None]*len(self.transform)
-    #     self.previous_history_exists = False
-    #     # self.process(history_and_teacher)
-    #     self.process_with_no_history(history_and_teacher)
-    #     self.previous_history_exists = True
-    #     forecast = self.forecast[:, -self.forecast_timesteps:, :]
-    #     return forecast
-
-    def training_call(self, history, teacher):
-
-        self.transform_states = [None]*len(self.transform)
-        self.previous_history_exists = False
-        # self.process(history_and_teacher)
-        self.process_with_no_history(history)
-        self.previous_history_exists = True
-        for step in range(self.forecast_timesteps - 1):
-            # self.process(self.forecast[:, -1:, :])
-            self.unroll(tf.expand_dims(teacher[:,-step,:], axis=1))
-        forecast = self.forecast[:, -self.forecast_timesteps:, :]
-        return forecast
-
-    def validation_call(self, history):
-        self.transform_states = [None]*len(self.transform)
-        self.previous_history_exists = False
-
-        # self.process(history)
-        self.process_with_no_history(history)
-
-        self.previous_history_exists = True
-        for step in range(self.forecast_timesteps - 1):
-            # self.process(self.forecast[:, -1:, :])
-            self.unroll(self.forecast[:,-1:,:])
-        forecast = self.forecast[:, -self.forecast_timesteps:, :]
-        return forecast
+    return forecast
 
 ########################################################################################################################
 

@@ -375,11 +375,11 @@ class Model_Container():
             decoder = generator_Dense_block(**decoder_specs)
 
             self.model = forecaster_model(encoder_block=encoder,
-                                     decoder_block=decoder,
-                                    use_teacher=True,
-                                     output_shape=out_shape,
-                                     support_shape=support_shape,
-                                     history_shape=history_shape)
+                                        decoder_block=decoder,
+                                        use_teacher=True,
+                                        output_shape=out_shape,
+                                        support_shape=support_shape,
+                                        history_shape=history_shape)
 
         else:
             print('trying to buid', model_type, 'but failed')
@@ -420,7 +420,7 @@ class Model_Container():
         else:
             print('forecast mode was not specified as either <pdf> or <ev>, no idea how it got this far but expect some issues!!')
 
-        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=3*1e-4,
+        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=3*1e-3,
                                                              momentum=0.75,
                                                              nesterov=True,
                                                               #clipnorm=1.0,
@@ -454,12 +454,12 @@ class Model_Container():
         #                                                        cooldown=5))
         print('starting to train model')
         train_history = self.model.fit(self.train_dataset_generator(),
-                                       steps_per_epoch=self.train_steps_epr_epoch,
-                                      epochs=epochs,
-                                      verbose=1,
-                                      validation_data=self.val_dataset_generator(),
-                                       validation_steps=self.val_steps_epr_epoch,
-                                      callbacks=callbacks)
+                                        steps_per_epoch=self.train_steps_epr_epoch,
+                                        epochs=epochs,
+                                        verbose=1,
+                                        validation_data=self.val_dataset_generator(),
+                                        validation_steps=self.val_steps_epr_epoch,
+                                        callbacks=callbacks)
 
         train_history = train_history.history
         for key in train_history.keys():

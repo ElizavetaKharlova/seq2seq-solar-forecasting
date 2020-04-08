@@ -748,15 +748,28 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                                                 use_hw=use_hw, use_residuals=use_residual,
                                                 L1=L1, L2=L2))
             if self.use_attention:
-                attention_units = int(block[-1]/2) #equivalent to the dimensionality of attention heads
-                attention = Attention(attention_units,
-                                    mode='Transformer',
-                                    query_kernel= 1,
-                                    key_kernel=1,
-                                    use_dropout=use_dropout,
-                                    dropout_rate=dropout_rate,
-                                    L2=L2, L1=L1,
-                                    only_context=True)
+                attention_units = int(block[-1] / 2)
+                if attention_heads == 1:
+                    #equivalent to the dimensionality of attention heads
+                    attention = Attention(attention_units,
+                                        mode='Transformer',
+                                        query_kernel= 1,
+                                        key_kernel=1,
+                                        use_dropout=use_dropout,
+                                        dropout_rate=dropout_rate,
+                                        L2=L2, L1=L1,
+                                        only_context=True)
+
+                else:
+                    units_per_head =[attention_units]*attention_heads
+                    attention = multihead_attentive_layer(units_per_head=units_per_head,
+                                                          kernel_size=None,
+                                                          project_to_units=int(np.sum(units_per_head)/2),
+                                                          dropout_rate=dropout_rate,
+                                                          use_dropout=use_dropout,
+                                                          use_norm=use_norm,
+                                                          L1=L1,
+                                                          L2=L2, )
                 self.attention_blocks.append(attention)
 
     def call(self, prev_history, teacher, attention_value, timesteps, decoder_init_state=None):
@@ -981,102 +994,102 @@ class attentive_TCN(tf.keras.layers.Layer):
         return out
 
 class generator_Dense_block(tf.keras.layers.Layer):
-def __init__(self,
-             units=None,
-             use_dropout=False,
-             dropout_rate=0.0,
-             attention_heads=3,
-             L1=0.0, L2=0.0,
-             use_norm=False,
-             projection=tf.keras.layers.Dense(20)):
-    super(generator_Dense_block, self).__init__()
-    self.use_norm = use_norm
-    self.projection = projection
+    def __init__(self,
+                 units=None,
+                 use_dropout=False,
+                 dropout_rate=0.0,
+                 attention_heads=3,
+                 L1=0.0, L2=0.0,
+                 use_norm=False,
+                 projection=tf.keras.layers.Dense(20)):
+        super(generator_Dense_block, self).__init__()
+        self.use_norm = use_norm
+        self.projection = projection
 
-    self.input_projection = preactivated_CNN(units[0][0], kernel_size=2,dilation_rate=1)
-    
-    if self.use_norm:
-        self.input_projection = Norm_wrapper(self.input_projection)
-
-    self.transform = []
-    self.self_attention = []
-    self.attention = []
-    # initialize the transform and attention blocks
-    for block in range(len(units)):
-        transform = preactivated_CNN(units[block][-1], kernel_size=2, dilation_rate=2**block)
+        self.input_projection = preactivated_CNN(units[0][0], kernel_size=2,dilation_rate=1)
 
         if self.use_norm:
-            transform = Norm_wrapper(transform, norm='batch')
-        self.transform.append(transform)
+            self.input_projection = Norm_wrapper(self.input_projection)
 
-        self_attn = Attention(units[block][-1])
-        if self.use_norm:
-            self_attn = Norm_wrapper(self_attn)
-        self.self_attention.append(self_attn)
+        self.transform = []
+        self.self_attention = []
+        self.attention = []
+        # initialize the transform and attention blocks
+        for block in range(len(units)):
+            transform = preactivated_CNN(units[block][-1], kernel_size=2, dilation_rate=2**block)
 
-        attn = Attention(units[block][-1])
-        if self.use_norm:
-            attn = Norm_wrapper(attn)
-        self.attention.append(attn)
-        
-# zero padding
-def zero_pad(self, thing_to_pad, input_shape):
-    if  not thing_to_pad.shape[1] < self.history_length + self.forecast_timesteps -1:
-        padded_out = thing_to_pad
-    else:
-        steps_to_pad = self.history_length + self.forecast_timesteps-1 - thing_to_pad.shape[1]
-        zero_pad = tf.zeros(shape=[input_shape[0], steps_to_pad, thing_to_pad.shape[2]])
-        padded_out = tf.concat([zero_pad, thing_to_pad], axis=1)
-    return padded_out
-    
-# in case of teacher forcing or histoy processing
-def process_one_step(self, data):
-    self.buffer = data
-    out = self.input_projection(data)
-    out = self.zero_pad(out, tf.shape(data))
-    for block in range(len(self.transform)):
-        out = self.transform[block](out)
-        out = self.self_attention[block](out)
-        out = self.attention[block](out, value=self.attention_value)
-    self.forecast = self.projection(out)
-    return None
-    
-# use when validating and forecasting step by step
-def unroll(self, data):
-    self.buffer = tf.concat([self.buffer, data], axis=1)
-    out = self.input_projection(self.buffer)
-    out = self.zero_pad(out, tf.shape(data))
-    for block in range(len(self.transform)):
-        out = self.transform[block](out)
-        out = self.self_attention[block](out)
-        out = self.attention[block](out, value=self.attention_value)
-    out = self.projection(out)
-    self.forecast = tf.concat([self.forecast, out[:,-1:,:]], axis=1)
-    return None
+            if self.use_norm:
+                transform = Norm_wrapper(transform, norm='batch')
+            self.transform.append(transform)
 
-def training_call(self, history_and_teacher):
-    self.process_one_step(history_and_teacher)
-    forecast = self.forecast[:,-self.forecast_timesteps:,:]
-    return forecast
+            self_attn = Attention(units[block][-1])
+            if self.use_norm:
+                self_attn = Norm_wrapper(self_attn)
+            self.self_attention.append(self_attn)
 
-def validation_call(self, history):
-    self.process_one_step(history)
-    for step in range(self.forecast_timesteps-1):
-        self.unroll(self.forecast[:,-1:,:])
-    forecast = self.forecast[:,-self.forecast_timesteps:,:]
-    return forecast
-        
+            attn = Attention(units[block][-1])
+            if self.use_norm:
+                attn = Norm_wrapper(attn)
+            self.attention.append(attn)
 
-def call(self, history, attention_value, teacher, timesteps=12):
-    self.attention_value = attention_value
-    self.forecast_timesteps = timesteps
-    self.history_length = history.shape[1]
+    # zero padding
+    def zero_pad(self, thing_to_pad, input_shape):
+        if  not thing_to_pad.shape[1] < self.history_length + self.forecast_timesteps -1:
+            padded_out = thing_to_pad
+        else:
+            steps_to_pad = self.history_length + self.forecast_timesteps-1 - thing_to_pad.shape[1]
+            zero_pad = tf.zeros(shape=[input_shape[0], steps_to_pad, thing_to_pad.shape[2]])
+            padded_out = tf.concat([zero_pad, thing_to_pad], axis=1)
+        return padded_out
 
-    forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1)),
-                                    alt=self.validation_call(history),
-                                    training=tf.keras.backend.learning_phase())
+    # in case of teacher forcing or histoy processing
+    def process_one_step(self, data):
+        self.buffer = data
+        out = self.input_projection(data)
+        out = self.zero_pad(out, tf.shape(data))
+        for block in range(len(self.transform)):
+            out = self.transform[block](out)
+            out = self.self_attention[block](out)
+            out = self.attention[block](out, value=self.attention_value)
+        self.forecast = self.projection(out)
+        return None
 
-    return forecast
+    # use when validating and forecasting step by step
+    def unroll(self, data):
+        self.buffer = tf.concat([self.buffer, data], axis=1)
+        out = self.input_projection(self.buffer)
+        out = self.zero_pad(out, tf.shape(data))
+        for block in range(len(self.transform)):
+            out = self.transform[block](out)
+            out = self.self_attention[block](out)
+            out = self.attention[block](out, value=self.attention_value)
+        out = self.projection(out)
+        self.forecast = tf.concat([self.forecast, out[:,-1:,:]], axis=1)
+        return None
+
+    def training_call(self, history_and_teacher):
+        self.process_one_step(history_and_teacher)
+        forecast = self.forecast[:,-self.forecast_timesteps:,:]
+        return forecast
+
+    def validation_call(self, history):
+        self.process_one_step(history)
+        for step in range(self.forecast_timesteps-1):
+            self.unroll(self.forecast[:,-1:,:])
+        forecast = self.forecast[:,-self.forecast_timesteps:,:]
+        return forecast
+
+
+    def call(self, history, attention_value, teacher, timesteps=12):
+        self.attention_value = attention_value
+        self.forecast_timesteps = timesteps
+        self.history_length = history.shape[1]
+
+        forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1)),
+                                        alt=self.validation_call(history),
+                                        training=tf.keras.backend.learning_phase())
+
+        return forecast
 
 ########################################################################################################################
 

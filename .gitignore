@@ -48,3 +48,11 @@ Experiment_results/smallMiMo-LSTM.pickle
 med_E-D.pickle
 
 med_MiMo-attn-tcn.pickle
+
+*.pickle
+
+*.v2
+
+*.profile-empty
+
+*.trace

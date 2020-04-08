@@ -2,6 +2,7 @@ import tensorflow as tf
 #ToDo: WE gotta change shit to keyword arguments for sanity's skae... jesus fuck
 def forecaster_model(encoder_block, decoder_block,
                      history_shape, support_shape, output_shape,
+                     random_degree=0.4,
                      use_teacher=True, #dont be stupid and dont
                      ):
 
@@ -22,6 +23,22 @@ def forecaster_model(encoder_block, decoder_block,
     print(support_input)
     history_input = tf.keras.layers.Input(shape=(history_steps, history_dims), name='history_input')
     print(history_input)
+
+    # ToDO: tf keras validation switch
+    # For Now we do this on a per-batch basis, I think eventually we should figure out a way to do this on a per sample basis!
+    def randomize_input_lengths(signal, random_degree):
+        rand = tf.random.uniform(shape=(), minval=1-random_degree, maxval=1)
+        new_signal_length = int(rand*signal.shape[1])
+        return signal[:, -new_signal_length:, :]
+
+    support_input = tf.keras.backend.in_train_phase(randomize_input_lengths(support_input, random_degree),
+                                                    alt=support_input,
+                                                    training=tf.keras.backend.learning_phase())
+    history_input = tf.keras.backend.in_train_phase(randomize_input_lengths(history_input, random_degree),
+                                                    alt=history_input,
+                                                    training=tf.keras.backend.learning_phase())
+
+
 
     encoder_features = encoder_block(support_input)
     # print(encoder_features)

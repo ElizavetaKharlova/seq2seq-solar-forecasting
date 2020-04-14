@@ -15,9 +15,9 @@ def train():
     metrics = {}
     experiment_name = 'PDF_S2S_Attn_ALl_L2'
 
-    model_kwargs = {'model_type': 'TCN-Generator',
+    model_kwargs = {'model_type': 'LSTM-Generator',
                     'forecast_mode': 'pdf',
-                    'units' :  [[32], [32]], #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
+                    'units' :  [[96], [96]], #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
                     'downsample': False, 'mode': 'project',
                     'use_dropout' : False, 'dropout_rate' : 0.0,
                     'use_attention': True,
@@ -142,3 +142,5 @@ def __plot_training_curves(metrics, experiment_name):
             plt.legend()
             plt.savefig(experiment_name, dpi=500, format='pdf')
             plt.show()
+
+train()

@@ -436,7 +436,7 @@ class Model_Container():
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
         callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=15,
+                                                                   patience=10,
                                                                    mode='min',
                                                                    restore_best_weights=True))
         callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,
@@ -456,7 +456,7 @@ class Model_Container():
         train_history = self.model.fit(self.train_dataset_generator(),
                                         steps_per_epoch=self.train_steps_epr_epoch,
                                         epochs=epochs,
-                                        verbose=1,
+                                        verbose=2,
                                         validation_data=self.val_dataset_generator(),
                                         validation_steps=self.val_steps_epr_epoch,
                                         callbacks=callbacks)

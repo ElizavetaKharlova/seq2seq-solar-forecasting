@@ -4,10 +4,19 @@
 
 import tensorflow as tf
 import numpy as np
+import random
 ########################################################################################################################
 '''General help functions, lowest level'''
 initializer = tf.keras.initializers.glorot_uniform()
 activation = tf.nn.relu
+
+
+def randomize_input_lengths(signal, random_degree):
+    rand = tf.random.uniform(shape=(), minval=1 - random_degree, maxval=1)
+    new_signal_length = max(int(rand * signal.shape[1]), 1)
+    new_signal_length = 30
+    return signal[:, -new_signal_length:, :]
+
 def drop_features_of_signal(input, dropout_rate):
     batch_dim = tf.shape(input)[0]
     # if batch_dim is None:
@@ -28,6 +37,23 @@ def drop_timesteps_of_signal(input, dropout_rate):
                 tf.nn.dropout(input, dropout_rate, noise_shape=(batch_dim, input.shape[1], 1)),
                 alt=input,
                 training=tf.keras.backend.learning_phase())
+
+class Cropping_layer(tf.keras.layers.Layer):
+    def __init__(self, noise_rate):
+        super(Cropping_layer, self).__init__()
+        self.noise_rate = noise_rate
+
+    def call(self, signal):
+        return tf.keras.backend.in_train_phase(self.randomize_input_lengths(signal),
+                                                    alt=signal,
+                                                    training=tf.keras.backend.learning_phase())
+
+    def randomize_input_lengths(self, signal):
+        rand = random.uniform(0,1-self.noise_rate)
+        length = signal.shape[1]
+
+        new_signal_length = int(rand * length)
+        return signal[:, -new_signal_length:, :]
 ########################################################################################################################
 '''Wrappers for feedforward architectures'''
 # important to note that all wrappers have to be compatible with both, attention(query, value) and self_attention(query)
@@ -700,6 +726,7 @@ class block_LSTM(tf.keras.layers.Layer):
         super(block_LSTM, self).__init__()
         self.return_state = return_state
         self.encoder_blocks = []
+        self.cropping_layer = Cropping_layer(0.6)
         for block in units:
             self.encoder_blocks.append(MultiLayer_LSTM(units=[block],
                                                 use_dropout=use_dropout, dropout_rate=dropout_rate,
@@ -708,7 +735,7 @@ class block_LSTM(tf.keras.layers.Layer):
                                                 L1=L1, L2=L2))
 
     def call(self, signal, initial_states=None):
-        
+        signal = self.cropping_layer(signal)
         encoder_outs = []
         encoder_last_states = []
         
@@ -736,6 +763,8 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
         self.units = units
         self.use_attention = use_attention
         self.projection_layer=projection_layer
+
+        self.cropping_layer = Cropping_layer(0.6)
 
         if self.use_attention:
             self.attention_blocks = []
@@ -776,7 +805,7 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
 
         # decoder state is supposed to be the storage for the states
         # block state is the temporal buffer, because the layout suxx
-        forecast = tf.keras.backend.in_train_phase(x=self.teacher_call(tf.concat([prev_history, teacher], axis=1),
+        forecast = tf.keras.backend.in_train_phase(x=self.teacher_call(prev_history, teacher,
                                                                      decoder_init_state,
                                                                      attention_value,
                                                                      timesteps),
@@ -788,7 +817,9 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
 
         return forecast
 
-    def teacher_call(self, full_history, decoder_init_state, attention_value, timesteps):
+    def teacher_call(self, prev_history, teacher, decoder_init_state, attention_value, timesteps):
+        prev_history = self.cropping_layer(prev_history)
+        full_history = tf.concat([prev_history, teacher], axis=1)
         unprojected_forecast = self.decode_layerwise(full_history, decoder_init_state, attention_value)
         forecast = self.projection_layer(unprojected_forecast[:,-timesteps:,:])
         return forecast
@@ -797,27 +828,30 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
         signal=input
         for num_block in range(len(self.decoder_blocks)):
             block_state = [decoder_state[num_block]] if decoder_state else None
-            for step in range(input.shape[1]):
-                signal_step = signal[:,step,:]
-                signal_step = tf.expand_dims(signal_step, axis=1)
-                signal_step, block_state = self.decoder_blocks[num_block](signal_step, initial_states=block_state)
 
+            signal, block_state = self.decoder_blocks[num_block](signal, initial_states=block_state)
 
-                if step == 0:
-                    concat_states = tf.concat(block_state[0][-1], axis=-1)
-                    concat_states = tf.expand_dims(concat_states, axis=1)
-                    states_history = concat_states
-                    out = signal_step
-                else:
-                    concat_states = tf.concat(block_state[0][-1], axis=-1)
-                    concat_states = tf.expand_dims(concat_states, axis=1)
-                    states_history = tf.concat([states_history, concat_states], axis=1)
-                    out = tf.concat([out, signal_step], axis=1)
-            signal = out
             if self.use_attention:
-                # attention value is the output of the encoder with no states
-                attention_context = self.attention_blocks[num_block](states_history, value=attention_value[num_block])
+                attention_context = self.attention_blocks[num_block](signal, value=attention_value[num_block])
                 signal = tf.concat([signal, attention_context], axis=-1)
+
+            # #ToDO: Tensorflow ragged tensors
+            # for step in range(num_steps):
+            #     signal_step = signal[:,step,:]
+            #     signal_step = tf.expand_dims(signal_step, axis=1)
+            #     signal_step, block_state = self.decoder_blocks[num_block](signal_step, initial_states=block_state)
+            #     print('.')
+            #
+            #     concat_states = tf.concat(block_state[0][-1], axis=-1)
+            #     concat_states = tf.expand_dims(concat_states, axis=1)
+            #     states_history = tf.concat([states_history, concat_states], axis=1)
+            #     out = tf.concat([out, signal_step], axis=1)
+            #
+            # signal = out
+            # if self.use_attention:
+            #     # attention value is the output of the encoder with no states
+            #     attention_context = self.attention_blocks[num_block](states_history, value=attention_value[num_block])
+            #     signal = tf.concat([signal, attention_context], axis=-1)
 
         return signal
 
@@ -852,7 +886,7 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                 if self.use_attention:
                     query = tf.concat(block_state[0][-1] , axis=-1)
                     query = tf.expand_dims(query, axis=1)
-                    attention_context = self.attention_blocks[num_block](query, value=attention_value[num_block])
+                    attention_context = self.attention_blocks[num_block](signal, value=attention_value[num_block])
                     signal = tf.concat([signal, attention_context], axis=-1)
 
             decoder_state = block_states

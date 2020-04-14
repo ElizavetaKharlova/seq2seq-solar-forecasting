@@ -49,11 +49,10 @@ class Cropping_layer(tf.keras.layers.Layer):
                                                     training=tf.keras.backend.learning_phase())
 
     def randomize_input_lengths(self, signal):
-        rand = random.uniform(0,1-self.noise_rate)
-        length = signal.shape[1]
-
-        new_signal_length = int(rand * length)
-        return signal[:, -new_signal_length:, :]
+        rand = tf.random.uniform(shape=(), minval=0 , maxval=int(self.noise_rate*signal.shape[1]), dtype=tf.int32)
+        signal = tf.slice(signal, begin=[0, rand, 0], size=[-1,-1,-1])
+        # signal = signal[:, -new_signal_length:, :]
+        return signal
 ########################################################################################################################
 '''Wrappers for feedforward architectures'''
 # important to note that all wrappers have to be compatible with both, attention(query, value) and self_attention(query)

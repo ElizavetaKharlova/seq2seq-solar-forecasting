@@ -3,19 +3,27 @@ venv/
 
 _data/
 
+data/
+
 Daniels_dataset_1/
 
 Daniels_dataset_2/
 
 Daniels_dataset_3/
 
-Lizas_dataset_1/
+Lizas_Dataset_1/
+
+Lizas_dataset/
 
 Lizas_dataset_2/
 
 Lizas_Dataset_3/
 
+Daniels_Dataset_1/
+
 experiments/
+
+trials/
 
 test.py
 

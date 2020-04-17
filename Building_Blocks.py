@@ -1125,6 +1125,38 @@ class generator_Dense_block(tf.keras.layers.Layer):
         return forecast
 
 ########################################################################################################################
+class ForecasterModel(tf.keras.Model):
+    def __init__(self,
+                output_shape,
+                encoder_specs,
+                decoder_specs,
+                model_type='LSTM'
+                ):
+        super(ForecasterModel, self).__init__()
+        self.out_steps = output_shape[-2]
+
+        # identify the model type and assemble accordingly
+        if model_type == 'LSTM':
+            self.encoder = block_LSTM(**encoder_specs)
+            self.decoder = decoder_LSTM_block(**decoder_specs)
+        elif model_type == 'TCN':
+            self.encoder = attentive_TCN(**encoder_specs)
+            self.decoder = generator_Dense_block(**decoder_specs)
+
+    def call(self, inputs,):
+        # undictionary inputs (TF doesn't let you have multiple inputs)
+        support_input = inputs['support_input']
+        history_input = inputs['history_input']
+        teacher = inputs['teacher_input']
+        # run the model
+        encoder_features = self.encoder(support_input)
+        forecast = self.decoder(history_input, attention_value=encoder_features, timesteps=self.out_steps, teacher=teacher[:, 1:, :])
+        return forecast
+
+
+
+
+########################################################################################################################
 
 class WeightNormalization(tf.keras.layers.Wrapper):
     """This wrapper reparameterizes a layer by decoupling the weight's
@@ -1282,5 +1314,4 @@ class WeightNormalization(tf.keras.layers.Wrapper):
         base_config = super(WeightNormalization, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
-
-########################################################################################################################
+########################################################################################################################s

@@ -15,17 +15,18 @@ def train():
     metrics = {}
     experiment_name = 'PDF_S2S_Attn_ALl_L2'
 
-    model_kwargs = {'model_type': 'LSTM-Generator',
+    model_kwargs = {'model_type': 'Generator',
                     'forecast_mode': 'pdf',
-                    'units' :  [[96], [96]], #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
+                    'units': 2*7,
+                            #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
                     'downsample': False, 'mode': 'project',
                     'use_dropout' : False, 'dropout_rate' : 0.0,
                     'use_attention': True,
-                    'attention_heads': 3,
+                    'attention_heads': 10,
                     'L1': 0.0, 'L2': 0,
                     'use_norm' : False,
                     }
-    train_kwargs = {'batch_size': 2**7}
+    train_kwargs = {'batch_size': 2**8}
 
     experiment = Model_Container(dataset_folder='Daniels_Dataset_1',
                                  experiment_name=experiment_name,

@@ -346,12 +346,12 @@ class Model_Container():
                                         model_type='LSTM')
 
         elif model_type=='CNN-Generator':
-            decoder_specs = {'num_initial_features': 4*7,
+            decoder_specs = {'num_initial_features': decoder_units,
                              'sequence_length': self.len_history,
                              'attention_heads': attention_heads,
                              'attention_squeeze': 0.5,
                              'projection_layer': projection_block}
-            encoder_specs = {'num_initial_features': 4*7,
+            encoder_specs = {'num_initial_features': encoder_units,
                              'sequence_length': self.len_nwp,
                              'attention_heads': attention_heads,
                              'attention_squeeze': 0.5}
@@ -426,8 +426,6 @@ class Model_Container():
                                                             ),
                         loss=loss,
                         metrics=metrics,)  # compile, print summary
-        # self.model.build()
-        # self.model.summary()
 
     def __train_model(self, batch_size=64):
         self.metrics = {}

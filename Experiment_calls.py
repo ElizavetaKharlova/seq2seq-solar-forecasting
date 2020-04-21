@@ -15,14 +15,14 @@ def train():
     metrics = {}
     experiment_name = 'LSTM_GEN'
 
-    model_kwargs = {'model_type': 'Generator',
+    model_kwargs = {'model_type': 'CNN-Generator',
                     'forecast_mode': 'pdf',
-                    'encoder_units' :  [[64], [64]], #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
-                    'decoder_units': [[64],[64]],
+                    'encoder_units' :  50, #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
+                    'decoder_units': 4*7,
                     'downsample': False, 'mode': 'project',
                     'use_dropout' : False, 'dropout_rate' : 0.0,
                     'use_attention': True,
-                    'attention_heads': 10,
+                    'attention_heads': 12,
                     'L1': 0.0, 'L2': 0,
                     'use_norm' : False,
                     }

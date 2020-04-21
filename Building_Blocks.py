@@ -1312,7 +1312,7 @@ class TransformerDecoder(tf.keras.layers.Layer):
     def training_call(self, history_input, teacher, attention_value, timesteps):
         # history_input = self.cropping_layer(history_input)
         signal = tf.concat([history_input, teacher], axis=1)
-
+        print(signal)
         signal = self.projection(signal)
         for block in self.decode_blocks:
             signal = block(signal, attention_value)
@@ -1547,7 +1547,7 @@ class ForecasterModel(tf.keras.Model):
         elif model_type == 'TCN':
             self.encoder = attentive_TCN(**encoder_specs)
             self.decoder = generator_Dense_block(**decoder_specs)
-        elif model_type == 'Wavey':
+        elif model_type == 'CNN-Generator':
             self.encoder = CNN_encoder(**encoder_specs)
             self.decoder = CNN_dencoder(**decoder_specs)
 

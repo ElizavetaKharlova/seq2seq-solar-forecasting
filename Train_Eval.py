@@ -2,8 +2,6 @@
 # this will be using teacher forcing
 import tensorflow as tf
 import numpy as np
-#from Building_Blocks import build_model
-from Benchmarks import build_model
 import copy
 import glob
 import os
@@ -58,8 +56,10 @@ class Model_Container():
             model_kwargs['input_shape'] = self.actual_input_shape
         elif 'Generator' in model_kwargs['model_type']:
             print(self.dataset_info['nwp_dims'])
-            model_kwargs['support_shape'] = [int(3*24*60/15), self.dataset_info['nwp_dims']]
-            model_kwargs['history_shape'] = [int(2*24), self.fc_tiles]
+            self.len_history = int(4*24)
+            self.len_nwp = int(5*24*60/15)
+            model_kwargs['support_shape'] = [self.len_history, self.dataset_info['nwp_dims']]
+            model_kwargs['history_shape'] = [self.len_nwp, self.fc_tiles]
 
 
         model_kwargs['out_shape'] = self.target_shape
@@ -238,7 +238,8 @@ class Model_Container():
                       input_shape=None,
                       forecast_mode='pdf',
                       model_type='MiMo-sth',
-                      units=[[96],[96],[96]],
+                      encoder_units=[[96],[96],[96]],
+                      decoder_units=[[64],[64],[64]],
                       L1=0.0, L2=0.0,
                       use_dropout=False, dropout_rate=0.0,
                       use_hw=False, use_norm=False, use_residual=False, #general architecture stuff
@@ -266,9 +267,8 @@ class Model_Container():
             print('wrong forecast mode flag, must be either pdf or ev')
 
         if model_type == 'MiMo-LSTM':
-            print('building a', units, model_type)
             from Building_Blocks import block_LSTM
-            encoder_specs = {'units': units,
+            encoder_specs = {'units': encoder_units,
                              'use_dropout': use_dropout,
                              'dropout_rate': dropout_rate,
                              'use_norm': use_norm,
@@ -285,9 +285,8 @@ class Model_Container():
                                mode=mode)
 
         elif model_type == 'MiMo-FFNN':
-            print('building a', units, model_type)
             from Building_Blocks import FFW_block
-            encoder_specs = {'units': units,
+            encoder_specs = {'units': encoder_units,
                              'use_dropout': use_dropout,
                              'dropout_rate': dropout_rate,
                              'use_norm': use_norm,}
@@ -305,7 +304,7 @@ class Model_Container():
             from Building_Blocks import block_LSTM, decoder_LSTM_block
             from Models import S2S_model
             print('building E-D')
-            common_specs = {'units': units,
+            common_specs = {'units': encoder_units,
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
                             'use_norm': use_norm, 'use_hw': use_hw, 'use_residual': use_residual,
@@ -325,61 +324,61 @@ class Model_Container():
                                    output_shape=[out_shape[0], 1] if self.forecast_mode =='ev' else out_shape)
 
         elif model_type == 'LSTM-Generator':
-            from Building_Blocks import block_LSTM, decoder_LSTM_block
-            from Models import forecaster_model
+            from Building_Blocks import ForecasterModel
             print('building E-D')
-            common_specs = {'units': units,
-                            'use_dropout': use_dropout,
+            common_specs = {'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
                             'use_norm': use_norm, 'use_hw': use_hw, 'use_residual': use_residual,
                             'L1': L1, 'L2': L2,
                             }
-
             encoder_specs = copy.deepcopy(common_specs)
             encoder_specs['return_state'] = False
-            encoder = block_LSTM(**encoder_specs)
+            encoder_specs['units'] = encoder_units
             decoder_specs = copy.deepcopy(common_specs)
+            decoder_specs['units'] = decoder_units
             decoder_specs['use_attention'] = use_attention
             decoder_specs['attention_heads'] = attention_heads
             decoder_specs['projection_layer'] = projection_block
-            decoder = decoder_LSTM_block(**decoder_specs)
 
-            decoder_specs['projection'] = projection_block
+            self.model = ForecasterModel(output_shape=out_shape,
+                                        encoder_specs=encoder_specs,
+                                        decoder_specs=decoder_specs,
+                                        model_type='LSTM')
 
-            self.model = forecaster_model(encoder_block=encoder,
-                                     decoder_block=decoder,
-                                    use_teacher=True,
-                                     output_shape=out_shape,
-                                     support_shape=support_shape,
-                                     history_shape=history_shape)
-
+        elif model_type=='CNN-Generator':
+            decoder_specs = {'num_initial_features': 4*7,
+                             'sequence_length': self.len_history,
+                             'attention_heads': attention_heads,
+                             'attention_squeeze': 0.5,
+                             'projection_layer': projection_block}
+            encoder_specs = {'num_initial_features': 4*7,
+                             'sequence_length': self.len_nwp,
+                             'attention_heads': attention_heads,
+                             'attention_squeeze': 0.5}
+            from Building_Blocks import ForecasterModel
+            self.model = ForecasterModel(output_shape=out_shape,
+                                        encoder_specs=encoder_specs,
+                                        decoder_specs=decoder_specs,
+                                        model_type=model_type)
         elif model_type == 'TCN-Generator':
-            from Building_Blocks import attentive_TCN, generator_Dense_block
-            from Models import forecaster_model
+            from Building_Blocks import ForecasterModel
             print('building E-D')
-            common_specs = {'units': units,
+            common_specs = {'units': encoder_units,
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
                             'use_norm': use_norm, 
-                            # 'use_hw': use_hw, 
-                            # 'use_residual': use_residual,
                             'L1': L1, 'L2': L2,
                             }
 
             encoder_specs = copy.deepcopy(common_specs)
-            encoder = attentive_TCN(**encoder_specs)
             decoder_specs = copy.deepcopy(common_specs)
-            # decoder_specs['use_attention'] = use_attention
             decoder_specs['attention_heads'] = attention_heads
             decoder_specs['projection'] = projection_block
-            decoder = generator_Dense_block(**decoder_specs)
 
-            self.model = forecaster_model(encoder_block=encoder,
-                                        decoder_block=decoder,
-                                        use_teacher=True,
-                                        output_shape=out_shape,
-                                        support_shape=support_shape,
-                                        history_shape=history_shape)
+            self.model = ForecasterModel(output_shape=out_shape,
+                                        encoder_specs=encoder_specs,
+                                        decoder_specs=decoder_specs,
+                                        model_type='TCN')
 
         else:
             print('trying to buid', model_type, 'but failed')
@@ -421,12 +420,14 @@ class Model_Container():
             print('forecast mode was not specified as either <pdf> or <ev>, no idea how it got this far but expect some issues!!')
 
         self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=3*1e-3,
-                                                             momentum=0.75,
-                                                             nesterov=True,
-                                                              #clipnorm=1.0,
-                                                              ),
-                            loss=loss,metrics=metrics,)  # compile, print summary
-        self.model.summary()
+                                                            momentum=0.75,
+                                                            nesterov=True,
+                                                            #clipnorm=1.0,
+                                                            ),
+                        loss=loss,
+                        metrics=metrics,)  # compile, print summary
+        # self.model.build()
+        # self.model.summary()
 
     def __train_model(self, batch_size=64):
         self.metrics = {}
@@ -456,10 +457,12 @@ class Model_Container():
         train_history = self.model.fit(self.train_dataset_generator(),
                                         steps_per_epoch=self.train_steps_epr_epoch,
                                         epochs=epochs,
-                                        verbose=2,
+                                        verbose=1,
                                         validation_data=self.val_dataset_generator(),
                                         validation_steps=self.val_steps_epr_epoch,
                                         callbacks=callbacks)
+
+        self.model.summary()
 
         train_history = train_history.history
         for key in train_history.keys():

@@ -13,12 +13,12 @@ def train():
     # ToDo: do the dataset one folder up
     #hmmm...
     metrics = {}
-    experiment_name = 'PDF_S2S_Attn_ALl_L2'
+    experiment_name = 'LSTM_GEN'
 
     model_kwargs = {'model_type': 'Generator',
                     'forecast_mode': 'pdf',
-                    'units': 2*7,
-                            #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
+                    'encoder_units' :  [[64], [64]], #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
+                    'decoder_units': [[64],[64]],
                     'downsample': False, 'mode': 'project',
                     'use_dropout' : False, 'dropout_rate' : 0.0,
                     'use_attention': True,

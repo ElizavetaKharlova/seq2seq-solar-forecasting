@@ -56,8 +56,8 @@ class Model_Container():
             model_kwargs['input_shape'] = self.actual_input_shape
         elif 'Generator' in model_kwargs['model_type']:
             print(self.dataset_info['nwp_dims'])
-            self.len_history = int(4*24)
-            self.len_nwp = int(5*24*60/15)
+            self.len_history = int(5*24)
+            self.len_nwp = int(6*24*60/15)
             model_kwargs['support_shape'] = [self.len_history, self.dataset_info['nwp_dims']]
             model_kwargs['history_shape'] = [self.len_nwp, self.fc_tiles]
 
@@ -245,6 +245,7 @@ class Model_Container():
                       use_hw=False, use_norm=False, use_residual=False, #general architecture stuff
                       use_attention=False, attention_heads=3,
                       downsample=False, mode='project', #MiMo stuff
+                      full_residual=True,
                       ):
 
         if self.forecast_mode == 'pdf':
@@ -347,12 +348,14 @@ class Model_Container():
 
         elif model_type=='CNN-Generator':
             decoder_specs = {'num_initial_features': decoder_units,
-                             'sequence_length': self.len_history,
+                             'sequence_length': self.len_history/2,
                              'attention_heads': attention_heads,
+                             'full_residual': full_residual,
                              'attention_squeeze': 0.5,
                              'projection_layer': projection_block}
             encoder_specs = {'num_initial_features': encoder_units,
-                             'sequence_length': self.len_nwp,
+                             'sequence_length': self.len_nwp/4,
+                             'full_residual': full_residual,
                              'attention_heads': attention_heads,
                              'attention_squeeze': 0.5}
             from Building_Blocks import ForecasterModel
@@ -419,7 +422,7 @@ class Model_Container():
         else:
             print('forecast mode was not specified as either <pdf> or <ev>, no idea how it got this far but expect some issues!!')
 
-        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=3*1e-3,
+        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=1/(self.train_steps_epr_epoch),
                                                             momentum=0.75,
                                                             nesterov=True,
                                                             #clipnorm=1.0,
@@ -455,7 +458,7 @@ class Model_Container():
         train_history = self.model.fit(self.train_dataset_generator(),
                                         steps_per_epoch=self.train_steps_epr_epoch,
                                         epochs=epochs,
-                                        verbose=1,
+                                        verbose=2,
                                         validation_data=self.val_dataset_generator(),
                                         validation_steps=self.val_steps_epr_epoch,
                                         callbacks=callbacks)

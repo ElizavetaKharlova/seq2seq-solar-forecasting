@@ -654,13 +654,14 @@ class preactivated_CNN(tf.keras.layers.Layer):
         return self.layer(signal)
 
 class wavenet_CNN(tf.keras.layers.Layer):
-    def __init__(self, num_channels=5*7, length_sequence=288, use_norm=False, use_dropout=False, dropout_rate=0.0, L1=0.0, L2=0.0):
+    def __init__(self, num_channels=5*7, length_sequence=288, use_norm=False, use_dropout=False, dropout_rate=0.0, L1=0.0, L2=0.0, full_residual=True):
         super(wavenet_CNN, self).__init__()
 
         top = np.log(length_sequence)
         base = np.log(2)
         num_layers = top / base
         num_layers = np.ceil(num_layers)
+        self.full_residual = full_residual
         self.length_sequence = length_sequence
 
         self.wavenet = []
@@ -677,8 +678,11 @@ class wavenet_CNN(tf.keras.layers.Layer):
                                             kernel_initializer=initializer,
                                             kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                             padding='causal')
-            if num_layer != num_layers-1:
-                num_channels = 1.5*num_channels
+            if not self.full_residual:
+                if num_layer != num_layers-1:
+                    num_channels = 1.5*num_channels
+            elif self.full_residual and num_layer != 0:
+                cnn = Residual_wrapper(cnn)
             self.wavenet.append(cnn)
         self.num_channels = num_channels
 
@@ -690,15 +694,18 @@ class wavenet_CNN(tf.keras.layers.Layer):
         signal = input
         aggregate_started = False
         for layer in self.wavenet:
-            if not aggregate_started:
-                signal = layer(signal)
-                aggregate = signal
-                aggregate_started = True
-            else:
-                signal = layer(aggregate)
-                aggregate = tf.concat([aggregate, signal], axis=-1)
+            signal = layer(signal)
 
-        return signal, aggregate
+            if self.full_residual:
+                out = signal
+            else:
+                if not aggregate_started:
+                    out = signal
+                    aggregate_started = True
+                else:
+                    out = tf.concat([out, signal], axis=-1)
+
+        return out
 
 
 class DenseTCN(tf.keras.layers.Layer):
@@ -1134,9 +1141,9 @@ class classic_attn_decoder_LSTM_block():
 ########################################################################################################################
 
 class CNN_encoder(tf.keras.layers.Layer):
-    def __init__(self, num_initial_features, sequence_length, attention_heads=5, attention_squeeze=0.5):
+    def __init__(self, num_initial_features, sequence_length, attention_heads=5, attention_squeeze=0.5, full_residual=True):
         super(CNN_encoder, self).__init__()
-        self.cnn = wavenet_CNN(num_channels=num_initial_features, length_sequence=sequence_length)
+        self.cnn = wavenet_CNN(num_channels=num_initial_features, length_sequence=sequence_length, full_residual=full_residual)
 
         attention_features = attention_squeeze*self.cnn.get_num_channels()
         # print(self.cnn.get_num_channels())
@@ -1151,20 +1158,23 @@ class CNN_encoder(tf.keras.layers.Layer):
                                           kernel_size=1, dilation_rate=1, stride=1)
 
     def call(self, input):
-        signal, full_features = self.cnn(input)
+        signal = self.cnn(input)
         # signal = self.self_attention(signal, value=full_features)
         # signal = self.squeeze(full_features)
-        return full_features
+        return signal
 
 
 class CNN_dencoder(tf.keras.layers.Layer):
-    def __init__(self, num_initial_features=4*7, sequence_length=24, attention_heads=5, attention_squeeze=0.5, projection_layer=None):
+    def __init__(self, num_initial_features=4*7, sequence_length=24, attention_heads=5, attention_squeeze=0.5, projection_layer=None, full_residual=True):
         super(CNN_dencoder, self).__init__()
         self.projection_layer = projection_layer
         self.receptive_window = sequence_length
-        self.cnn_in = wavenet_CNN(num_channels=num_initial_features, length_sequence=self.receptive_window)
-        self.squeeze_1 = preactivated_CNN(num_features=int(self.cnn_in.get_num_channels()),
-                                          kernel_size=1, dilation_rate=1, stride=1)
+        self.full_residual = full_residual
+        self.cnn_in = wavenet_CNN(num_channels=num_initial_features, length_sequence=self.receptive_window, full_residual=full_residual)
+        if not full_residual:
+            self.squeeze_1 = preactivated_CNN(num_features=int(self.cnn_in.get_num_channels()),
+                                              kernel_size=1, dilation_rate=1, stride=1)
+
         attention_features = attention_squeeze * self.cnn_in.get_num_channels()
         # self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
         #                                            use_norm=False,
@@ -1197,8 +1207,9 @@ class CNN_dencoder(tf.keras.layers.Layer):
 
         signal = tf.concat([history_input, teacher], axis=1)
         self.max_length = signal.shape[1]
-        signal, full_context = self.cnn_in(signal)
-        signal = self.squeeze_1(full_context)
+        signal = self.cnn_in(signal)
+        if not self.full_residual:
+            signal = self.squeeze_1(signal)
         # signal = self.self_attention(signal, value=full_context)
         signal = self.attention(signal, attention_value)
         # signal, full_context = self.cnn_out(signal)
@@ -1220,14 +1231,18 @@ class CNN_dencoder(tf.keras.layers.Layer):
                                         )
                                ], axis=1)
 
-            last_layer, full_context = self.cnn_in(zero_padded_history)
+            signal = self.cnn_in(zero_padded_history)
 
             if offset-step > 0:
-                useful_context = full_context[:, :-(offset - step), :]
+                signal = signal[:, :-(offset - step), :]
             else:
-                useful_context = full_context
+                signal = signal
 
-            signal = self.squeeze_1(useful_context[:,-1:,:])
+            if not self.full_residual:
+                signal = self.squeeze_1(signal[:,-1:,:])
+            else:
+                signal = signal[:,-1:,:]
+
             unprojected_step = self.attention(signal, attention_value)
             # if step == 0:
             #     attention_out = signal

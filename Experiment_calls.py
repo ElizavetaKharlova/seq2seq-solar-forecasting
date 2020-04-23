@@ -17,23 +17,23 @@ def train():
 
     model_kwargs = {'model_type': 'CNN-Generator',
                     'forecast_mode': 'pdf',
-                    'encoder_units' :  512, #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
-                    'decoder_units': 256,
+                    'encoder_units' :  128, #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
+                    'decoder_units': 64,
                     # 'downsample': False, 'mode': 'project',
                     # 'use_dropout' : False, 'dropout_rate' : 0.0,
                     # 'use_attention': True,
                     'attention_heads': 12,
-                    'L1': 0.0, 'L2': 0,
+                    'L1': 0.0, 'L2': 1e-5,
                     'use_norm' : False,
-                    'full_residual': True,
+                    'use_residual': True,
                     }
-    train_kwargs = {'batch_size': 2**8}
+    train_kwargs = {'batch_size': 2**9}
 
     experiment = Model_Container(dataset_folder='Daniels_Dataset_1',
                                  experiment_name=experiment_name,
                               model_kwargs=model_kwargs,
                               train_kwargs=train_kwargs,)
-    metrics = experiment.get_results()
+    metrics = experiment.get_results(runs=3)
     del experiment
     tf.keras.backend.clear_session()
 

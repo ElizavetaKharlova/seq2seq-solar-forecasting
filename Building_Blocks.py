@@ -412,14 +412,13 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                  project_to_units=None,
                  use_norm=True,
                  causal=True,
-                 norm_type='layer',
+
                  L1=0.0, L2=0.0,
                  use_dropout=True, dropout_rate=0.2):
         super(multihead_attentive_layer, self).__init__()
         # units is a list of lists, containing the numbers of units in the attention head
         self.num_heads = len(units_per_head)
         self.dropout_rate = dropout_rate
-        self.use_norm = use_norm
         self.use_dropout = use_dropout
         if project_to_units is None:
             self.projection = False
@@ -451,8 +450,6 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
             # if self.use_dropout:
             #     attention = Dropout_wrapper(attention, dropout_rate=dropout_rate)
 
-            if self.use_norm:
-                attention = Norm_wrapper(attention, norm=norm_type)
             self.multihead_attention.append(attention)
 
     def call(self, query, value=None):
@@ -654,14 +651,23 @@ class preactivated_CNN(tf.keras.layers.Layer):
         return self.layer(signal)
 
 class wavenet_CNN(tf.keras.layers.Layer):
-    def __init__(self, num_channels=5*7, length_sequence=288, use_norm=False, use_dropout=False, dropout_rate=0.0, L1=0.0, L2=0.0, full_residual=True):
+    def __init__(self,
+                 num_channels=5*7,
+                 length_sequence=288,
+                 dropout_rate=0.0,
+                 L1=0.0, L2=0.0,
+                 use_residual=True,
+                 use_norm=False,
+                 use_dropout=False,
+                 ):
         super(wavenet_CNN, self).__init__()
 
         top = np.log(length_sequence)
         base = np.log(2)
         num_layers = top / base
         num_layers = np.ceil(num_layers)
-        self.full_residual = full_residual
+
+        self.use_residual = use_residual
         self.length_sequence = length_sequence
 
         self.wavenet = []
@@ -673,16 +679,20 @@ class wavenet_CNN(tf.keras.layers.Layer):
         for num_layer in range(int(num_layers)):
             cnn = tf.keras.layers.Conv1D(filters=int(num_channels),
                                             kernel_size=2,
-                                            activation=activation,
+                                            activation=tf.nn.relu,
                                             dilation_rate=int(2**num_layer),
                                             kernel_initializer=initializer,
                                             kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                             padding='causal')
-            if not self.full_residual:
+            if not self.use_residual:
                 if num_layer != num_layers-1:
                     num_channels = 1.5*num_channels
-            elif self.full_residual and num_layer != 0:
+            elif self.use_residual and num_layer != 0:
                 cnn = Residual_wrapper(cnn)
+
+            if use_norm:
+                cnn = Norm_wrapper(cnn, norm='batch')
+
             self.wavenet.append(cnn)
         self.num_channels = num_channels
 
@@ -696,7 +706,7 @@ class wavenet_CNN(tf.keras.layers.Layer):
         for layer in self.wavenet:
             signal = layer(signal)
 
-            if self.full_residual:
+            if self.use_residual:
                 out = signal
             else:
                 if not aggregate_started:
@@ -1141,11 +1151,20 @@ class classic_attn_decoder_LSTM_block():
 ########################################################################################################################
 
 class CNN_encoder(tf.keras.layers.Layer):
-    def __init__(self, num_initial_features, sequence_length, attention_heads=5, attention_squeeze=0.5, full_residual=True):
+    def __init__(self,
+                 num_initial_features,
+                 sequence_length,
+                 attention_heads=5,
+                 attention_squeeze=0.5,
+                 use_residual=True,
+                 use_norm=True):
         super(CNN_encoder, self).__init__()
-        self.cnn = wavenet_CNN(num_channels=num_initial_features, length_sequence=sequence_length, full_residual=full_residual)
+        self.cnn = wavenet_CNN(num_channels=num_initial_features,
+                               length_sequence=sequence_length,
+                               use_residual=use_residual,
+                               use_norm=use_norm)
 
-        attention_features = attention_squeeze*self.cnn.get_num_channels()
+        # attention_features = attention_squeeze*self.cnn.get_num_channels()
         # print(self.cnn.get_num_channels())
         # self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)]*attention_heads,
         #                                                 use_norm=False,
@@ -1154,8 +1173,13 @@ class CNN_encoder(tf.keras.layers.Layer):
         #                                                 project_to_units=self.cnn.get_num_channels())
         # self_attention = Residual_wrapper(self_attention)
         # self.self_attention = self_attention
-        self.squeeze = preactivated_CNN(num_features=int(self.cnn.get_num_channels()),
-                                          kernel_size=1, dilation_rate=1, stride=1)
+        if not use_residual:
+            self.squeeze = preactivated_CNN(num_features=int(self.cnn.get_num_channels()),
+                                            kernel_size=1,
+                                            dilation_rate=1,
+                                            stride=1)
+            if use_norm:
+                self.squeeze = Norm_wrapper(self.squeeze, norm='batch')
 
     def call(self, input):
         signal = self.cnn(input)
@@ -1165,15 +1189,30 @@ class CNN_encoder(tf.keras.layers.Layer):
 
 
 class CNN_dencoder(tf.keras.layers.Layer):
-    def __init__(self, num_initial_features=4*7, sequence_length=24, attention_heads=5, attention_squeeze=0.5, projection_layer=None, full_residual=True):
+    def __init__(self,
+                 num_initial_features=4*7,
+                 sequence_length=24,
+                 attention_heads=5,
+                 attention_squeeze=0.5,
+                 projection_layer=None,
+                 use_residual=True,
+                 use_norm=True):
         super(CNN_dencoder, self).__init__()
         self.projection_layer = projection_layer
         self.receptive_window = sequence_length
-        self.full_residual = full_residual
-        self.cnn_in = wavenet_CNN(num_channels=num_initial_features, length_sequence=self.receptive_window, full_residual=full_residual)
-        if not full_residual:
+        self.use_residual = use_residual
+        self.cnn_in = wavenet_CNN(num_channels=num_initial_features,
+                                  length_sequence=self.receptive_window,
+                                  use_residual=use_residual,
+                                  use_norm=use_norm)
+        if not use_residual:
             self.squeeze_1 = preactivated_CNN(num_features=int(self.cnn_in.get_num_channels()),
-                                              kernel_size=1, dilation_rate=1, stride=1)
+                                              kernel_size=1,
+                                              dilation_rate=1,
+                                              stride=1)
+
+            if use_norm:
+                self.squeeze_1 = Norm_wrapper(self.squeeze_1, norm='batch')
 
         attention_features = attention_squeeze * self.cnn_in.get_num_channels()
         # self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
@@ -1189,7 +1228,10 @@ class CNN_dencoder(tf.keras.layers.Layer):
                                                     causal=False,
                                                    use_dropout=False,
                                                    project_to_units=self.cnn_in.get_num_channels())
-        attention = Residual_wrapper(attention)
+        if use_residual:
+            attention = Residual_wrapper(attention)
+        if use_norm:
+            attention = Norm_wrapper(attention, norm='batch')
         self.attention = attention
 
         #
@@ -1208,7 +1250,7 @@ class CNN_dencoder(tf.keras.layers.Layer):
         signal = tf.concat([history_input, teacher], axis=1)
         self.max_length = signal.shape[1]
         signal = self.cnn_in(signal)
-        if not self.full_residual:
+        if not self.use_residual:
             signal = self.squeeze_1(signal)
         # signal = self.self_attention(signal, value=full_context)
         signal = self.attention(signal, attention_value)
@@ -1238,7 +1280,7 @@ class CNN_dencoder(tf.keras.layers.Layer):
             else:
                 signal = signal
 
-            if not self.full_residual:
+            if not self.use_residual:
                 signal = self.squeeze_1(signal[:,-1:,:])
             else:
                 signal = signal[:,-1:,:]

@@ -69,31 +69,29 @@ class Model_Container():
         self.model_kwargs = model_kwargs
         self.train_kwargs = train_kwargs
 
-    def get_results(self):
-        tf.keras.backend.clear_session()
-        # TODo, see wether this makes sense first
+    def get_results(self, runs=1):
+        tf.keras.backend.clear_session() # make sure we are working clean
 
-        # strategy = tf.distribute.MirroredStrategy()
-        # strategy = tf.distribute.experimental.CentralStorageStrategy()
-        # with strategy.scope():
-        # make sure we are working clean
         self.__create_datasets()
-        # strategy = tf.distribute.MirroredStrategy()
-        # print('Number of devices: {}'.format(strategy.num_replicas_in_sync))
-        # # strategy = tf.distribute.experimental.CentralStorageStrategy()
-        # with strategy.scope():
-        #tf.debugging.set_log_device_placement(True)
+        self.metrics = {}
         # cross_ops = tf.distribute.ReductionToOneDevice()
         cross_ops = tf.distribute.HierarchicalCopyAllReduce()
         strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
-        with strategy.scope():
-            self.__build_model(**self.model_kwargs)
 
-            self.__train_model(**self.train_kwargs)
+        for run in range(runs):
+            tf.keras.backend.clear_session()
+            with strategy.scope():
+                self.__build_model(**self.model_kwargs)
+
+                train_history, test_results = self.__train_model()
+                del self.model
+
+                self.metrics[run] = {}
+
+                self.__manage_metrics(train_history, test_results)
         del self.train_kwargs
-        del self.model
 
-        self.__skill_metrics()
+
 
         tf.keras.backend.clear_session()
         return self.metrics
@@ -350,12 +348,14 @@ class Model_Container():
             decoder_specs = {'num_initial_features': decoder_units,
                              'sequence_length': self.len_history/2,
                              'attention_heads': attention_heads,
-                             'full_residual': full_residual,
+                             'use_residual': use_residual,
+                             'use_norm': use_norm,
                              'attention_squeeze': 0.5,
                              'projection_layer': projection_block}
             encoder_specs = {'num_initial_features': encoder_units,
-                             'sequence_length': self.len_nwp/4,
-                             'full_residual': full_residual,
+                             'sequence_length': self.len_nwp/8,
+                             'use_residual': use_residual,
+                             'use_norm': use_norm,
                              'attention_heads': attention_heads,
                              'attention_squeeze': 0.5}
             from Building_Blocks import ForecasterModel
@@ -430,15 +430,15 @@ class Model_Container():
                         loss=loss,
                         metrics=metrics,)  # compile, print summary
 
-    def __train_model(self, batch_size=64):
-        self.metrics = {}
+    def __train_model(self):
+
         callbacks = []
         epochs = 200
 
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
         callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=10,
+                                                                   patience=5,
                                                                    mode='min',
                                                                    restore_best_weights=True))
         callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,
@@ -462,45 +462,45 @@ class Model_Container():
                                         validation_data=self.val_dataset_generator(),
                                         validation_steps=self.val_steps_epr_epoch,
                                         callbacks=callbacks)
-
-        self.model.summary()
-
         train_history = train_history.history
-        for key in train_history.keys():
-            self.metrics[key] = train_history[key]
-
         test_results = self.model.evaluate(self.test_dataset_generator(),
                                            steps=self.test_steps_epr_epoch,
-                                      verbose=2)
+                                            verbose=2)
+        self.model.summary()
 
-        self.metrics['test_loss'] = test_results[0]
-        self.metrics['test_nME'] = test_results[1]
-        self.metrics['test_nRMSE'] = test_results[2]
-        if not self.forecast_mode == 'ev':
-            self.metrics['test_CRPS'] = test_results[3]
+        return train_history, test_results
 
 
-    def __skill_metrics(self):
-        saved_epoch = np.argmin(self.metrics['val_nRMSE'])
-        self.metrics['val_nRMSE_skill'] = 1 - (self.metrics['val_nRMSE'][saved_epoch] / self.dataset_info['val_baseline']['nRMSE'])
-        if not self.forecast_mode == 'ev':
-            self.metrics['val_CRPS_skill'] = 1 - (self.metrics['val_CRPS'][saved_epoch] / self.dataset_info['val_baseline']['CRPS'])
-        self.metrics['test_nRMSE_skill'] = 1 - (self.metrics['test_nRMSE'] / self.dataset_info['test_baseline']['nRMSE'])
-        if not self.forecast_mode == 'ev':
-            self.metrics['test_CRPS_skill'] = 1 - (self.metrics['test_CRPS'] / self.dataset_info['test_baseline']['CRPS'])
 
-        print('Val bets values:')
-        print('Loss: ', self.metrics['val_loss'][saved_epoch], '///')
-        print('NRMSE: ', self.metrics['val_nRMSE'][saved_epoch], '///')
-        print('NME: ', self.metrics['val_nME'][saved_epoch],  '///')
-        if not self.forecast_mode == 'ev':
-            print('CRPS: ', self.metrics['val_CRPS'][saved_epoch],)
-        print('val_skill nRMSE', self.metrics['val_nRMSE_skill'] )
-        if not self.forecast_mode == 'ev':
-            print('val_skill CRPS', self.metrics['val_CRPS_skill'])
-        print('test_skill nRMSE', self.metrics['test_nRMSE_skill'])
-        if not self.forecast_mode == 'ev':
-            print('test_skill CRPS', self.metrics['test_CRPS_skill'])
+    def __manage_metrics(self, train_history, test_results):
+
+        last_run_dict = {}
+        for key in train_history.keys():
+            last_run_dict[key] = train_history[key]
+        last_run_dict['test_loss'] = test_results[0]
+        last_run_dict['test_nME'] = test_results[1]
+        last_run_dict['test_nRMSE'] = test_results[2]
+
+        if self.forecast_mode == 'pdf':
+            last_run_dict['test_CRPS'] = test_results[3]
+
+        saved_epoch = np.argmin(last_run_dict['val_nRMSE'])
+        last_run_dict['val_nRMSE_skill'] = 1 - (last_run_dict['val_nRMSE'][saved_epoch] / self.dataset_info['val_baseline']['nRMSE'])
+        last_run_dict['test_nRMSE_skill'] = 1 - (last_run_dict['test_nRMSE'] / self.dataset_info['test_baseline']['nRMSE'])
+
+        if self.forecast_mode == 'pdf':
+            last_run_dict['val_CRPS_skill'] = 1 - (last_run_dict['val_CRPS'][saved_epoch] / self.dataset_info['val_baseline']['CRPS'])
+            last_run_dict['test_CRPS_skill'] = 1 - (last_run_dict['test_CRPS'] / self.dataset_info['test_baseline']['CRPS'])
+
+        print('val_skill nRMSE', last_run_dict['val_nRMSE_skill'])
+        print('test_skill nRMSE', last_run_dict['test_nRMSE_skill'])
+
+        if self.forecast_mode == 'pdf':
+            print('val_skill CRPS', last_run_dict['val_CRPS_skill'])
+            print('test_skill CRPS', last_run_dict['test_CRPS_skill'])
+
+        last_run = [*self.metrics][-1]
+        self.metrics[last_run] = last_run_dict
 
 
 def __get_max_min_targets(train_targets, test_targets):

@@ -14,33 +14,41 @@ def train():
     #hmmm...
     metrics = {}
     experiment_name = 'FFNN-Generator-small-dataset'
-
-    model_kwargs = {
-                    'model_type': 'CNN-Generator',
+    sliding_window_length_days = 6
+    model_kwargs = {'model_type': 'CNN-Generator',
                     'forecast_mode': 'pdf',
-                    'encoder_units' :  128, #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
-                    # 'encoder_blocks': 4,
-                    'decoder_units': 64,
-                    # 'decoder_blocks': 4,
-                    # 'downsample': False, 'mode': 'project',
-                    # 'use_dropout' : False, 'dropout_rate' : 0.0,
-                    # 'use_attention': True,
-                    'attention_heads': 12,
-                    'L1': 0.0, 'L2': 0.0,
-                    'use_norm' : False,
-                    'use_dense': False,
+
+                    # Architecture Hyperparameters
+                    # Encoder:
+                        'encoder_units' :  128,
+                        # 'encoder_blocks': 4,
+                        'encoder_receptive_window': sliding_window_length_days * 24*4 / 8,
+                    # Decoder:
+                        'decoder_units': 64,
+                        # 'decoder_blocks': 4,
+                        'decoder_receptive_window': sliding_window_length_days * 24 / 2,
+                        'attention_heads': 20,
+
+                    # General information flow
                     'positional_embedding': False,
                     'force_relevant_context': True,
+                    'use_dense': False,
                     'use_residual': True,
+                    # 'downsample': False, 'mode': 'project',
+
+                    # Regularization Hyperparameters
+                    # 'use_dropout' : False, 'dropout_rate' : 0.0,
+                    'L1': 0.0, 'L2': 0.0,
+                    'use_norm' : False,
                     }
     train_kwargs = {'batch_size': 2**8}
 
     experiment = Model_Container(dataset_folder='Daniels_Dataset_1',
                                  experiment_name=experiment_name,
-                                 sw_len_days=6,
+                                 sw_len_days=sliding_window_length_days,
                                   model_kwargs=model_kwargs,
                                   train_kwargs=train_kwargs,)
-    metrics = experiment.get_results(runs=3)
+    metrics = experiment.get_results(runs=1)
     del experiment
     tf.keras.backend.clear_session()
 

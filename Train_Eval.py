@@ -247,7 +247,8 @@ class Model_Container():
                       decoder_blocks=3,
                       positional_embedding=False,
                       force_relevant_context=True,
-
+                      encoder_receptive_window=None,
+                      decoder_receptive_window=None,
                       ):
 
         if self.forecast_mode == 'pdf':
@@ -350,7 +351,7 @@ class Model_Container():
 
         elif model_type=='CNN-Generator':
             decoder_specs = {'num_initial_features': decoder_units,
-                             'sequence_length': self.len_history/2,
+                             'sequence_length': decoder_receptive_window,
                              'attention_heads': attention_heads,
                              'use_residual': use_residual,
                              'use_norm': use_norm,
@@ -360,7 +361,7 @@ class Model_Container():
                              'force_relevant_context': force_relevant_context,
                              'projection_layer': projection_block}
             encoder_specs = {'num_initial_features': encoder_units,
-                             'sequence_length': self.len_nwp/8,
+                             'sequence_length': encoder_receptive_window,
                              'use_residual': use_residual,
                              'use_norm': use_norm,
                              'use_dense': use_dense,
@@ -459,7 +460,7 @@ class Model_Container():
             print('forecast mode was not specified as either <pdf> or <ev>, no idea how it got this far but expect some issues!!')
 
         self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate = 1/self.train_steps_epr_epoch,
-                                                            momentum=0.9,
+                                                            momentum=0.85,
                                                             nesterov=True,
                                                             # clipnorm=1.0,
                                                             ),
@@ -536,7 +537,6 @@ class Model_Container():
 
         last_run = [*self.metrics][-1]
         self.metrics[last_run] = last_run_dict
-
 
 def __get_max_min_targets(train_targets, test_targets):
     import numpy as np

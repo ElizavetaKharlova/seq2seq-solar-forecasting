@@ -55,7 +55,7 @@ class Cropping_layer(tf.keras.layers.Layer):
         # signal = signal[:, -new_signal_length:, :]
         return signal
 
-from tensor2tensor.layers.common_attention import add_positional_embedding_nd, add_timing_signal_1d, get_timing_signal_1d
+from tensor2tensor.layers.common_attention import add_positional_embedding, add_timing_signal_1d, get_timing_signal_1d
 
 class Positional_embedding_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, max_length, name=None):
@@ -117,6 +117,7 @@ class Norm_wrapper(tf.keras.layers.Wrapper):
         else:
             return self.norm(self.layer(inputs, value))
 
+
 class Residual_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer):
         super(Residual_wrapper, self).__init__(layer)
@@ -129,7 +130,7 @@ class Residual_wrapper(tf.keras.layers.Wrapper):
 
 class Dense_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer):
-        super(Residual_wrapper, self).__init__(layer)
+        super(Dense_wrapper, self).__init__(layer)
 
     def call(self, inputs, value=None):
         if value is None:
@@ -687,11 +688,12 @@ class wavenet_CNN(tf.keras.layers.Layer):
                  use_dense=False,
                  use_dropout=False,
                  pass_input=False,
+                 add_positional_embedding=False,
                  ):
         super(wavenet_CNN, self).__init__()
 
         top = np.log(length_sequence)
-        base = np.log(3)
+        base = np.log(2)
         num_layers = top / base
         num_layers = np.ceil(num_layers)
 
@@ -719,7 +721,8 @@ class wavenet_CNN(tf.keras.layers.Layer):
                                             kernel_initializer=initializer,
                                             kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                             padding='causal')
-
+            if  num_layer == 0 and add_positional_embedding:
+                cnn = Positional_embedding_wrapper(cnn)
             if self.use_residual and num_layer != 0:
                 cnn = Residual_wrapper(cnn)
             if use_dense:
@@ -1190,15 +1193,6 @@ class CNN_encoder(tf.keras.layers.Layer):
 
         self.force_relevant_context = force_relevant_context
 
-        self.projection = tf.keras.layers.Conv1D(filters=num_initial_features,
-                                            kernel_size=1,
-                                            activation=tf.nn.relu,
-                                            dilation_rate=1,
-                                            kernel_initializer=initializer,
-                                            kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                            padding='causal')
-        if positional_embedding:
-            self.projection = Positional_embedding_wrapper(self.projection, max_length=1e4)
 
         self.crop = Cropping_layer(0.4)
 
@@ -1206,7 +1200,8 @@ class CNN_encoder(tf.keras.layers.Layer):
                                length_sequence=sequence_length,
                                use_residual=use_residual,
                                use_norm=use_norm,
-                               pass_input=True,
+                               add_positional_embedding=positional_embedding,
+                               pass_input=False,
                                use_dense=use_dense,
                                L2=L2, L1=L1,
                                )
@@ -1223,12 +1218,12 @@ class CNN_encoder(tf.keras.layers.Layer):
         # self.self_attention = self_attention
 
     def call(self, input):
-        signal = self.projection(input)
-        # signal = self.crop(signal)
+        signal = input
+
         signal = self.cnn(signal)
+        # signal = self.crop(signal)
         # signal = self.self_attention(signal, value=full_features)
-        if self.force_relevant_context:
-            signal = signal[:, -30*4:, :]
+        signal = signal[:,-30*4:,:]
         return signal
 
 class CNN_decoder(tf.keras.layers.Layer):
@@ -1248,13 +1243,8 @@ class CNN_decoder(tf.keras.layers.Layer):
         super(CNN_decoder, self).__init__()
         self.projection_layer = projection_layer
         self.force_relevant_context = force_relevant_context
-        self.projection = tf.keras.layers.Dense(units=num_initial_features,
-                                                activation=tf.nn.relu,
-                                                use_bias=True,
-                                                kernel_initializer=initializer,
-                                                kernel_regularizer=tf.keras.regularizers.l1_l2(L1, L2))
-        if positional_embedding:
-            self.projection = Positional_embedding_wrapper(self.projection, max_length=1e4)
+        self.positional_embedding = positional_embedding
+
 
         self.crop = Cropping_layer(0.4)
 
@@ -1262,7 +1252,7 @@ class CNN_decoder(tf.keras.layers.Layer):
                                   length_sequence=sequence_length,
                                   use_residual=use_residual,
                                   use_norm=use_norm,
-                                  pass_input=True,
+                                  add_positional_embedding=positional_embedding,
                                   use_dense=use_dense,
                                   L2=L2, L1=L1,)
 
@@ -1309,8 +1299,7 @@ class CNN_decoder(tf.keras.layers.Layer):
     def training_call(self, history_input, teacher, attention_value, timesteps):
         self.max_length = history_input.shape[1] + teacher.shape[1]
         signal = tf.concat([history_input, teacher], axis=1)
-        signal = self.projection(signal)
-        # signal = self.crop(signal)
+
         signal = self.cnn_in(signal)
 
         if self.force_relevant_context:
@@ -1326,11 +1315,11 @@ class CNN_decoder(tf.keras.layers.Layer):
 
         for step in range(timesteps):
             # make sure the signal we're feeding to the CNN always has the same length, because TF sucks
-            projected_history = self.projection(history_input)
-            padded_projected_history_input = tf.concat([projected_history,
-                                               tf.zeros(shape=[tf.shape(projected_history)[0],
+            # projected_history = self.projection(history_input)
+            padded_projected_history_input = tf.concat([history_input,
+                                               tf.zeros(shape=[tf.shape(history_input)[0],
                                                                offset - step,
-                                                               projected_history.shape[2]]
+                                                               history_input.shape[2]]
                                                         )], axis=1)
 
             padded_post_cnn = self.cnn_in(padded_projected_history_input)

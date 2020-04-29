@@ -13,26 +13,33 @@ def train():
     # ToDo: do the dataset one folder up
     #hmmm...
     metrics = {}
-    experiment_name = 'CNN-residual-Generator'
+    experiment_name = 'FFNN-Generator-small-dataset'
 
-    model_kwargs = {'model_type': 'CNN-Generator',
+    model_kwargs = {
+                    'model_type': 'CNN-Generator',
                     'forecast_mode': 'pdf',
                     'encoder_units' :  128, #[units, units...] for FFNN, else [[128 + 4],[128 + 4]]
+                    # 'encoder_blocks': 4,
                     'decoder_units': 64,
+                    # 'decoder_blocks': 4,
                     # 'downsample': False, 'mode': 'project',
                     # 'use_dropout' : False, 'dropout_rate' : 0.0,
                     # 'use_attention': True,
                     'attention_heads': 12,
-                    'L1': 0.0, 'L2': 1e-5,
+                    'L1': 0.0, 'L2': 0.0,
                     'use_norm' : False,
+                    'use_dense': False,
+                    'positional_embedding': False,
+                    'force_relevant_context': True,
                     'use_residual': True,
                     }
-    train_kwargs = {'batch_size': 2**9}
+    train_kwargs = {'batch_size': 2**8}
 
     experiment = Model_Container(dataset_folder='Daniels_Dataset_1',
                                  experiment_name=experiment_name,
-                              model_kwargs=model_kwargs,
-                              train_kwargs=train_kwargs,)
+                                 sw_len_days=6,
+                                  model_kwargs=model_kwargs,
+                                  train_kwargs=train_kwargs,)
     metrics = experiment.get_results(runs=3)
     del experiment
     tf.keras.backend.clear_session()

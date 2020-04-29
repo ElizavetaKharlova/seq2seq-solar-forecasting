@@ -16,6 +16,7 @@ class Model_Container():
                  model_kwargs, #see __build_model
                  train_kwargs, #currently only batch size
                  experiment_name='Default_Name',
+                 sw_len_days=3,
                  try_distribution_across_GPUs=True,
                  ):
         self.dataset_path = dataset_folder
@@ -55,11 +56,10 @@ class Model_Container():
                                        self.raw_nwp_shape[1] + 1]
             model_kwargs['input_shape'] = self.actual_input_shape
         elif 'Generator' in model_kwargs['model_type']:
-            print(self.dataset_info['nwp_dims'])
-            self.len_history = int(5*24)
-            self.len_nwp = int(6*24*60/15)
-            model_kwargs['support_shape'] = [self.len_history, self.dataset_info['nwp_dims']]
-            model_kwargs['history_shape'] = [self.len_nwp, self.fc_tiles]
+            self.len_history = int((sw_len_days-1)*24)
+            self.len_nwp = int(sw_len_days*24*60/15)
+            model_kwargs['support_shape'] = [self.len_nwp, self.dataset_info['nwp_dims']]
+            model_kwargs['history_shape'] = [self.len_history, self.fc_tiles]
 
 
         model_kwargs['out_shape'] = self.target_shape
@@ -240,10 +240,14 @@ class Model_Container():
                       decoder_units=[[64],[64],[64]],
                       L1=0.0, L2=0.0,
                       use_dropout=False, dropout_rate=0.0,
-                      use_hw=False, use_norm=False, use_residual=False, #general architecture stuff
+                      use_hw=False, use_norm=False, use_residual=False, use_dense=False,#general architecture stuff
                       use_attention=False, attention_heads=3,
                       downsample=False, mode='project', #MiMo stuff
-                      full_residual=True,
+                      encoder_blocks=3,
+                      decoder_blocks=3,
+                      positional_embedding=False,
+                      force_relevant_context=True,
+
                       ):
 
         if self.forecast_mode == 'pdf':
@@ -350,19 +354,47 @@ class Model_Container():
                              'attention_heads': attention_heads,
                              'use_residual': use_residual,
                              'use_norm': use_norm,
+                             'use_dense': use_dense,
                              'attention_squeeze': 0.5,
+                             'positional_embedding': positional_embedding,
+                             'force_relevant_context': force_relevant_context,
                              'projection_layer': projection_block}
             encoder_specs = {'num_initial_features': encoder_units,
                              'sequence_length': self.len_nwp/8,
                              'use_residual': use_residual,
                              'use_norm': use_norm,
+                             'use_dense': use_dense,
                              'attention_heads': attention_heads,
+                              'positional_embedding': positional_embedding,
+                              'force_relevant_context': force_relevant_context,
                              'attention_squeeze': 0.5}
             from Building_Blocks import ForecasterModel
             self.model = ForecasterModel(output_shape=out_shape,
                                         encoder_specs=encoder_specs,
                                         decoder_specs=decoder_specs,
                                         model_type=model_type)
+        elif model_type == 'FFNN-Generator':
+            from Building_Blocks import FFNN_encoder, FFNN_decoder
+            # decoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0, projection_layer=None)
+            # encoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0
+            decoder_specs = {'width': decoder_units,
+                             'depth': decoder_blocks,
+                             'attention_heads': attention_heads,
+                             'use_norm': use_norm,
+                             'attention_squeeze': 0.5,
+                             'L1':L1, 'L2': L2,
+                             'projection_layer': projection_block}
+            encoder_specs = {'width': encoder_units,
+                             'depth': encoder_blocks,
+                             'L1': L1, 'L2': L2,
+                             'use_norm': use_norm,
+                             'attention_heads': attention_heads,
+                             'attention_squeeze': 0.5}
+            from Building_Blocks import ForecasterModel
+            self.model = ForecasterModel(output_shape=out_shape,
+                                         encoder_specs=encoder_specs,
+                                         decoder_specs=decoder_specs,
+                                         model_type=model_type)
         elif model_type == 'TCN-Generator':
             from Building_Blocks import ForecasterModel
             print('building E-D')
@@ -389,7 +421,7 @@ class Model_Container():
         from Losses_and_Metrics import loss_wrapper
         # assign the losses depending on scenario
         if self.forecast_mode == 'pdf':
-            loss = loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='KL_D')
+            loss = loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='KL-D')
             metrics = [loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='nME',
                                             normalizer_value=1.0,
                                             target_as_expected_value=False,
@@ -403,6 +435,10 @@ class Model_Container():
                                             target_as_expected_value=False,
                                             forecast_as_expected_value=False
                                             ),
+                               loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='EMC',
+                                            target_as_expected_value=False,
+                                            forecast_as_expected_value=False
+                                            )
                                ]
         elif self.forecast_mode =='ev':
             loss = loss_wrapper(last_output_dim_size=out_shape[-1], loss_type='MSE',
@@ -422,10 +458,10 @@ class Model_Container():
         else:
             print('forecast mode was not specified as either <pdf> or <ev>, no idea how it got this far but expect some issues!!')
 
-        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=1/(self.train_steps_epr_epoch),
-                                                            momentum=0.75,
+        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate = 1/self.train_steps_epr_epoch,
+                                                            momentum=0.9,
                                                             nesterov=True,
-                                                            #clipnorm=1.0,
+                                                            # clipnorm=1.0,
                                                             ),
                         loss=loss,
                         metrics=metrics,)  # compile, print summary
@@ -433,12 +469,12 @@ class Model_Container():
     def __train_model(self):
 
         callbacks = []
-        epochs = 200
+        epochs = 1000
 
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
         callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=5,
+                                                                   patience=10,
                                                                    mode='min',
                                                                    restore_best_weights=True))
         callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,
@@ -446,11 +482,10 @@ class Model_Container():
                                                         #update_freq='epoch',
                                                         ))
 
-        #callbacks.append(tf.keras.callbacks.LearningRateScheduler(scheduler))
         # callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='loss',
-        #                                                        factor=2,
-        #                                                        patience=20,
-        #                                                       min_delta=0.05,
+        #                                                        factor=0.2,
+        #                                                        patience=5,
+        #                                                       min_lr=1e-6,
         #                                                        verbose=True,
         #                                                        mode='min',
         #                                                        cooldown=5))

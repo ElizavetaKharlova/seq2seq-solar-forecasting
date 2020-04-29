@@ -49,20 +49,18 @@ def loss_wrapper(last_output_dim_size, loss_type='nME', normalizer_value=1.0, ta
             prediction = tf.cast(prediction, dtype=tf.float32)
             return calculate_KL_Divergence(target, prediction, last_output_dim_size)
         return KL_D
-    #wierdass crap
-    elif loss_type=='KS':
-        def KS(target,prediction):
+    elif loss_type=='EMC':
+        def EMC(target,prediction):
             target = tf.cast(target, dtype=tf.float32)
             prediction = tf.cast(prediction, dtype=tf.float32)
-            return calculate_KS(target, prediction, last_output_dim_size)
-        return KS
-    #whatever experimental crap
-    elif loss_type=='devset':
-        def log_KS_test(target, prediction):
+            return calculate_EMC(target, prediction)
+        return EMC
+    elif loss_type=='symmKLD':
+        def symmKLD(target,prediction):
             target = tf.cast(target, dtype=tf.float32)
             prediction = tf.cast(prediction, dtype=tf.float32)
-            return calculate_EMD(target, prediction, last_output_dim_size)
-        return log_KS_test
+            return calculate_symmKLD(target, prediction)
+        return symmKLD
     else:
         print('loss_type ', loss_type, ' not recognized.')
         print('please elect loss from available options: nME, nMSE, KL-Divergence, tile-to-forecast')
@@ -106,9 +104,30 @@ def calculate_KL_Divergence(target, prediction, last_output_dim_size):
     target = tf.maximum(target, 1e-15)
     prediction = tf.maximum(prediction, 1e-15)
     KL_D = -target * tf.math.log(prediction/target) #(batches, timesteps, features)
-    KL_D = tf.reduce_sum(KL_D, axis=-1) #(batches, timesteps)
-    KL_D = tf.reduce_mean(KL_D, axis=-1) #(batches)
+    KL_D = tf.reduce_sum(KL_D, axis=-1)
+    KL_D = tf.reduce_mean(KL_D)
     return KL_D
+
+def calculate_symmKLD(target, prediction):
+
+    quotient = tf.maximum(prediction, 1e-15)/tf.maximum(target, 1e-15)
+    entropy = tf.math.log(quotient)
+    simm_KLD = (prediction-target) * entropy
+    simm_KLD = tf.abs(simm_KLD)
+    simm_KLD = tf.reduce_sum(simm_KLD, axis=-1)
+
+    simm_KLD = tf.reduce_mean(simm_KLD)
+    return simm_KLD
+
+def calculate_EMC(target, prediction):
+    kl_d = -target * tf.math.log(tf.maximum(prediction, 1e-15)/tf.maximum(target, 1e-15))
+    simm_KLD = tf.reduce_sum(kl_d, axis=-1)
+    simm_KLD = tf.reduce_mean(simm_KLD, axis=-1)
+    epsilon = 0.1
+    condition = tf.math.less_equal(simm_KLD, epsilon)
+    condition = tf.cast(condition, dtype=tf.float16)
+    percentage = tf.reduce_mean(condition)
+    return percentage
 
 def calculate_E_nRMSE(target, prediction, normalizer_value):
 
@@ -169,8 +188,11 @@ def __calculatate_skillscore_baseline(set_targets, sample_spacing_in_mins=5, nor
 
     targets = tf.cast(targets, dtype=tf.float32)
     persistent_forecast = tf.cast(persistent_forecast, dtype=tf.float32)
-    nRMSEs = calculate_E_nRMSE(targets, persistent_forecast, set_targets.shape[-1], normalizer_value)
-    nMEs = calculate_E_nME(targets, persistent_forecast, set_targets.shape[-1], normalizer_value)
+    e_target = __calculate_expected_value(targets, 50)
+    e_persistent_forecast = __calculate_expected_value(persistent_forecast, 50)
+
+    nRMSEs = calculate_E_nRMSE(e_target, e_persistent_forecast, e_persistent_forecast.shape[-1])
+    nMEs = calculate_E_nME(e_target, e_persistent_forecast, e_persistent_forecast.shape[-1])
     CRPS = calculate_CRPS(targets, persistent_forecast, set_targets.shape[-1])
 
     return {'nRMSE': tf.reduce_mean(nRMSEs).numpy(),

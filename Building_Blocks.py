@@ -1374,7 +1374,7 @@ class CNN_decoder(tf.keras.layers.Layer):
                 post_cnn = padded_post_cnn
 
 
-            post_attention_step = self.attention(post_cnn[:,:-1,:], attention_value)
+            post_attention_step = self.attention(post_cnn[:,-1:,:], attention_value)
 
             forecast_step = self.projection_layer(post_attention_step)
             history_input = tf.concat([history_input, forecast_step], axis=1)

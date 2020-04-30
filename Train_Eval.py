@@ -246,7 +246,6 @@ class Model_Container():
                       encoder_blocks=3,
                       decoder_blocks=3,
                       positional_embedding=False,
-                      force_relevant_context=True,
                       encoder_receptive_window=None,
                       decoder_receptive_window=None,
                       ):
@@ -358,7 +357,6 @@ class Model_Container():
                              'use_dense': use_dense,
                              'attention_squeeze': 0.5,
                              'positional_embedding': positional_embedding,
-                             'force_relevant_context': force_relevant_context,
                              'projection_layer': projection_block}
             encoder_specs = {'num_initial_features': encoder_units,
                              'sequence_length': encoder_receptive_window,
@@ -367,7 +365,6 @@ class Model_Container():
                              'use_dense': use_dense,
                              'attention_heads': attention_heads,
                               'positional_embedding': positional_embedding,
-                              'force_relevant_context': force_relevant_context,
                              'attention_squeeze': 0.5}
             from Building_Blocks import ForecasterModel
             self.model = ForecasterModel(output_shape=out_shape,

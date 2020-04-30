@@ -10,6 +10,58 @@ import random
 initializer = tf.keras.initializers.glorot_uniform()
 activation = tf.nn.relu
 
+def test_attention_equivalence():
+    query = tf.random.uniform(shape=[1, 3, 5])
+    value = tf.random.uniform(shape=[1, 3, 5])
+
+    sa_test = attention_equivalence_test(query, value, self_attention=True)
+    sa_test = tf.reduce_sum(tf.abs(sa_test))
+    if sa_test.numpy() > 0.0:
+        print('Self attention not equivalent')
+    else:
+        print('self attention equivalent')
+
+
+    a_test = attention_equivalence_test(query, value, self_attention=False)
+    a_test = tf.reduce_sum(tf.abs(a_test))
+    if a_test.numpy() > 0.0:
+        print('attention not equivalent')
+    else:
+        print('attention equivalent')
+
+def attention_equivalence_test(query, value, self_attention=True):
+    # If value is none, we assume self attention and set value = query
+    # if key is none we assume standard usage and set key =
+    def build_mask(input_tensor):
+        mask = tf.linalg.band_part(tf.ones_like(input_tensor)*-1e12, 0, -1) #upper triangular ones, INCLUDING diagonal
+        return mask
+
+    def our_attention(query, value, self_attention = True):
+        # Changed the beginning slightly, so we guarantee the same inputs to our attention as the tensorflow attention
+        key = value
+
+
+        score_pre_softmax = tf.matmul(query, key, transpose_b=True)
+
+        score_pre_softmax = score_pre_softmax / tf.math.sqrt(tf.cast(tf.shape(value)[1], tf.float32))
+
+        if self_attention:
+            score_pre_softmax += build_mask(score_pre_softmax)
+
+        score = tf.nn.softmax(score_pre_softmax, axis=1)
+
+        context_vector = tf.matmul(score, value)
+
+        return context_vector
+
+    if self_attention:
+        tf_attention = tf.keras.layers.Attention(use_scale=True, causal=True)
+    else:
+        tf_attention = tf.keras.layers.Attention(use_scale=True, causal=False)
+
+    our_attention_context = our_attention(query, value, self_attention)
+    tf_attention_context = tf_attention([query, value])
+    return our_attention_context - tf_attention_context
 
 def randomize_input_lengths(signal, random_degree):
     rand = tf.random.uniform(shape=(), minval=1 - random_degree, maxval=1)
@@ -116,7 +168,6 @@ class Norm_wrapper(tf.keras.layers.Wrapper):
             return self.norm(self.layer(inputs))
         else:
             return self.norm(self.layer(inputs, value))
-
 
 class Residual_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer):
@@ -721,12 +772,16 @@ class wavenet_CNN(tf.keras.layers.Layer):
                                             kernel_initializer=initializer,
                                             kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                             padding='causal')
-            if  num_layer == 0 and add_positional_embedding:
-                cnn = Positional_embedding_wrapper(cnn)
+
+            if  num_layer == num_layers-1 and add_positional_embedding:
+                cnn = Positional_embedding_wrapper(cnn, max_length=10*self.length_sequence)
+
             if self.use_residual and num_layer != 0:
                 cnn = Residual_wrapper(cnn)
+
             if use_dense:
                 cnn = Dense_wrapper(cnn)
+
             if use_norm:
                 cnn = Norm_wrapper(cnn, norm='batch')
 
@@ -1187,12 +1242,8 @@ class CNN_encoder(tf.keras.layers.Layer):
                  use_norm=True,
                  L2=0.0, L1=0.0,
                 positional_embedding=True,
-                force_relevant_context=True,
                  ):
         super(CNN_encoder, self).__init__()
-
-        self.force_relevant_context = force_relevant_context
-
 
         self.crop = Cropping_layer(0.4)
 
@@ -1219,11 +1270,10 @@ class CNN_encoder(tf.keras.layers.Layer):
 
     def call(self, input):
         signal = input
-
         signal = self.cnn(signal)
         # signal = self.crop(signal)
         # signal = self.self_attention(signal, value=full_features)
-        signal = signal[:,-30*4:,:]
+
         return signal
 
 class CNN_decoder(tf.keras.layers.Layer):
@@ -1242,9 +1292,6 @@ class CNN_decoder(tf.keras.layers.Layer):
                  ):
         super(CNN_decoder, self).__init__()
         self.projection_layer = projection_layer
-        self.force_relevant_context = force_relevant_context
-        self.positional_embedding = positional_embedding
-
 
         self.crop = Cropping_layer(0.4)
 
@@ -1257,7 +1304,7 @@ class CNN_decoder(tf.keras.layers.Layer):
                                   L2=L2, L1=L1,)
 
         attention_features = self.cnn_in.get_num_channels() * attention_squeeze
-        # self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * int(attention_heads/2),
+        # self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
         #                                            use_norm=False,
         #                                            causal=False,
         #                                            use_dropout=False,
@@ -1301,13 +1348,10 @@ class CNN_decoder(tf.keras.layers.Layer):
         signal = tf.concat([history_input, teacher], axis=1)
 
         signal = self.cnn_in(signal)
-
-        if self.force_relevant_context:
-            signal = signal[:,-timesteps:,:]
-
+        signal = signal[:,-timesteps:,:]
         signal = self.attention(signal, attention_value)
 
-        forecast = self.projection_layer(signal[:, -timesteps:, :])
+        forecast = self.projection_layer(signal)
         return forecast
 
     def inference_call(self, history_input, teacher, attention_value, timesteps):
@@ -1329,17 +1373,10 @@ class CNN_decoder(tf.keras.layers.Layer):
             else:
                 post_cnn = padded_post_cnn
 
-            if self.force_relevant_context:
-                post_cnn = post_cnn[:,-1:,:]
-                post_attention = self.attention(post_cnn, attention_value)
-            else:
-                if step == 0:
-                    post_attention = self.attention(post_cnn, attention_value)
-                else:
-                    post_attention_step = self.attention(post_cnn[:,:-1,:], attention_value)
-                    post_attention = tf.concat([post_attention, post_attention_step], axis=1)
 
-            forecast_step = self.projection_layer(post_attention[:,-1:,:])
+            post_attention_step = self.attention(post_cnn[:,:-1,:], attention_value)
+
+            forecast_step = self.projection_layer(post_attention_step)
             history_input = tf.concat([history_input, forecast_step], axis=1)
 
         return history_input[:,-timesteps:,:]

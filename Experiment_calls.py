@@ -22,7 +22,7 @@ def train():
                     # Encoder:
                         'encoder_units' :  128,
                         # 'encoder_blocks': 4,
-                        'encoder_receptive_window': 48*4,
+                        'encoder_receptive_window': 24*4,
                     # Decoder:
                         'decoder_units': 64,
                         # 'decoder_blocks': 4,
@@ -40,7 +40,7 @@ def train():
                         'L1': 0.0, 'L2': 0.0,
                         'use_norm' : False,
                     }
-    train_kwargs = {'batch_size': 2**7}
+    train_kwargs = {'batch_size': 2**8}
 
     experiment = Model_Container(dataset_folder='Daniels_Dataset_1',
                                  experiment_name=experiment_name,

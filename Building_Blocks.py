@@ -40,7 +40,6 @@ def attention_equivalence_test(query, value, self_attention=True):
         # Changed the beginning slightly, so we guarantee the same inputs to our attention as the tensorflow attention
         key = value
 
-
         score_pre_softmax = tf.matmul(query, key, transpose_b=True)
 
         score_pre_softmax = score_pre_softmax / tf.math.sqrt(tf.cast(tf.shape(value)[1], tf.float32))
@@ -483,50 +482,41 @@ class Attention(tf.keras.layers.Layer):
         return context_vector
 
 class multihead_attentive_layer(tf.keras.layers.Layer):
-    def __init__(self, units_per_head=[80, 80], kernel_size=None,
-                 project_to_units=None,
-                 use_norm=True,
+    def __init__(self, units_per_head=[80, 80],
+                 kernel_size=None,
+                 output_units=None,
                  causal=True,
                  L1=0.0, L2=0.0,
                  use_dropout=True, dropout_rate=0.2):
         super(multihead_attentive_layer, self).__init__()
         # units is a list of lists, containing the numbers of units in the attention head
-        self.num_heads = len(units_per_head)
-        self.dropout_rate = dropout_rate
-        self.use_dropout = use_dropout
-        if project_to_units is None:
-            self.projection = False
-        else:
-            self.projection = True
-            self.projection_layer = tf.keras.layers.Conv1D(project_to_units,
-                                         activation=None,
-                                         strides=1,
-                                         kernel_size=1,
-                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                         padding='causal',
-                                         kernel_initializer=initializer,
-                                         use_bias=False)
-            if self.use_dropout:
-                self.projection_layer = Dropout_wrapper(self.projection_layer, dropout_rate=dropout_rate)
+
+        self.projection_layer = tf.keras.layers.Conv1D(output_units,
+                                     activation=None,
+                                     strides=1,
+                                     kernel_size=1,
+                                     kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                     padding='causal',
+                                     kernel_initializer=initializer,
+                                     use_bias=False)
+        if use_dropout:
+            self.projection_layer = Dropout_wrapper(self.projection_layer, dropout_rate=dropout_rate)
 
         self.multihead_attention = []
-
-        for head in range(self.num_heads):
-            attention = Attention(units_per_head[head],
+        for units in units_per_head:
+            attention = Attention(units,
                                   mode='Transformer',
-                                  query_kernel= 1 if kernel_size==None else kernel_size[head],
-                                  key_kernel=1 if kernel_size==None else kernel_size[head],
+                                  query_kernel= 1 if kernel_size==None else kernel_size,
+                                  key_kernel=1 if kernel_size==None else kernel_size,
                                   use_dropout=use_dropout,
                                   dropout_rate=dropout_rate,
                                   causal_attention=causal,
                                   L2=L2, L1=L1,
                                   only_context=True)
-            # if self.use_dropout:
-            #     attention = Dropout_wrapper(attention, dropout_rate=dropout_rate)
-
             self.multihead_attention.append(attention)
 
     def call(self, query, value=None):
+
         if value is None: #Self Attention
             multihead_out = [head(query) for head in self.multihead_attention]
         else:
@@ -534,11 +524,80 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
 
         multihead_out = tf.concat(multihead_out, axis=-1)
 
-        if self.projection:
-
-            multihead_out = self.projection_layer(multihead_out)
+        multihead_out = self.projection_layer(multihead_out)
 
         return multihead_out
+
+class dumb_tensorflow_multihead_attention(tf.keras.layers.Layer):
+    def __init__(self, units_per_head=[80, 80],
+                 output_units=20,
+                 L1=0.0, L2=0.0,
+                 use_dropout=True, dropout_rate=0.2, causal=True):
+        super(dumb_tensorflow_multihead_attention, self).__init__()
+        # units is a list of lists, containing the numbers of units in the attention head
+        self.num_heads = len(units_per_head)
+        self.dropout_rate = dropout_rate
+        self.use_dropout = use_dropout
+        self.W_q = []
+        self.W_k = []
+        self.W_v = []
+        self.heads=[]
+        for units in units_per_head:
+            w_q = tf.keras.layers.Conv1D(units,
+                                         activation=None,
+                                         strides=1,
+                                         kernel_size=1,
+                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                         padding='causal',
+                                         kernel_initializer=initializer,
+                                         use_bias=False)
+            self.W_q.append(w_q)
+            w_k = tf.keras.layers.Conv1D(units,
+                                         activation=None,
+                                         strides=1,
+                                         kernel_size=1,
+                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                         padding='causal',
+                                         kernel_initializer=initializer,
+                                         use_bias=False)
+            self.W_k.append(w_k)
+            w_v = tf.keras.layers.Conv1D(units,
+                                         activation=None,
+                                         strides=1,
+                                         kernel_size=1,
+                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                         padding='causal',
+                                         kernel_initializer=initializer,
+                                         use_bias=False)
+            self.W_v.append(w_v)
+            head = tf.keras.layers.Attention(use_scale=False, causal=causal)
+            self.heads.append(head)
+
+            self.projection_layer = tf.keras.layers.Conv1D(output_units,
+                                                     activation=None,
+                                                     strides=1,
+                                                     kernel_size=1,
+                                                     kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                                     padding='causal',
+                                                     kernel_initializer=initializer,
+                                                     use_bias=False)
+
+
+    def call(self, query, value=None):
+        multihead_attention = []
+        if value is None:
+            value = query
+        for head in range(len(self.heads)):
+            Q = self.W_q[head](query)
+            K = self.W_k[head](value)
+            V = self.W_v[head](value)
+
+            attention = self.heads[head]([Q,V,K])
+
+            multihead_attention.append(attention)
+
+        multihead_attention = tf.concat(multihead_attention, axis=-1)
+        return self.projection_layer(multihead_attention)
 
 ########################################################################################################################
 
@@ -610,8 +669,7 @@ class FFNN_encoder_block(tf.keras.layers.Layer):
         self.self_attn = multihead_attentive_layer(units_per_head=attention_units,
                                                    kernel_size=None,
                                                    causal=causal,
-                                                   project_to_units=units,
-                                                   use_norm=use_norm,
+                                                   output_units=units,
                                                    L1=L1, L2=L2,
                                                    use_dropout=use_dropout,
                                                    dropout_rate=dropout_rate)
@@ -668,8 +726,7 @@ class FFNN_decoder_block(tf.keras.layers.Layer):
         attention_units = [int(units*attention_feature_squeeze)]*attention_heads
         self.self_attn = multihead_attentive_layer(units_per_head=attention_units,
                                                    kernel_size=None,
-                                                   project_to_units=units,
-                                                   use_norm=use_norm,
+                                                   output_units=units,
                                                    causal=True,
                                                    L1=L1, L2=L2,
                                                    use_dropout=use_dropout,
@@ -680,13 +737,12 @@ class FFNN_decoder_block(tf.keras.layers.Layer):
             self.self_attn = Norm_wrapper(self.self_attn)
 
         self.attn = multihead_attentive_layer(units_per_head=attention_units,
-                                                   kernel_size=None,
-                                                   project_to_units=units,
-                                                   use_norm=use_norm,
-                                                    causal=False,
-                                                   L1=L1, L2=L2,
-                                                   use_dropout=use_dropout,
-                                                   dropout_rate=dropout_rate)
+                                                kernel_size=None,
+                                                output_units=units,
+                                                causal=False,
+                                                L1=L1, L2=L2,
+                                                use_dropout=use_dropout,
+                                                dropout_rate=dropout_rate)
         if self.use_residual:
             self.attn = Residual_wrapper(self.attn)
         if self.use_norm:
@@ -1064,10 +1120,9 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                     units_per_head =[int(layer_units[0]*attention_squeeze)]*attention_heads
                     attention = multihead_attentive_layer(units_per_head=units_per_head,
                                                           kernel_size=None,
-                                                          project_to_units=layer_units[0],
+                                                          output_units=layer_units[0],
                                                           dropout_rate=dropout_rate,
                                                           use_dropout=use_dropout,
-                                                          use_norm=use_norm,
                                                           L1=L1,
                                                           L2=L2, )
                     attention = Residual_wrapper(attention)
@@ -1247,7 +1302,7 @@ class CNN_encoder(tf.keras.layers.Layer):
 
         self.crop = Cropping_layer(0.4)
 
-        self.cnn = wavenet_CNN(num_channels=num_initial_features,
+        self.pseudo_embedding = wavenet_CNN(num_channels=num_initial_features,
                                length_sequence=sequence_length,
                                use_residual=use_residual,
                                use_norm=use_norm,
@@ -1257,20 +1312,9 @@ class CNN_encoder(tf.keras.layers.Layer):
                                L2=L2, L1=L1,
                                )
 
-
-        # attention_features = attention_squeeze*self.cnn.get_num_channels()
-        # print(self.cnn.get_num_channels())
-        # self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)]*attention_heads,
-        #                                                 use_norm=False,
-        #                                                 use_dropout=False,
-        #                                                 causal=True,
-        #                                                 project_to_units=self.cnn.get_num_channels())
-        # self_attention = Residual_wrapper(self_attention)
-        # self.self_attention = self_attention
-
     def call(self, input):
         signal = input
-        signal = self.cnn(signal)
+        signal = self.pseudo_embedding(signal)
         # signal = self.crop(signal)
         # signal = self.self_attention(signal, value=full_features)
 
@@ -1295,7 +1339,7 @@ class CNN_decoder(tf.keras.layers.Layer):
 
         self.crop = Cropping_layer(0.4)
 
-        self.cnn_in = wavenet_CNN(num_channels=num_initial_features,
+        self.pseudo_embedding = wavenet_CNN(num_channels=num_initial_features,
                                   length_sequence=sequence_length,
                                   use_residual=use_residual,
                                   use_norm=use_norm,
@@ -1303,29 +1347,21 @@ class CNN_decoder(tf.keras.layers.Layer):
                                   use_dense=use_dense,
                                   L2=L2, L1=L1,)
 
-        attention_features = self.cnn_in.get_num_channels() * attention_squeeze
-        # self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
-        #                                            use_norm=False,
-        #                                            causal=False,
-        #                                            use_dropout=False,
-        #                                            L2=L2, L1=L1,
-        #                                            project_to_units=self.cnn_in.get_num_channels())
-        # if use_residual:
-        #     self_attention = Residual_wrapper(self_attention)
-        # if use_norm:
-        #     self_attention = Norm_wrapper(self_attention, norm='batch')
-        # self.self_attention = self_attention
+        attention_features = self.pseudo_embedding.get_num_channels() * attention_squeeze
+        self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
+                                                  causal=False,
+                                                  use_dropout=False,
+                                                  L2=L2, L1=L1,
+                                                  output_units=int(self.pseudo_embedding.get_num_channels()))
+        self_attention = Residual_wrapper(self_attention)
+        self.self_attention = self_attention
 
         attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
-                                              use_norm=False,
                                               causal=False,
                                               use_dropout=False,
                                               L2=L2, L1=L1,
-                                              project_to_units=int(self.cnn_in.get_num_channels()))
-        if use_residual:
-            attention = Residual_wrapper(attention)
-        if use_norm:
-            attention = Norm_wrapper(attention, norm='batch')
+                                              output_units=int(self.pseudo_embedding.get_num_channels()))
+        attention = Residual_wrapper(attention)
         self.attention = attention
 
         # self.cnn_out = wavenet_CNN(num_channels=num_initial_features,
@@ -1347,7 +1383,10 @@ class CNN_decoder(tf.keras.layers.Layer):
         self.max_length = history_input.shape[1] + teacher.shape[1]
         signal = tf.concat([history_input, teacher], axis=1)
 
-        signal = self.cnn_in(signal)
+        signal = self.pseudo_embedding(signal) #Pseudo Embeddings
+
+        # Put Transformer Decoder here
+        signal = self.self_attention(signal)
         signal = signal[:,-timesteps:,:]
         signal = self.attention(signal, attention_value)
 
@@ -1366,15 +1405,16 @@ class CNN_decoder(tf.keras.layers.Layer):
                                                                history_input.shape[2]]
                                                         )], axis=1)
 
-            padded_post_cnn = self.cnn_in(padded_projected_history_input)
+            padded_post_cnn = self.pseudo_embedding(padded_projected_history_input)
 
             if offset - step > 0:
                 post_cnn = padded_post_cnn[:, :-(offset - step), :]
             else:
                 post_cnn = padded_post_cnn
 
+            post_self_attention = self.self_attention(post_cnn)
 
-            post_attention_step = self.attention(post_cnn[:,-1:,:], attention_value)
+            post_attention_step = self.attention(post_self_attention[:,-1:,:], attention_value)
 
             forecast_step = self.projection_layer(post_attention_step)
             history_input = tf.concat([history_input, forecast_step], axis=1)
@@ -1532,10 +1572,8 @@ class attentive_TCN(tf.keras.layers.Layer):
 
             attn_units_per_head = [int(attention_heads / (attention_heads + 1) * units[block][-1])] * attention_heads
             self_attention = multihead_attentive_layer(units_per_head=attn_units_per_head,
-                                                       use_norm=use_norm,
-                                                       norm_type='batch',
                                                        L1=L1, L2=L2,
-                                                       project_to_units=units[block][-1],
+                                                       output_units=units[block][-1],
                                                        use_dropout=use_dropout, dropout_rate=dropout_rate)
             self_attention = Residual_wrapper(self_attention)
             if use_norm:

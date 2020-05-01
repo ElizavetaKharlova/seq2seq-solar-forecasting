@@ -471,10 +471,6 @@ class Attention(tf.keras.layers.Layer):
         if self_attention:
             score_pre_softmax += self.build_mask(score_pre_softmax)
 
-        # score_pre_softmax = tf.keras.backend.in_train_phase(x=score_pre_softmax + self.dropout_mask(score_pre_softmax),
-        #                                         alt=score_pre_softmax,
-        #                                         training=tf.keras.backend.learning_phase())
-
         score = tf.nn.softmax(score_pre_softmax, axis=-1)
 
         context_vector = tf.matmul(score, self.W_value(value))
@@ -484,7 +480,7 @@ class Attention(tf.keras.layers.Layer):
 class multihead_attentive_layer(tf.keras.layers.Layer):
     def __init__(self, units_per_head=[80, 80],
                  kernel_size=None,
-                 output_units=None,
+                 output_units=20,
                  causal=True,
                  L1=0.0, L2=0.0,
                  use_dropout=True, dropout_rate=0.2):
@@ -528,12 +524,12 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
 
         return multihead_out
 
-class dumb_tensorflow_multihead_attention(tf.keras.layers.Layer):
+class keras_multihead_attentive_layer(tf.keras.layers.Layer):
     def __init__(self, units_per_head=[80, 80],
                  output_units=20,
                  L1=0.0, L2=0.0,
                  use_dropout=True, dropout_rate=0.2, causal=True):
-        super(dumb_tensorflow_multihead_attention, self).__init__()
+        super(keras_multihead_attentive_layer, self).__init__()
         # units is a list of lists, containing the numbers of units in the attention head
         self.num_heads = len(units_per_head)
         self.dropout_rate = dropout_rate
@@ -1300,7 +1296,7 @@ class CNN_encoder(tf.keras.layers.Layer):
                  ):
         super(CNN_encoder, self).__init__()
 
-        self.crop = Cropping_layer(0.4)
+        # self.crop = Cropping_layer(0.4)
 
         self.pseudo_embedding = wavenet_CNN(num_channels=num_initial_features,
                                length_sequence=sequence_length,
@@ -1337,8 +1333,6 @@ class CNN_decoder(tf.keras.layers.Layer):
         super(CNN_decoder, self).__init__()
         self.projection_layer = projection_layer
 
-        self.crop = Cropping_layer(0.4)
-
         self.pseudo_embedding = wavenet_CNN(num_channels=num_initial_features,
                                   length_sequence=sequence_length,
                                   use_residual=use_residual,
@@ -1348,13 +1342,6 @@ class CNN_decoder(tf.keras.layers.Layer):
                                   L2=L2, L1=L1,)
 
         attention_features = self.pseudo_embedding.get_num_channels() * attention_squeeze
-        self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
-                                                  causal=False,
-                                                  use_dropout=False,
-                                                  L2=L2, L1=L1,
-                                                  output_units=int(self.pseudo_embedding.get_num_channels()))
-        self_attention = Residual_wrapper(self_attention)
-        self.self_attention = self_attention
 
         attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
                                               causal=False,
@@ -1363,14 +1350,6 @@ class CNN_decoder(tf.keras.layers.Layer):
                                               output_units=int(self.pseudo_embedding.get_num_channels()))
         attention = Residual_wrapper(attention)
         self.attention = attention
-
-        # self.cnn_out = wavenet_CNN(num_channels=num_initial_features,
-        #                            length_sequence=sequence_length,
-        #                            pass_input=True,
-        #                            use_dense=use_dense,
-        #                            use_residual=use_residual,
-        #                            use_norm=use_norm,
-        #                            L2=L2, L1=L1, )
 
 
     def call(self, history_input, teacher, attention_value, timesteps):
@@ -1384,9 +1363,9 @@ class CNN_decoder(tf.keras.layers.Layer):
         signal = tf.concat([history_input, teacher], axis=1)
 
         signal = self.pseudo_embedding(signal) #Pseudo Embeddings
-
+        # signal = self.crop(signal)
         # Put Transformer Decoder here
-        signal = self.self_attention(signal)
+        # signal = self.self_attention(signal)
         signal = signal[:,-timesteps:,:]
         signal = self.attention(signal, attention_value)
 
@@ -1412,9 +1391,9 @@ class CNN_decoder(tf.keras.layers.Layer):
             else:
                 post_cnn = padded_post_cnn
 
-            post_self_attention = self.self_attention(post_cnn)
+            # post_self_attention = self.self_attention(post_cnn)
 
-            post_attention_step = self.attention(post_self_attention[:,-1:,:], attention_value)
+            post_attention_step = self.attention(post_cnn[:,-1:,:], attention_value)
 
             forecast_step = self.projection_layer(post_attention_step)
             history_input = tf.concat([history_input, forecast_step], axis=1)

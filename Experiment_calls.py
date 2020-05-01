@@ -18,6 +18,8 @@ def train():
     model_kwargs = {'model_type': 'CNN-Generator',
                     'forecast_mode': 'pdf',
 
+
+
                     # Architecture Hyperparameters
                     # Encoder:
                         'encoder_units' :  128,
@@ -37,10 +39,10 @@ def train():
 
                     # Regularization Hyperparameters
                         # 'use_dropout' : False, 'dropout_rate' : 0.0,
-                        'L1': 0.0, 'L2': 0.0,
+                        'L1': 0.0, 'L2': 0,
                         'use_norm' : False,
                     }
-    train_kwargs = {'batch_size': 2**8}
+    train_kwargs = {'batch_size': 2**7}
 
     experiment = Model_Container(dataset_folder='Daniels_Dataset_1',
                                  experiment_name=experiment_name,

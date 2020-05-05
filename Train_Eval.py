@@ -69,7 +69,7 @@ class Model_Container():
         self.model_kwargs = model_kwargs
         self.train_kwargs = train_kwargs
 
-    def get_results(self, runs=1):
+    def get_results(self):
         tf.keras.backend.clear_session() # make sure we are working clean
 
         self.__create_datasets()
@@ -78,23 +78,17 @@ class Model_Container():
         cross_ops = tf.distribute.HierarchicalCopyAllReduce()
         strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
 
-        for run in range(runs):
-            tf.keras.backend.clear_session()
-            with strategy.scope():
-                self.__build_model(**self.model_kwargs)
+        with strategy.scope():
+            self.__build_model(**self.model_kwargs)
 
-                train_history, test_results = self.__train_model()
-                del self.model
-
-                self.metrics[run] = {}
-
-                self.__manage_metrics(train_history, test_results)
-        del self.train_kwargs
-
-
+            train_history, test_results = self.__train_model()
+            del self.model
 
         tf.keras.backend.clear_session()
-        return self.metrics
+        results_dict = self.__manage_metrics(train_history, test_results)
+        del self.train_kwargs
+
+        return results_dict
 
     def __create_datasets(self):
         def __get_all_tfrecords_in_folder(folder):
@@ -246,8 +240,13 @@ class Model_Container():
                       encoder_blocks=3,
                       decoder_blocks=3,
                       positional_embedding=False,
+                      force_relevant_context=True,
+                      encoder_max_length_sequence=None,
                       encoder_receptive_window=None,
+                      encoder_self_attention=False,
+                      decoder_max_length_sequence=None,
                       decoder_receptive_window=None,
+                      decoder_self_attention=False,
                       ):
 
         if self.forecast_mode == 'pdf':
@@ -350,20 +349,26 @@ class Model_Container():
 
         elif model_type=='CNN-Generator':
             decoder_specs = {'num_initial_features': decoder_units,
-                             'sequence_length': decoder_receptive_window,
+                             'max_length_sequence': decoder_max_length_sequence,
+                             'length_receptive_window': decoder_receptive_window,
                              'attention_heads': attention_heads,
                              'use_residual': use_residual,
                              'use_norm': use_norm,
                              'use_dense': use_dense,
+                             'force_relevant_context': force_relevant_context,
                              'attention_squeeze': 0.5,
+                             'use_self_attention': decoder_self_attention,
                              'positional_embedding': positional_embedding,
                              'projection_layer': projection_block}
             encoder_specs = {'num_initial_features': encoder_units,
-                             'sequence_length': encoder_receptive_window,
+                             'max_length_sequence': encoder_max_length_sequence,
+                             'length_receptive_window': encoder_receptive_window,
                              'use_residual': use_residual,
                              'use_norm': use_norm,
                              'use_dense': use_dense,
+                             'force_relevant_context': force_relevant_context,
                              'attention_heads': attention_heads,
+                             'use_self_attention': encoder_self_attention,
                               'positional_embedding': positional_embedding,
                              'attention_squeeze': 0.5}
             from Building_Blocks import ForecasterModel
@@ -457,7 +462,7 @@ class Model_Container():
             print('forecast mode was not specified as either <pdf> or <ev>, no idea how it got this far but expect some issues!!')
 
         self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate = 1/self.train_steps_epr_epoch,
-                                                            momentum=0.85,
+                                                            momentum=0.9,
                                                             nesterov=True,
                                                             # clipnorm=1.0,
                                                             ),
@@ -507,33 +512,33 @@ class Model_Container():
 
     def __manage_metrics(self, train_history, test_results):
 
-        last_run_dict = {}
+        results_dict = {}
+        results_dict['test_loss'] = test_results[0]
+        results_dict['test_nME'] = test_results[1]
+        results_dict['test_nRMSE'] = test_results[2]
+        if self.forecast_mode == 'pdf':
+            results_dict['test_CRPS'] = test_results[3]
+
         for key in train_history.keys():
-            last_run_dict[key] = train_history[key]
-        last_run_dict['test_loss'] = test_results[0]
-        last_run_dict['test_nME'] = test_results[1]
-        last_run_dict['test_nRMSE'] = test_results[2]
+            results_dict[key] = train_history[key]
+
+        saved_epoch = np.argmin(results_dict['val_nRMSE'])
+        results_dict['save_epoch'] = saved_epoch
+        results_dict['val_nRMSE_skill'] = 1 - (results_dict['val_nRMSE'][saved_epoch] / self.dataset_info['val_baseline']['nRMSE'])
+        results_dict['test_nRMSE_skill'] = 1 - (results_dict['test_nRMSE'] / self.dataset_info['test_baseline']['nRMSE'])
 
         if self.forecast_mode == 'pdf':
-            last_run_dict['test_CRPS'] = test_results[3]
+            results_dict['val_CRPS_skill'] = 1 - (results_dict['val_CRPS'][saved_epoch] / self.dataset_info['val_baseline']['CRPS'])
+            results_dict['test_CRPS_skill'] = 1 - (results_dict['test_CRPS'] / self.dataset_info['test_baseline']['CRPS'])
 
-        saved_epoch = np.argmin(last_run_dict['val_nRMSE'])
-        last_run_dict['val_nRMSE_skill'] = 1 - (last_run_dict['val_nRMSE'][saved_epoch] / self.dataset_info['val_baseline']['nRMSE'])
-        last_run_dict['test_nRMSE_skill'] = 1 - (last_run_dict['test_nRMSE'] / self.dataset_info['test_baseline']['nRMSE'])
-
-        if self.forecast_mode == 'pdf':
-            last_run_dict['val_CRPS_skill'] = 1 - (last_run_dict['val_CRPS'][saved_epoch] / self.dataset_info['val_baseline']['CRPS'])
-            last_run_dict['test_CRPS_skill'] = 1 - (last_run_dict['test_CRPS'] / self.dataset_info['test_baseline']['CRPS'])
-
-        print('val_skill nRMSE', last_run_dict['val_nRMSE_skill'])
-        print('test_skill nRMSE', last_run_dict['test_nRMSE_skill'])
+        print('val_skill nRMSE', results_dict['val_nRMSE_skill'])
+        print('test_skill nRMSE', results_dict['test_nRMSE_skill'])
 
         if self.forecast_mode == 'pdf':
-            print('val_skill CRPS', last_run_dict['val_CRPS_skill'])
-            print('test_skill CRPS', last_run_dict['test_CRPS_skill'])
+            print('val_skill CRPS', results_dict['val_CRPS_skill'])
+            print('test_skill CRPS', results_dict['test_CRPS_skill'])
 
-        last_run = [*self.metrics][-1]
-        self.metrics[last_run] = last_run_dict
+        return results_dict
 
 def __get_max_min_targets(train_targets, test_targets):
     import numpy as np

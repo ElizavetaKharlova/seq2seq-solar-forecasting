@@ -9,89 +9,71 @@ import tensorflow as tf
 #ToDo: Experiment3 is to check for layer depth in Encoder and Decoder
 
 
-def train():
+def do_experiment():
     # ToDo: do the dataset one folder up
     #hmmm...
-    metrics = {}
-    experiment_name = 'FFNN-Generator-small-dataset'
+
+    experiment_name = 'Our-Attention-Axis1-withcroppingAndembeddings'
     sliding_window_length_days = 6
     model_kwargs = {'model_type': 'CNN-Generator',
                     'forecast_mode': 'pdf',
-
-
 
                     # Architecture Hyperparameters
                     # Encoder:
                         'encoder_units' :  128,
                         # 'encoder_blocks': 4,
                         'encoder_receptive_window': 24*4,
+                        'encoder_self_attention': False,
+                        'encoder_max_length_sequence': 2*sliding_window_length_days * 24 * 4,
                     # Decoder:
                         'decoder_units': 64,
                         # 'decoder_blocks': 4,
                         'decoder_receptive_window': 24,
+                        'decoder_self_attention': False,
+                        'decoder_max_length_sequence': 2*sliding_window_length_days*24,
                         'attention_heads': 20,
 
                     # General information flow
                         'positional_embedding': True,
+                        'force_relevant_context': True,
                         'use_dense': False,
                         'use_residual': True,
                         # 'downsample': False, 'mode': 'project',
 
                     # Regularization Hyperparameters
                         # 'use_dropout' : False, 'dropout_rate' : 0.0,
-                        'L1': 0.0, 'L2': 0,
+                        'L1': 0.0, 'L2': 0.0,
                         'use_norm' : False,
                     }
     train_kwargs = {'batch_size': 2**7}
+    runs = 3
+    metrics = {}
+    for run in range(runs):
+        experiment = Model_Container(dataset_folder='Daniels_Dataset_1',
+                                     experiment_name=experiment_name+str(run),
+                                     sw_len_days=sliding_window_length_days,
+                                      model_kwargs=model_kwargs,
+                                      train_kwargs=train_kwargs,)
+        results_dict = experiment.get_results()
+        tf.keras.backend.clear_session()
+        del experiment
 
-    experiment = Model_Container(dataset_folder='Daniels_Dataset_1',
-                                 experiment_name=experiment_name,
-                                 sw_len_days=sliding_window_length_days,
-                                  model_kwargs=model_kwargs,
-                                  train_kwargs=train_kwargs,)
-    metrics = experiment.get_results(runs=1)
-    del experiment
-    tf.keras.backend.clear_session()
+
+        for key in results_dict:
+            if key not in metrics:
+                metrics[key] = [results_dict[key]]
+            else:
+                metrics[key].append(results_dict[key])
+
+    for key in metrics:
+        if 'skill' in key:
+            print(key, ': ', metrics[key])
+
 
     with open(experiment_name+'.pickle', 'wb') as handle:
         pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
    # __plot_training_curves(metrics, experiment_name=experiment_name)
-
-def train_on_LD():
-
-    # ToDo: Gotta recompile ur datasets obviously
-    datasets = ['Lizas_Dataset_1']
-    metrics = {}
-    for set in datasets:
-        metrics[set] = []
-        for run in range(2):
-            model_kwargs = {'model_type': 'Densegenerator',
-                            'model_size' : 'generator',
-                            'use_dropout' : True, 'dropout_rate' : 2*0.15,
-                            'use_hw' : False,
-                            'use_norm' : True,
-                            'use_quasi_dense' : False,  # general architecture stuff
-                            'use_attention' : True, 'attention_hidden' : False,
-                            # 'downsample' : False,
-                            # 'mode': 'snip',  # MiMo stuff
-                            }
-            train_kwargs = {'batch_size': 128+32}
-
-            experiment = Model_Container(dataset_folder=set,
-                                      model_kwargs=model_kwargs,
-                                      train_kwargs=train_kwargs,
-                                      try_distribution_across_GPUs=False,)
-            metrics[set].append(experiment.get_results())
-            del experiment
-            tf.keras.backend.clear_session()
-
-    experiment_name = '96_units_generator_no_self_attn'
-    with open(experiment_name+'.pickle', 'wb') as handle:
-        pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
-    # __plot_training_curves(metrics, experiment_name=experiment_name)
-
 
 def __plot_training_curves(metrics, experiment_name):
 
@@ -161,4 +143,4 @@ def __plot_training_curves(metrics, experiment_name):
             plt.savefig(experiment_name, dpi=500, format='pdf')
             plt.show()
 
-train()
+do_experiment()

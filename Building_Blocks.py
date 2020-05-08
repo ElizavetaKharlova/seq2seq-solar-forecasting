@@ -474,7 +474,7 @@ class Attention(tf.keras.layers.Layer):
         if self_attention:
             score_pre_softmax += self.build_t0_mask(score_pre_softmax)
 
-        score = tf.nn.softmax(score_pre_softmax, axis=1)
+        score = tf.nn.softmax(score_pre_softmax, axis=-1)
 
         context_vector = tf.matmul(score, self.W_value(value))
 
@@ -1300,6 +1300,7 @@ class CNN_encoder(tf.keras.layers.Layer):
                 positional_embedding=True,
                  force_relevant_context=False,
                  use_self_attention=False,
+                 transformer_blocks=1,
                  ):
         super(CNN_encoder, self).__init__()
 
@@ -1328,6 +1329,19 @@ class CNN_encoder(tf.keras.layers.Layer):
             self_attention = Residual_wrapper(self_attention)
             self.self_attention = self_attention
 
+            transform = tf.keras.layers.Conv1D(filters=num_initial_features,
+                                               kernel_size=1,
+                                               activation=activation,
+                                               dilation_rate=1,
+                                               kernel_initializer=initializer,
+                                               kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                               padding='causal')
+            if use_residual:
+                transform = Residual_wrapper(transform)
+            if use_norm:
+                transform = Norm_wrapper(transform, norm='layer')
+            self.transform_out = transform
+
     def call(self, input):
         signal = input
 
@@ -1335,6 +1349,7 @@ class CNN_encoder(tf.keras.layers.Layer):
 
         if self.use_self_attention:
             signal = self.self_attention(signal)
+            signal = self.transform_out(signal)
 
         if self.force_relevant_context:
             signal = signal[:,-24*4:,:]
@@ -1355,6 +1370,7 @@ class CNN_decoder(tf.keras.layers.Layer):
                  L2=0.0, L1=0.0,
                  positional_embedding=True,
                  force_relevant_context=False,
+                transformer_blocks=1,
                  use_self_attention=False,
                  ):
         super(CNN_decoder, self).__init__()
@@ -1371,23 +1387,38 @@ class CNN_decoder(tf.keras.layers.Layer):
                                           L2=L2, L1=L1,)
 
         attention_features = self.pseudo_embedding.get_num_channels() * attention_squeeze
+        width = int(self.pseudo_embedding.get_num_channels())
         self.use_self_attention = use_self_attention
-        if use_self_attention:
-            self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
+        self.transformer = []
+
+        for block in range(transformer_blocks):
+            block = {}
+            if use_self_attention:
+                self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
+                                                      causal=False,
+                                                      use_dropout=False,
+                                                      L2=L2, L1=L1,
+                                                      output_units=width)
+                self_attention = Residual_wrapper(self_attention)
+                block['self_attention'] = self_attention
+
+            attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
                                                   causal=False,
                                                   use_dropout=False,
                                                   L2=L2, L1=L1,
-                                                  output_units=int(self.pseudo_embedding.get_num_channels()))
-            self_attention = Residual_wrapper(self_attention)
-            self.self_attention = self_attention
+                                                  output_units=width)
+            attention = Residual_wrapper(attention)
+            block['attention'] = attention
 
-        attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
-                                              causal=False,
-                                              use_dropout=False,
-                                              L2=L2, L1=L1,
-                                              output_units=int(self.pseudo_embedding.get_num_channels()))
-        attention = Residual_wrapper(attention)
-        self.attention = attention
+            block['transform'] = tf.keras.layers.Conv1D(filters=width,
+                                         kernel_size=1,
+                                         activation=activation,
+                                         dilation_rate=1,
+                                         kernel_initializer=initializer,
+                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                         padding='causal')
+
+            self.transformer.append(block)
 
 
     def call(self, history_input, teacher, attention_value, timesteps):
@@ -1402,13 +1433,17 @@ class CNN_decoder(tf.keras.layers.Layer):
 
         signal = self.pseudo_embedding(signal) #Pseudo Embeddings
         # signal = self.crop(signal)
-        # Put Transformer Decoder here
-        if self.use_self_attention:
-            signal = self.self_attention(signal)
+        # Put Transformer Decoder
 
-        signal = signal[:,-timesteps:,:]
-        signal = self.attention(signal, attention_value)
+        for block in self.transformer:
+            if 'self_attention' in block:
+                signal = block['self_attention'](signal)
+            if 'attention' in block:
+                signal = block['attention'](signal, attention_value)
+            if 'transform' in block:
+                signal = block['transform'](signal)
 
+        signal = signal[:, -timesteps:, :]
         forecast = self.projection_layer(signal)
         return forecast
 
@@ -1426,17 +1461,30 @@ class CNN_decoder(tf.keras.layers.Layer):
 
             padded_post_cnn = self.pseudo_embedding(padded_projected_history_input)
 
-            post_cnn = padded_post_cnn[:, :-(offset - step), :] if offset - step > 0 else padded_post_cnn
+            signal = padded_post_cnn[:, :-(offset - step), :] if offset - step > 0 else padded_post_cnn
 
-            if self.use_self_attention:
-                attention_in = self.self_attention(post_cnn[:,-1:,:], attention_in)
-            else:
-                attention_in = post_cnn[:,-1:,:]
-            # post_self_attention = self.self_attention(post_cnn)
-            # attention_in = post_cnn[:,-1:,:]
-            signal = self.attention(attention_in, attention_value)
+            if step == 0:
+                buffers = []
 
-            forecast_step = self.projection_layer(signal)
+            for num_block in range(len(self.transformer)):
+                block = self.transformer[num_block]
+
+                if 'self_attention' in block:
+
+                    if step == 0:
+                        buffers.append(signal)
+                        signal = block['self_attention'](signal)
+                    else:
+                        query = signal[:,-1:,:]
+                        buffers[num_block] = tf.concat([buffers[num_block], query], axis=1)
+                        signal = block['self_attention'](query, buffers[num_block])
+
+                if 'attention' in block:
+                    signal = block['attention'](signal, attention_value)
+                if 'transform' in block:
+                    signal = block['transform'](signal)
+
+            forecast_step = self.projection_layer(signal[:,-1:,:])
             history_input = tf.concat([history_input, forecast_step], axis=1)
 
 
@@ -1444,105 +1492,223 @@ class CNN_decoder(tf.keras.layers.Layer):
 ########################################################################################################################
 
 class FFNN_encoder(tf.keras.layers.Layer):
-    def __init__(self, width=256, depth=3, attention_heads=3, use_norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0, max_length_sequence=int(4*24*4)):
+    def __init__(self,
+                 num_initial_features,
+                 max_length_sequence,
+                 attention_heads=5,
+                 attention_squeeze=0.5,
+                 use_residual=True,
+                 use_dense=False,
+                 use_norm=True,
+                 L2=0.0, L1=0.0,
+                positional_embedding=True,
+                 force_relevant_context=False,
+                 use_self_attention=False,
+                 transformer_blocks=1,
+                 ):
         super(FFNN_encoder, self).__init__()
-        self.use_norm = use_norm
-        self.crop_layer = Cropping_layer(.5)
-        self.projection = tf.keras.layers.Dense(units=width,
-                                                 activation=activation,
-                                                 use_bias=True,
-                                                 kernel_initializer=initializer,
-                                                 kernel_regularizer=tf.keras.regularizers.l1_l2(L1, L2))
 
-        if self.use_norm:
-            self.projection = Norm_wrapper(self.projection)
-        self.projection = Positional_embedding_wrapper(self.projection, max_length_sequence, name='Encoder')
+        # self.crop = Cropping_layer(0.4)
+        self.force_relevant_context = force_relevant_context
 
-        self.encoder = []
-        for block in range(depth):
-            layer = FFNN_encoder_block(units=width,
-                                        use_norm=use_norm,
-                                        attention_heads=attention_heads,
-                                        attention_feature_squeeze=attention_squeeze,
-                                        use_residential=True)
-            self.encoder.append(layer)
+        self.pseudo_embedding = tf.keras.layers.Conv1D(filters=num_initial_features,
+                                         kernel_size=1,
+                                         activation=activation,
+                                         dilation_rate=1,
+                                         kernel_initializer=initializer,
+                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                         padding='causal')
+        if positional_embedding:
+            self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence)
+
+        self.use_self_attention = use_self_attention
+        if use_self_attention:
+            attention_features = num_initial_features * attention_squeeze
+            self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
+                                                  causal=False,
+                                                  use_dropout=False,
+                                                  L2=L2, L1=L1,
+                                                  output_units=num_initial_features)
+            if use_residual:
+                self_attention = Residual_wrapper(self_attention)
+            if use_norm:
+                self_attention = Norm_wrapper(self_attention, norm='layer')
+            self.self_attention = self_attention
+
+            transform = tf.keras.layers.Conv1D(filters=num_initial_features,
+                                               kernel_size=1,
+                                               activation=activation,
+                                               dilation_rate=1,
+                                               kernel_initializer=initializer,
+                                               kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                               padding='causal')
+            if use_residual:
+                transform = Residual_wrapper(transform)
+            if use_norm:
+                transform = Norm_wrapper(transform, norm='layer')
+            self.transform_out = transform
 
 
-    def call(self, signal):
+    def call(self, input):
+        signal = input
 
-        signal = self.projection(signal)
-        signal = self.crop_layer(signal)
-        for layer in self.encoder:
-            signal = layer(signal)
-        out = signal
-        return out
+        signal = self.pseudo_embedding(signal)
+
+        if self.use_self_attention:
+            signal = self.self_attention(signal)
+            signal = self.transform_out(signal)
+
+        if self.force_relevant_context:
+            signal = signal[:,-24*4:,:]
+
+        return signal
 
 class FFNN_decoder(tf.keras.layers.Layer):
-    def __init__(self, width=256, depth=3, attention_heads=3, use_norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0, projection_layer=None, max_length_sequence=int(4*24)):
+    def __init__(self,
+                 num_initial_features=4*7,
+                 max_length_sequence=24,
+                 attention_heads=5,
+                 attention_squeeze=0.5,
+                 projection_layer=None,
+                 use_residual=True,
+                 use_dense=False,
+                 use_norm=True,
+                 L2=0.0, L1=0.0,
+                 positional_embedding=True,
+                 force_relevant_context=False,
+                transformer_blocks=1,
+                 use_self_attention=False,
+                 ):
         super(FFNN_decoder, self).__init__()
-        self.use_norm = use_norm
-        self.crop_layer = Cropping_layer(.5)
-        self.projection = tf.keras.layers.Dense(units=width,
-                                                activation=activation,
-                                                use_bias=True,
-                                                kernel_initializer=initializer,
-                                                kernel_regularizer=tf.keras.regularizers.l1_l2(L1, L2))
-        if self.use_norm:
-            self.projection = Norm_wrapper(self.projection)
-        self.projection = Positional_embedding_wrapper(self.projection, max_length_sequence, name='Decoder')
-        self.decode_blocks = []
-        for block in range(depth):
-            layer = FFNN_decoder_block(units=width,
-                                        use_norm=use_norm,
-                                        attention_heads=attention_heads,
-                                        attention_feature_squeeze=attention_squeeze,
-                                        use_residential=True)
-            self.decode_blocks.append(layer)
+        self.projection_layer = projection_layer
 
-        self.output_projection = projection_layer
+        self.pseudo_embedding = tf.keras.layers.Conv1D(filters=num_initial_features,
+                                         kernel_size=1,
+                                         activation=activation,
+                                         dilation_rate=1,
+                                         kernel_initializer=initializer,
+                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                         padding='causal')
+        if positional_embedding:
+            self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence)
 
-    def call(self, history_input, teacher, attention_value, timesteps=1):
+        attention_features = num_initial_features * attention_squeeze
+        self.use_self_attention = use_self_attention
+        self.transformer = []
+
+        for block in range(transformer_blocks):
+            block = {}
+            if use_self_attention:
+                self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
+                                                      causal=False,
+                                                      use_dropout=False,
+                                                      L2=L2, L1=L1,
+                                                      output_units=num_initial_features)
+                if use_residual:
+                    self_attention = Residual_wrapper(self_attention)
+                if use_norm:
+                    self_attention = Norm_wrapper(self_attention, norm='layer')
+                block['self_attention'] = self_attention
+
+            attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
+                                                  causal=False,
+                                                  use_dropout=False,
+                                                  L2=L2, L1=L1,
+                                                  output_units=num_initial_features)
+
+            if use_residual:
+                attention = Residual_wrapper(attention)
+            if use_norm:
+                attention = Norm_wrapper(attention, norm='layer')
+            block['attention'] = attention
+
+            transform = tf.keras.layers.Conv1D(filters=num_initial_features,
+                                         kernel_size=1,
+                                         activation=activation,
+                                         dilation_rate=1,
+                                         kernel_initializer=initializer,
+                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                         padding='causal')
+            if use_residual:
+                transform = Residual_wrapper(transform)
+            if use_norm:
+                transform = Norm_wrapper(transform, norm='layer')
+            block['transform'] = transform
+
+            self.transformer.append(block)
+
+
+    def call(self, history_input, teacher, attention_value, timesteps):
         return tf.keras.backend.in_train_phase(self.training_call(history_input, teacher, attention_value, timesteps),
-                                               alt=self.inference_call(history_input, teacher, attention_value, timesteps),
+                                               alt=self.inference_call(history_input, teacher, attention_value,
+                                                                       timesteps),
                                                training=tf.keras.backend.learning_phase())
 
     def training_call(self, history_input, teacher, attention_value, timesteps):
-
+        self.max_length = history_input.shape[1] + teacher.shape[1]
         signal = tf.concat([history_input, teacher], axis=1)
 
-        signal = self.projection(signal)
-        signal = self.crop_layer(signal)
-        for block in self.decode_blocks:
-            signal = block(signal, attention_value)
+        signal = self.pseudo_embedding(signal) #Pseudo Embeddings
+        # signal = self.crop(signal)
+        # Put Transformer Decoder
 
-        return self.output_projection(signal[:,-timesteps:,:])
+        for block in self.transformer:
+            if 'attention' in block:
+                signal = block['attention'](signal, attention_value)
 
-    def inference_call(self, history, teacher, attention_value, timesteps):
+            if 'self_attention' in block:
+                signal = block['self_attention'](signal)
 
-        projected_history = self.projection(history)
+            if 'transform' in block:
+                signal = block['transform'](signal)
 
-        buffer = {}
-        signal = projected_history
-        for block in self.decode_blocks:
-            buffer[block] = signal
-            signal = block(signal, attention_value)
+        signal = signal[:, -timesteps:, :]
+        forecast = self.projection_layer(signal)
+        return forecast
 
-        forecast_step = self.output_projection(signal[:,-1:,:])
-        history = tf.concat([history, forecast_step], axis=1)
+    def inference_call(self, history_input, teacher, attention_value, timesteps):
+        offset = self.max_length - history_input.shape[1]
 
-        for step in range(1, timesteps):
+        for step in range(timesteps):
+            # make sure the signal we're feeding to the CNN always has the same length, because TF sucks
+            # projected_history = self.projection(history_input)
+            padded_projected_history_input = tf.concat([history_input,
+                                               tf.zeros(shape=[tf.shape(history_input)[0],
+                                                               offset - step,
+                                                               history_input.shape[2]]
+                                                        )], axis=1)
 
-            projected_history = self.projection(history)
+            padded_post_cnn = self.pseudo_embedding(padded_projected_history_input)
 
-            signal = projected_history[:,-1:,:]
-            for block in self.decode_blocks:
-                buffer[block] = tf.concat([buffer[block], signal], axis=1)
-                signal = block(signal, value=attention_value, pseudo_sa_value=buffer[block][:,:-1,:])
+            signal = padded_post_cnn[:, :-(offset - step), :] if offset - step > 0 else padded_post_cnn
+
+            if step == 0:
+                buffers = []
+
+            for num_block in range(len(self.transformer)):
+                block = self.transformer[num_block]
+
+                if 'self_attention' in block:
+
+                    if step == 0:
+                        buffers.append(signal)
+                        signal = block['self_attention'](signal)
+                    else:
+                        query = signal[:,-1:,:]
+                        buffers[num_block] = tf.concat([buffers[num_block], query], axis=1)
+                        signal = block['self_attention'](query, buffers[num_block])
+
+                if 'attention' in block:
+                    signal = block['attention'](signal, attention_value)
+
+                if 'transform' in block:
+                    signal = block['transform'](signal)
+
+            forecast_step = self.projection_layer(signal[:,-1:,:])
+            history_input = tf.concat([history_input, forecast_step], axis=1)
 
 
-            forecast_step = self.output_projection(signal[:,-1:,:])
-            history = tf.concat([history, forecast_step], axis=1)
-        return history[:,-timesteps:,:]
+        return history_input[:,-timesteps:,:]
 
 ########################################################################################################################
 class attentive_TCN(tf.keras.layers.Layer):

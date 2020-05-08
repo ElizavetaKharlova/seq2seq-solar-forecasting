@@ -13,29 +13,29 @@ def do_experiment():
     # ToDo: do the dataset one folder up
     #hmmm...
 
-    experiment_name = 'Our-Attention-Axis1-withcroppingAndembeddings'
+    experiment_name = 'FFNNGen-2xASAT-3H-E128D128'
     sliding_window_length_days = 6
-    model_kwargs = {'model_type': 'CNN-Generator',
+    model_kwargs = {'model_type': 'FFNN-Generator',
                     'forecast_mode': 'pdf',
 
                     # Architecture Hyperparameters
                     # Encoder:
                         'encoder_units' :  128,
-                        # 'encoder_blocks': 4,
-                        'encoder_receptive_window': 24*4,
-                        'encoder_self_attention': False,
+                        'encoder_receptive_window': 6*4,
+                        'encoder_self_attention': True,
                         'encoder_max_length_sequence': 2*sliding_window_length_days * 24 * 4,
                     # Decoder:
-                        'decoder_units': 64,
-                        # 'decoder_blocks': 4,
-                        'decoder_receptive_window': 24,
-                        'decoder_self_attention': False,
+                        'decoder_units': 128,
+                        'decoder_receptive_window': 6,
+                        'decoder_self_attention': True,
+                        'decoder_transformer_blocks': 2,
                         'decoder_max_length_sequence': 2*sliding_window_length_days*24,
-                        'attention_heads': 20,
+
+                    'attention_heads': 6,
 
                     # General information flow
                         'positional_embedding': True,
-                        'force_relevant_context': True,
+                        'force_relevant_context': False,
                         'use_dense': False,
                         'use_residual': True,
                         # 'downsample': False, 'mode': 'project',
@@ -43,7 +43,7 @@ def do_experiment():
                     # Regularization Hyperparameters
                         # 'use_dropout' : False, 'dropout_rate' : 0.0,
                         'L1': 0.0, 'L2': 0.0,
-                        'use_norm' : False,
+                        'use_norm' : True,
                     }
     train_kwargs = {'batch_size': 2**7}
     runs = 3

@@ -244,9 +244,11 @@ class Model_Container():
                       encoder_max_length_sequence=None,
                       encoder_receptive_window=None,
                       encoder_self_attention=False,
+                      encoder_transformer_blocks=1,
                       decoder_max_length_sequence=None,
                       decoder_receptive_window=None,
                       decoder_self_attention=False,
+                      decoder_transformer_blocks=1,
                       ):
 
         if self.forecast_mode == 'pdf':
@@ -358,6 +360,7 @@ class Model_Container():
                              'force_relevant_context': force_relevant_context,
                              'attention_squeeze': 0.5,
                              'use_self_attention': decoder_self_attention,
+                             'transformer_blocks': decoder_transformer_blocks,
                              'positional_embedding': positional_embedding,
                              'projection_layer': projection_block}
             encoder_specs = {'num_initial_features': encoder_units,
@@ -369,6 +372,7 @@ class Model_Container():
                              'force_relevant_context': force_relevant_context,
                              'attention_heads': attention_heads,
                              'use_self_attention': encoder_self_attention,
+                             'transformer_blocks': encoder_transformer_blocks,
                               'positional_embedding': positional_embedding,
                              'attention_squeeze': 0.5}
             from Building_Blocks import ForecasterModel
@@ -380,18 +384,28 @@ class Model_Container():
             from Building_Blocks import FFNN_encoder, FFNN_decoder
             # decoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0, projection_layer=None)
             # encoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0
-            decoder_specs = {'width': decoder_units,
-                             'depth': decoder_blocks,
+            decoder_specs = {'num_initial_features': decoder_units,
+                             'max_length_sequence': decoder_max_length_sequence,
                              'attention_heads': attention_heads,
+                             'use_residual': use_residual,
                              'use_norm': use_norm,
+                             'use_dense': use_dense,
+                             'force_relevant_context': force_relevant_context,
                              'attention_squeeze': 0.5,
-                             'L1':L1, 'L2': L2,
+                             'use_self_attention': decoder_self_attention,
+                             'transformer_blocks': decoder_transformer_blocks,
+                             'positional_embedding': positional_embedding,
                              'projection_layer': projection_block}
-            encoder_specs = {'width': encoder_units,
-                             'depth': encoder_blocks,
-                             'L1': L1, 'L2': L2,
+            encoder_specs = {'num_initial_features': encoder_units,
+                             'max_length_sequence': encoder_max_length_sequence,
+                             'use_residual': use_residual,
                              'use_norm': use_norm,
+                             'use_dense': use_dense,
+                             'force_relevant_context': force_relevant_context,
                              'attention_heads': attention_heads,
+                             'use_self_attention': encoder_self_attention,
+                             'transformer_blocks': encoder_transformer_blocks,
+                              'positional_embedding': positional_embedding,
                              'attention_squeeze': 0.5}
             from Building_Blocks import ForecasterModel
             self.model = ForecasterModel(output_shape=out_shape,

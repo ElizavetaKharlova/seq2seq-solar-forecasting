@@ -1520,6 +1520,8 @@ class FFNN_encoder(tf.keras.layers.Layer):
                                          padding='causal')
         if positional_embedding:
             self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence)
+        if use_norm:
+            self.pseudo_embedding = Norm_wrapper(self.pseudo_embedding, norm='layer')
 
         self.use_self_attention = use_self_attention
         if use_self_attention:
@@ -1555,9 +1557,8 @@ class FFNN_encoder(tf.keras.layers.Layer):
         signal = self.pseudo_embedding(signal)
 
         if self.use_self_attention:
-            signal = self.self_attention(signal)
+            signal = self.self_attention(signal, signal)
             signal = self.transform_out(signal)
-
         if self.force_relevant_context:
             signal = signal[:,-24*4:,:]
 
@@ -1591,6 +1592,8 @@ class FFNN_decoder(tf.keras.layers.Layer):
                                          padding='causal')
         if positional_embedding:
             self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence)
+        if use_norm:
+            self.pseudo_embedding = Norm_wrapper(self.pseudo_embedding, norm='layer')
 
         attention_features = num_initial_features * attention_squeeze
         self.use_self_attention = use_self_attention
@@ -1653,12 +1656,10 @@ class FFNN_decoder(tf.keras.layers.Layer):
         # Put Transformer Decoder
 
         for block in self.transformer:
-            if 'attention' in block:
-                signal = block['attention'](signal, attention_value)
-
             if 'self_attention' in block:
                 signal = block['self_attention'](signal)
-
+            if 'attention' in block:
+                signal = block['attention'](signal, attention_value)
             if 'transform' in block:
                 signal = block['transform'](signal)
 
@@ -1667,20 +1668,12 @@ class FFNN_decoder(tf.keras.layers.Layer):
         return forecast
 
     def inference_call(self, history_input, teacher, attention_value, timesteps):
-        offset = self.max_length - history_input.shape[1]
 
+        input_signal = history_input
         for step in range(timesteps):
             # make sure the signal we're feeding to the CNN always has the same length, because TF sucks
             # projected_history = self.projection(history_input)
-            padded_projected_history_input = tf.concat([history_input,
-                                               tf.zeros(shape=[tf.shape(history_input)[0],
-                                                               offset - step,
-                                                               history_input.shape[2]]
-                                                        )], axis=1)
-
-            padded_post_cnn = self.pseudo_embedding(padded_projected_history_input)
-
-            signal = padded_post_cnn[:, :-(offset - step), :] if offset - step > 0 else padded_post_cnn
+            signal = self.pseudo_embedding(input_signal)
 
             if step == 0:
                 buffers = []
@@ -1700,15 +1693,14 @@ class FFNN_decoder(tf.keras.layers.Layer):
 
                 if 'attention' in block:
                     signal = block['attention'](signal, attention_value)
-
                 if 'transform' in block:
                     signal = block['transform'](signal)
 
             forecast_step = self.projection_layer(signal[:,-1:,:])
-            history_input = tf.concat([history_input, forecast_step], axis=1)
+            input_signal = tf.concat([input_signal, forecast_step], axis=1)
 
 
-        return history_input[:,-timesteps:,:]
+        return input_signal[:,-timesteps:,:]
 
 ########################################################################################################################
 class attentive_TCN(tf.keras.layers.Layer):

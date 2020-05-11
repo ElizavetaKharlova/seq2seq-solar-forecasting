@@ -212,17 +212,17 @@ class Model_Container():
         self.train_dataset_generator = get_training_dataset
         self.train_steps_epr_epoch = int(len(train_list)/batch_size)
 
-
+        val_batch_size = int(batch_size/10)
         def get_val_dataset():
-            return get_batched_dataset(val_list, batch_size)
+            return get_batched_dataset(val_list, val_batch_size)
         self.val_dataset_generator = get_val_dataset
-        self.val_steps_epr_epoch = int(np.ceil(len(val_list) / batch_size))
+        self.val_steps_epr_epoch = int(np.ceil(len(val_list) / val_batch_size))
 
 
         def get_test_dataset():
-            return get_batched_dataset(test_list, batch_size)
+            return get_batched_dataset(test_list, val_batch_size)
         self.test_dataset_generator = get_test_dataset
-        self.test_steps_epr_epoch = int(np.ceil(len(test_list) / batch_size))
+        self.test_steps_epr_epoch = int(np.ceil(len(test_list) / val_batch_size))
 
     def __build_model(self,
                       out_shape, normalizer_value,
@@ -474,14 +474,17 @@ class Model_Container():
                                ]
         else:
             print('forecast mode was not specified as either <pdf> or <ev>, no idea how it got this far but expect some issues!!')
+        # Transformer LR schedule, doesnt work .... too fast
+        # learning_rate_schedule = CustomSchedule(128/10, warmup_steps=5000)
+        # optimizer = tf.keras.optimizers.Adam(learning_rate_schedule, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
 
-        self.model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate = 1/self.train_steps_epr_epoch,
-                                                            momentum=0.9,
-                                                            nesterov=True,
-                                                            # clipnorm=1.0,
-                                                            ),
-                        loss=loss,
-                        metrics=metrics,)  # compile, print summary
+        learning_rate = tf.sqrt(1/self.train_steps_epr_epoch)
+        optimizer = tf.keras.optimizers.SGD(learning_rate = learning_rate,
+                                             momentum=0.9,
+                                             nesterov=True,
+                                            # clipnorm=1.0, # Apparently some works do clipnorm
+                                            )
+        self.model.compile(optimizer=optimizer, loss=loss, metrics=metrics)  # compile, print summary
 
     def __train_model(self):
 
@@ -491,7 +494,7 @@ class Model_Container():
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
         callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=10,
+                                                                   patience=30,
                                                                    mode='min',
                                                                    restore_best_weights=True))
         callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,
@@ -570,10 +573,20 @@ def __get_max_min_targets(train_targets, test_targets):
     return max_value, min_value
 
 
+class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
+    def __init__(self, d_model, warmup_steps=4000):
+        super(CustomSchedule, self).__init__()
 
+        self.d_model = d_model
+        self.d_model = tf.cast(self.d_model, tf.float32)
 
+        self.warmup_steps = warmup_steps
 
+    def __call__(self, step):
+        arg1 = tf.math.rsqrt(step)
+        arg2 = step * (self.warmup_steps ** -1.5)
 
+        return tf.math.rsqrt(self.d_model) * tf.math.minimum(arg1, arg2)
 
 
 

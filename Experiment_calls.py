@@ -13,7 +13,7 @@ def do_experiment():
     # ToDo: do the dataset one folder up
     #hmmm...
 
-    experiment_name = 'FFNNGen-2xASAT-3H-E128D128'
+    experiment_name = 'FFNNGen-2xASAT-6H-E128D128-NormEmbeddings-NoncausalEncoder'
     sliding_window_length_days = 6
     model_kwargs = {'model_type': 'FFNN-Generator',
                     'forecast_mode': 'pdf',
@@ -45,7 +45,7 @@ def do_experiment():
                         'L1': 0.0, 'L2': 0.0,
                         'use_norm' : True,
                     }
-    train_kwargs = {'batch_size': 2**7}
+    train_kwargs = {'batch_size': 2**9}
     runs = 3
     metrics = {}
     for run in range(runs):

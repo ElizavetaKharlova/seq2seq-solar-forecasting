@@ -13,7 +13,7 @@ def do_experiment():
     # ToDo: do the dataset one folder up
     #hmmm...
 
-    experiment_name = 'FFNNGen-2xASAT-6H-E128D128-NormEmbeddings-NoncausalEncoder'
+    experiment_name = 'FFNNGen-2xASAT-6H-E128D128-PredictAll'
     sliding_window_length_days = 6
     model_kwargs = {'model_type': 'FFNN-Generator',
                     'forecast_mode': 'pdf',
@@ -28,10 +28,10 @@ def do_experiment():
                         'decoder_units': 128,
                         'decoder_receptive_window': 6,
                         'decoder_self_attention': True,
-                        'decoder_transformer_blocks': 2,
+                        'decoder_transformer_blocks': 3,
                         'decoder_max_length_sequence': 2*sliding_window_length_days*24,
 
-                    'attention_heads': 6,
+                    'attention_heads': 8,
 
                     # General information flow
                         'positional_embedding': True,

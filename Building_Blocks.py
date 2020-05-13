@@ -600,178 +600,6 @@ class keras_multihead_attentive_layer(tf.keras.layers.Layer):
 
 ########################################################################################################################
 
-class FFW_block(tf.keras.layers.Layer):
-    def __init__(self,
-                 units=[96,96],
-                 use_dropout=True,
-                 dropout_rate=0.2,
-                 use_norm=True,
-                 L1=0.0, L2=0.0
-                 ):
-        super(FFW_block, self).__init__()
-
-        self.layers = []
-        self.residuals=False
-        for layer_num in range(len(units)):
-            layer = tf.keras.layers.Dense(units[layer_num],
-                                            activation=activation,
-                                            use_bias=True,
-                                            kernel_initializer=initializer,
-                                            bias_initializer='zeros',
-                                            kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                            bias_regularizer=None,
-                                            activity_regularizer=None,
-                                            kernel_constraint=None,
-                                            bias_constraint=None)
-            if use_dropout:
-                layer = Dropout_wrapper(layer, dropout_rate, units[layer_num])
-
-            # if layer_num > 0: #can we even residuals
-            #     if self.residuals and units[layer_num-1] == units[layer_num]:
-            #         layer = Residual_wrapper(layer)
-
-            if use_norm:
-                layer = Norm_wrapper(layer)
-
-            self.layers.append(layer)
-
-    def call(self, input):
-        out = input
-        for layer in self.layers:
-            out = layer(out)
-        return out
-
-class FFNN_encoder_block(tf.keras.layers.Layer):
-    def __init__(self,
-                 units=96,
-                 attention_heads=4,
-                 attention_feature_squeeze=0.5,
-                 use_dropout=False,
-                 dropout_rate=0.2,
-                 use_norm=True,
-                 causal=True,
-                 use_residential=True,
-                 L1=0.0, L2=0.0
-                 ):
-        super(FFNN_encoder_block, self).__init__()
-
-        self.units = units
-        self.attention_heads = attention_heads
-        self.attention_feature_squeeze = attention_feature_squeeze
-
-        self.use_residual = use_residential
-        self.use_dropout = use_dropout
-        self.dopout_rate = dropout_rate
-        self.use_norm = use_norm
-
-        attention_units = [int(units*attention_feature_squeeze)]*attention_heads
-
-        self.self_attn = multihead_attentive_layer(units_per_head=attention_units,
-                                                   kernel_size=None,
-                                                   causal=causal,
-                                                   output_units=units,
-                                                   L1=L1, L2=L2,
-                                                   use_dropout=use_dropout,
-                                                   dropout_rate=dropout_rate)
-        if self.use_residual:
-            self.self_attn = Residual_wrapper(self.self_attn)
-        if self.use_norm:
-            self.self_attn = Norm_wrapper(self.self_attn)
-
-
-        self.transform_block = tf.keras.layers.Dense(units=units,
-                                                     activation=activation,
-                                                     use_bias=True,
-                                                     kernel_initializer=initializer,
-                                                     kernel_regularizer=tf.keras.regularizers.l1_l2(L1, L2))
-
-        if self.use_residual:
-            self.transform_block = Residual_wrapper(self.transform_block)
-        if self.use_norm:
-            self.transform_block = Norm_wrapper(self.transform_block)
-
-
-    def call(self, input_signal, value=None):
-        if value is None:
-            out = self.self_attn(input_signal)
-            out = self.transform_block(out)
-            return out
-
-        else:
-            out = self.self_attn(input_signal, value=value)
-            out = self.transform_block(out)
-            return out
-
-class FFNN_decoder_block(tf.keras.layers.Layer):
-    def __init__(self,
-                 units=96,
-                 attention_heads=4,
-                 attention_feature_squeeze=0.5,
-                 use_dropout=False,
-                 dropout_rate=0.2,
-                 use_norm=True,
-                 use_residential=True,
-                 L1=0.0, L2=0.0
-                 ):
-        super(FFNN_decoder_block, self).__init__()
-
-        self.units = units
-        self.attention_heads = attention_heads
-        self.attention_feature_squeeze = attention_feature_squeeze
-
-        self.use_residual = use_residential
-        self.use_dropout = use_dropout
-        self.dopout_rate = dropout_rate
-        self.use_norm = use_norm
-
-        attention_units = [int(units*attention_feature_squeeze)]*attention_heads
-        self.self_attn = multihead_attentive_layer(units_per_head=attention_units,
-                                                   kernel_size=None,
-                                                   output_units=units,
-                                                   causal=True,
-                                                   L1=L1, L2=L2,
-                                                   use_dropout=use_dropout,
-                                                   dropout_rate=dropout_rate)
-        if self.use_residual:
-            self.self_attn = Residual_wrapper(self.self_attn)
-        if self.use_norm:
-            self.self_attn = Norm_wrapper(self.self_attn)
-
-        self.attn = multihead_attentive_layer(units_per_head=attention_units,
-                                                kernel_size=None,
-                                                output_units=units,
-                                                causal=False,
-                                                L1=L1, L2=L2,
-                                                use_dropout=use_dropout,
-                                                dropout_rate=dropout_rate)
-        if self.use_residual:
-            self.attn = Residual_wrapper(self.attn)
-        if self.use_norm:
-            self.attn = Norm_wrapper(self.attn)
-
-        self.transform_block = tf.keras.layers.Dense(units=units,
-                                                     activation=activation,
-                                                     use_bias=True,
-                                                     kernel_initializer=initializer,
-                                                     kernel_regularizer=tf.keras.regularizers.l1_l2(L1, L2))
-        if self.use_residual:
-            self.transform_block = Residual_wrapper(self.transform_block)
-        if self.use_norm:
-            self.transform_block = Norm_wrapper(self.transform_block)
-
-    def call(self, input_signal, value, pseudo_sa_value=None):
-
-        if pseudo_sa_value is None:
-            out = self.self_attn(input_signal)
-        else:
-            out = self.self_attn(input_signal, value=pseudo_sa_value)
-
-        out = self.attn(out, value=value)
-        out = self.transform_block(out)
-        return out
-
-########################################################################################################################
-
 class preactivated_CNN(tf.keras.layers.Layer):
     def __init__(self, num_features, kernel_size, dilation_rate, stride=1, L1=0.0, L2=0.0):
         super(preactivated_CNN, self).__init__()
@@ -1557,7 +1385,7 @@ class FFNN_encoder(tf.keras.layers.Layer):
         signal = self.pseudo_embedding(signal)
 
         if self.use_self_attention:
-            signal = self.self_attention(signal, signal)
+            signal = self.self_attention(signal)
             signal = self.transform_out(signal)
         if self.force_relevant_context:
             signal = signal[:,-24*4:,:]
@@ -1663,7 +1491,7 @@ class FFNN_decoder(tf.keras.layers.Layer):
             if 'transform' in block:
                 signal = block['transform'](signal)
 
-        signal = signal[:, -timesteps:, :]
+        # signal = signal[:, -timesteps:, :]
         forecast = self.projection_layer(signal)
         return forecast
 
@@ -1895,10 +1723,15 @@ class ForecasterModel(tf.keras.Model):
         # undictionary inputs (TF doesn't let you have multiple inputs)
         support_input = inputs['support_input']
         history_input = inputs['history_input']
-        teacher = inputs['teacher_input']
+        teacher = inputs['teacher'][:, 1:, :]
+        #
+        # print(support_input, history_input, teacher)
         # run the model
         encoder_features = self.encoder(support_input)
-        forecast = self.decoder(history_input, attention_value=encoder_features, timesteps=self.out_steps, teacher=teacher[:, 1:, :])
+        forecast = self.decoder(history_input,
+                                attention_value=encoder_features,
+                                timesteps=self.out_steps,
+                                teacher=teacher)
         return forecast
 
 ########################################################################################################################

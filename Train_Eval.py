@@ -365,8 +365,7 @@ class Model_Container():
         test_steps = PV_dataset.get_train_steps_per_epoch()
 
         # Transformer LR schedule, doesnt work .... too fast
-        learning_rate_schedule = CustomSchedule(128, warmup_steps=4000)
-        optimizer = tf.keras.optimizers.Adam(learning_rate_schedule, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        optimizer = tf.keras.optimizers.Adam(CustomSchedule(128, warmup_steps=2000), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
         loss, metrics = self.get_losses_and_metrics()
         # learning_rate = np.sqrt(1/train_steps)
         # optimizer = tf.keras.optimizers.SGD(learning_rate = learning_rate,
@@ -380,7 +379,7 @@ class Model_Container():
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
         callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=100,
+                                                                   patience=25,
                                                                    mode='min',
                                                                    restore_best_weights=True))
         callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,
@@ -408,6 +407,7 @@ class Model_Container():
                                            steps=test_steps,
                                             verbose=2)
         self.model.summary()
+        del PV_dataset
 
         return train_history, test_results
 
@@ -604,14 +604,13 @@ class dataset_generator_PV():
         option_no_order.experimental_deterministic = False
 
         # dataset = tf.data.Dataset.list_files(file_list)
-        dataset = tf.data.TFRecordDataset(file_list, num_parallel_reads=6)
+        dataset = tf.data.TFRecordDataset(file_list, num_parallel_reads=10)
         dataset = dataset.with_options(option_no_order)
-
-        dataset = dataset.map(process_sample, num_parallel_calls=6)
+        dataset = dataset.map(process_sample, num_parallel_calls=10)
         dataset = dataset.repeat()
-        dataset = dataset.shuffle(10 * batch_size)
-        dataset = dataset.prefetch(5 * batch_size)
-        dataset = dataset.batch(batch_size, drop_remainder=True)
+        dataset = dataset.shuffle(50 * batch_size, reshuffle_each_iteration=True)
+        dataset = dataset.batch(batch_size, drop_remainder=False)
+        dataset = dataset.prefetch(3)
         return dataset
 
     # def __read_and_process_normal_samples(self, example):

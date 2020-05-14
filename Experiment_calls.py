@@ -28,10 +28,10 @@ def do_experiment():
                         'decoder_units': 128,
                         'decoder_receptive_window': 6,
                         'decoder_self_attention': True,
-                        'decoder_transformer_blocks': 3,
+                        'decoder_transformer_blocks': 2,
                         'decoder_max_length_sequence': 2*sliding_window_length_days*24,
 
-                    'attention_heads': 8,
+                    'attention_heads': 6,
 
                     # General information flow
                         'positional_embedding': True,

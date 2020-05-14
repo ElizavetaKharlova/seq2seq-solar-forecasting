@@ -378,12 +378,6 @@ class Attention(tf.keras.layers.Layer):
     '''
     def __init__(self, units,
                  mode='Transformer',
-                 causal_attention=False,
-                 only_context=True,
-                 query_kernel=1,
-                 query_stride=1,
-                 key_kernel=1,
-                 key_stride=1,
                  use_dropout=True,
                  dropout_rate=0.2,
                  L1=0.0, L2=0.0,
@@ -392,53 +386,41 @@ class Attention(tf.keras.layers.Layer):
         self.mode = mode
         self.use_dropout = use_dropout
         self.dropout_rate = dropout_rate
-        self.only_context = only_context
-        self.causal_attention = causal_attention
-        self.W_query = tf.keras.layers.Conv1D(units,
-                                         activation=None,
-                                         strides=query_stride,
-                                         kernel_size=query_kernel,
-                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                         padding='causal',
-                                         kernel_initializer=initializer,
-                                         use_bias=False)
+
+        self.W_query = tf.keras.layers.Dense(units,
+                              activation=None,
+                              kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                              kernel_initializer=initializer,
+                              use_bias=False)
         if use_dropout:
             self.W_query = Dropout_wrapper(self.W_query, dropout_rate=dropout_rate)
 
-        self.W_value = tf.keras.layers.Conv1D(units,
-                                         activation=None,
-                                         strides=1,
-                                         kernel_size=1,
-                                         padding='causal',
-                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                         kernel_initializer=initializer,
-                                         use_bias=False)
+        self.W_value = tf.keras.layers.Dense(units,
+                              activation=None,
+                              kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                              kernel_initializer=initializer,
+                              use_bias=False)
         if use_dropout:
             self.W_value = Dropout_wrapper(self.W_value, dropout_rate=dropout_rate)
 
-        elif mode == 'Transformer':
-            self.W_key = tf.keras.layers.Conv1D(units,
-                                         activation=None,
-                                         strides=key_stride,
-                                         kernel_size=key_kernel,
-                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                         padding='causal',
-                                         kernel_initializer=initializer,
-                                         use_bias=False)
-            if use_dropout:
-                self.W_key = Dropout_wrapper(self.W_key, dropout_rate=dropout_rate)
+        self.W_key = tf.keras.layers.Dense(units,
+                          activation=None,
+                          kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                          kernel_initializer=initializer,
+                          use_bias=False)
+        if use_dropout:
+            self.W_key = Dropout_wrapper(self.W_key, dropout_rate=dropout_rate)
+
 
     def dropout_mask(self, score):
         dropout_mask = tf.random.uniform(shape=tf.shape(score), minval=0.0, maxval=1.0)
         dropout_mask = tf.where(dropout_mask <= self.dropout_rate/2, x=-1e12, y=0.0)
         return dropout_mask
 
-    def build_mask(self, input_tensor):
-        mask = tf.linalg.band_part(tf.ones_like(input_tensor)*-1e12, 0, -1) #upper triangular -inf
-        return mask
-    def build_t0_mask(self, input_tensor):
-        mask = -12e9* (tf.ones_like(input_tensor) - tf.linalg.band_part(tf.ones_like(input_tensor), -1, 0)) #strictly upper triagonal -inf
-        return mask
+    def add_causal_mask(self, input_tensor):
+        causal_mask = -1e12* (tf.ones_like(input_tensor) - tf.linalg.band_part(tf.ones_like(input_tensor), -1, 0)) #strictly upper triagonal -inf
+
+        return input_tensor + causal_mask
 
 
     def call(self, query, value=None, key=None):
@@ -452,152 +434,130 @@ class Attention(tf.keras.layers.Layer):
 
         if key is None:
             key= value
-        #
-        # if self.mode == 'Bahdanau':
-        #     # Bahdaau style attention: score = tanh(Q + V)
-        #     # score shape == (batch_size, max_length, 1)
-        #     # we get 1 at the last axis because we are applying score to self.V
-        #     # the shape of the tensor before applying self.V is (batch_size, max_length, units)
-        #     # attention_weights shape == (batch_size, max_length, 1)
-        #     attention_weights = tf.nn.softmax(self.V(tf.nn.tanh(self.W_query(query) + self.W_value(key))), axis=1)
-        #     context_vector = attention_weights * value
-        #
-        # elif self.mode == 'Transformer':
 
-        # Trasformer style attention: score=Q*K/sqrt(dk)
-        # in this case keys = values
+        query = self.W_query(query)
+        key = self.W_key(key)
+        value = self.W_value(value)
 
-        score_pre_softmax = tf.matmul(self.W_query(query), self.W_key(key), transpose_b=True)
+        score_pre_softmax = tf.matmul(query, key, transpose_b=True)
 
         score_pre_softmax = score_pre_softmax / tf.math.sqrt(tf.cast(tf.shape(value)[1], tf.float32))
 
         if self_attention:
-            score_pre_softmax += self.build_t0_mask(score_pre_softmax)
+            score_pre_softmax = self.add_causal_mask(score_pre_softmax)
 
         score = tf.nn.softmax(score_pre_softmax, axis=-1)
 
-        context_vector = tf.matmul(score, self.W_value(value))
+        context_vector = tf.matmul(score, value)
 
         return context_vector
 
 class multihead_attentive_layer(tf.keras.layers.Layer):
     def __init__(self, units_per_head=[80, 80],
-                 kernel_size=None,
                  output_units=20,
-                 causal=True,
                  L1=0.0, L2=0.0,
                  use_dropout=True, dropout_rate=0.2):
         super(multihead_attentive_layer, self).__init__()
         # units is a list of lists, containing the numbers of units in the attention head
+        self.num_heads = len(units_per_head)
+        self.units_per_head = int(output_units*2/self.num_heads)
+        self.attention_features = self.units_per_head*self.num_heads
 
-        self.projection_layer = tf.keras.layers.Conv1D(output_units,
-                                     activation=None,
-                                     strides=1,
-                                     kernel_size=1,
-                                     kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                     padding='causal',
-                                     kernel_initializer=initializer,
-                                     use_bias=False)
+        self.W_query = tf.keras.layers.Dense(self.attention_features,
+                              activation=None,
+                              kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                              kernel_initializer=initializer,
+                              use_bias=True)
         if use_dropout:
-            self.projection_layer = Dropout_wrapper(self.projection_layer, dropout_rate=dropout_rate)
+            self.W_query = Dropout_wrapper(self.W_query, dropout_rate=dropout_rate)
 
-        self.multihead_attention = []
-        for units in units_per_head:
-            attention = Attention(units,
-                                  mode='Transformer',
-                                  query_kernel= 1 if kernel_size==None else kernel_size,
-                                  key_kernel=1 if kernel_size==None else kernel_size,
-                                  use_dropout=use_dropout,
-                                  dropout_rate=dropout_rate,
-                                  causal_attention=causal,
-                                  L2=L2, L1=L1,
-                                  only_context=True)
-            self.multihead_attention.append(attention)
+        self.W_value = tf.keras.layers.Dense(self.attention_features,
+                              activation=None,
+                              kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                              kernel_initializer=initializer,
+                              use_bias=True)
+        if use_dropout:
+            self.W_value = Dropout_wrapper(self.W_value, dropout_rate=dropout_rate)
+
+        self.W_key = tf.keras.layers.Dense(self.attention_features,
+                          activation=None,
+                          kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                          kernel_initializer=initializer,
+                          use_bias=True)
+        if use_dropout:
+            self.W_key = Dropout_wrapper(self.W_key, dropout_rate=dropout_rate)
+
+        self.output_projection = tf.keras.layers.Dense(output_units,
+                                                      activation=None,
+                                                      kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                                      kernel_initializer=initializer,
+                                                      use_bias=True)
+        if use_dropout:
+            self.output_projection = Dropout_wrapper(self.output_projection, dropout_rate=dropout_rate)
+
+    def add_causal_mask(self, input_tensor):
+        causal_mask = -1e12* (tf.ones_like(input_tensor) - tf.linalg.band_part(tf.ones_like(input_tensor), -1, 0)) #strictly upper triagonal -inf
+
+        return input_tensor + causal_mask
+
+    def calculate_attention(self, query, value, key, self_attention=False):
+
+        score_pre_softmax = tf.matmul(query, key, transpose_b=True)
+        score_pre_softmax = score_pre_softmax / tf.math.sqrt(tf.cast(tf.shape(value)[1], tf.float32))
+        if self_attention:
+            score_pre_softmax = self.add_causal_mask(score_pre_softmax)
+
+        score = tf.nn.softmax(score_pre_softmax, axis=-1)
+        context_vector = tf.matmul(score, value)
+
+        return context_vector
 
     def call(self, query, value=None):
 
-        if value is None: #Self Attention
-            multihead_out = [head(query) for head in self.multihead_attention]
+        if value is None:
+            value = query
+            self_attention = True
         else:
-            multihead_out = [head(query, value) for head in self.multihead_attention]
+            self_attention = False
 
-        multihead_out = tf.concat(multihead_out, axis=-1)
+        full_query = self.W_query(query)
+        full_key = self.W_key(value)
+        full_value = self.W_value(value)
 
-        multihead_out = self.projection_layer(multihead_out)
+        multihead_attention = []
+        for head in range(self.num_heads):
+            start_feature = head*self.units_per_head
+            end_feature = start_feature+self.units_per_head
+            head_query = full_query[:,:,start_feature:end_feature]
+            head_key = full_key[:,:,start_feature:end_feature]
+            head_value = full_value[:,:,start_feature:end_feature]
+            multihead_attention.append(self.calculate_attention(head_query, head_value, head_key, self_attention))
+
+        multihead_attention = tf.concat(multihead_attention, axis=-1)
+
+        multihead_out = self.output_projection(multihead_attention)
 
         return multihead_out
 
-class keras_multihead_attentive_layer(tf.keras.layers.Layer):
-    def __init__(self, units_per_head=[80, 80],
-                 output_units=20,
+class transformation_layer(tf.keras.layers.Layer):
+    def __init__(self, output_units=128,
                  L1=0.0, L2=0.0,
-                 use_dropout=True, dropout_rate=0.2, causal=True):
-        super(keras_multihead_attentive_layer, self).__init__()
-        # units is a list of lists, containing the numbers of units in the attention head
-        self.num_heads = len(units_per_head)
-        self.dropout_rate = dropout_rate
-        self.use_dropout = use_dropout
-        self.W_q = []
-        self.W_k = []
-        self.W_v = []
-        self.heads=[]
-        for units in units_per_head:
-            w_q = tf.keras.layers.Conv1D(units,
-                                         activation=None,
-                                         strides=1,
-                                         kernel_size=1,
-                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                         padding='causal',
-                                         kernel_initializer=initializer,
-                                         use_bias=False)
-            self.W_q.append(w_q)
-            w_k = tf.keras.layers.Conv1D(units,
-                                         activation=None,
-                                         strides=1,
-                                         kernel_size=1,
-                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                         padding='causal',
-                                         kernel_initializer=initializer,
-                                         use_bias=False)
-            self.W_k.append(w_k)
-            w_v = tf.keras.layers.Conv1D(units,
-                                         activation=None,
-                                         strides=1,
-                                         kernel_size=1,
-                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                         padding='causal',
-                                         kernel_initializer=initializer,
-                                         use_bias=False)
-            self.W_v.append(w_v)
-            head = tf.keras.layers.Attention(use_scale=False, causal=causal)
-            self.heads.append(head)
+                 use_dropout=True, dropout_rate=0.2):
+        super(transformation_layer, self).__init__()
 
-            self.projection_layer = tf.keras.layers.Conv1D(output_units,
-                                                     activation=None,
-                                                     strides=1,
-                                                     kernel_size=1,
-                                                     kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                                     padding='causal',
-                                                     kernel_initializer=initializer,
-                                                     use_bias=False)
+        self.transform = tf.keras.layers.Dense(int(4*output_units),
+                                                          activation=activation,
+                                                          kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                                          kernel_initializer=initializer,)
+        self.project = tf.keras.layers.Dense(output_units,
+                                                          activation=None,
+                                                          kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                                          kernel_initializer=initializer,)
 
-
-    def call(self, query, value=None):
-        multihead_attention = []
-        if value is None:
-            value = query
-        for head in range(len(self.heads)):
-            Q = self.W_q[head](query)
-            K = self.W_k[head](value)
-            V = self.W_v[head](value)
-
-            attention = self.heads[head]([Q,V,K])
-
-            multihead_attention.append(attention)
-
-        multihead_attention = tf.concat(multihead_attention, axis=-1)
-        return self.projection_layer(multihead_attention)
-
+    def call(self, signal):
+        signal = self.transform(signal)
+        signal = self.project(signal)
+        return signal
 ########################################################################################################################
 
 class preactivated_CNN(tf.keras.layers.Layer):
@@ -1339,13 +1299,11 @@ class FFNN_encoder(tf.keras.layers.Layer):
         # self.crop = Cropping_layer(0.4)
         self.force_relevant_context = force_relevant_context
 
-        self.pseudo_embedding = tf.keras.layers.Conv1D(filters=num_initial_features,
-                                         kernel_size=1,
-                                         activation=activation,
-                                         dilation_rate=1,
-                                         kernel_initializer=initializer,
-                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                         padding='causal')
+        self.pseudo_embedding = tf.keras.layers.Dense(num_initial_features,
+                              activation=activation,
+                              kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                              kernel_initializer=initializer,
+                              use_bias=True)
         if positional_embedding:
             self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence)
         if use_norm:
@@ -1355,7 +1313,6 @@ class FFNN_encoder(tf.keras.layers.Layer):
         if use_self_attention:
             attention_features = num_initial_features * attention_squeeze
             self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
-                                                  causal=False,
                                                   use_dropout=False,
                                                   L2=L2, L1=L1,
                                                   output_units=num_initial_features)
@@ -1365,13 +1322,7 @@ class FFNN_encoder(tf.keras.layers.Layer):
                 self_attention = Norm_wrapper(self_attention, norm='layer')
             self.self_attention = self_attention
 
-            transform = tf.keras.layers.Conv1D(filters=num_initial_features,
-                                               kernel_size=1,
-                                               activation=activation,
-                                               dilation_rate=1,
-                                               kernel_initializer=initializer,
-                                               kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                               padding='causal')
+            transform = transformation_layer(num_initial_features, L1=L1, L2=L2, use_dropout=False)
             if use_residual:
                 transform = Residual_wrapper(transform)
             if use_norm:
@@ -1411,13 +1362,11 @@ class FFNN_decoder(tf.keras.layers.Layer):
         super(FFNN_decoder, self).__init__()
         self.projection_layer = projection_layer
 
-        self.pseudo_embedding = tf.keras.layers.Conv1D(filters=num_initial_features,
-                                         kernel_size=1,
-                                         activation=activation,
-                                         dilation_rate=1,
-                                         kernel_initializer=initializer,
-                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                         padding='causal')
+        self.pseudo_embedding = tf.keras.layers.Dense(num_initial_features,
+                              activation=activation,
+                              kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                              kernel_initializer=initializer,
+                              use_bias=True)
         if positional_embedding:
             self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence)
         if use_norm:
@@ -1431,7 +1380,6 @@ class FFNN_decoder(tf.keras.layers.Layer):
             block = {}
             if use_self_attention:
                 self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
-                                                      causal=False,
                                                       use_dropout=False,
                                                       L2=L2, L1=L1,
                                                       output_units=num_initial_features)
@@ -1442,7 +1390,6 @@ class FFNN_decoder(tf.keras.layers.Layer):
                 block['self_attention'] = self_attention
 
             attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
-                                                  causal=False,
                                                   use_dropout=False,
                                                   L2=L2, L1=L1,
                                                   output_units=num_initial_features)
@@ -1453,13 +1400,7 @@ class FFNN_decoder(tf.keras.layers.Layer):
                 attention = Norm_wrapper(attention, norm='layer')
             block['attention'] = attention
 
-            transform = tf.keras.layers.Conv1D(filters=num_initial_features,
-                                         kernel_size=1,
-                                         activation=activation,
-                                         dilation_rate=1,
-                                         kernel_initializer=initializer,
-                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                                         padding='causal')
+            transform = transformation_layer(num_initial_features, L1=L1, L2=L2, use_dropout=False)
             if use_residual:
                 transform = Residual_wrapper(transform)
             if use_norm:

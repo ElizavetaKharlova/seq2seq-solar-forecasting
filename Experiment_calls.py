@@ -13,7 +13,7 @@ def do_experiment():
     # ToDo: do the dataset one folder up
     #hmmm...
 
-    experiment_name = 'FFNNGen-2xASAT-6H-E128D128-PredictAll'
+    experiment_name = 'FFNNGen-4xASAT-9H-128-BruteForce'
     sliding_window_length_days = 6
     model_kwargs = {'model_type': 'FFNN-Generator',
                     'forecast_mode': 'pdf',
@@ -28,10 +28,10 @@ def do_experiment():
                         'decoder_units': 128,
                         'decoder_receptive_window': 6,
                         'decoder_self_attention': True,
-                        'decoder_transformer_blocks': 2,
+                        'decoder_transformer_blocks': 4,
                         'decoder_max_length_sequence': 2*sliding_window_length_days*24,
 
-                    'attention_heads': 6,
+                    'attention_heads': 9,
 
                     # General information flow
                         'positional_embedding': True,
@@ -45,8 +45,8 @@ def do_experiment():
                         'L1': 0.0, 'L2': 0.0,
                         'use_norm' : True,
                     }
-    train_kwargs = {'batch_size': 2**9}
-    runs = 3
+    train_kwargs = {'batch_size': 2**8}
+    runs = 1
     metrics = {}
     for run in range(runs):
         experiment = Model_Container(dataset_folder='Daniels_Dataset_1',

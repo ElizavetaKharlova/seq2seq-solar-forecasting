@@ -464,26 +464,26 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         self.attention_features = self.units_per_head*self.num_heads
 
         self.W_query = tf.keras.layers.Dense(self.attention_features,
-                              activation=None,
-                              kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                              kernel_initializer=initializer,
-                              use_bias=True)
+                                              activation=None,
+                                              kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                              kernel_initializer=initializer,
+                                              use_bias=True)
         if use_dropout:
             self.W_query = Dropout_wrapper(self.W_query, dropout_rate=dropout_rate)
 
         self.W_value = tf.keras.layers.Dense(self.attention_features,
-                              activation=None,
-                              kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                              kernel_initializer=initializer,
-                              use_bias=True)
+                                              activation=None,
+                                              kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                              kernel_initializer=initializer,
+                                              use_bias=True)
         if use_dropout:
             self.W_value = Dropout_wrapper(self.W_value, dropout_rate=dropout_rate)
 
         self.W_key = tf.keras.layers.Dense(self.attention_features,
-                          activation=None,
-                          kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
-                          kernel_initializer=initializer,
-                          use_bias=True)
+                                          activation=None,
+                                          kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                          kernel_initializer=initializer,
+                                          use_bias=True)
         if use_dropout:
             self.W_key = Dropout_wrapper(self.W_key, dropout_rate=dropout_rate)
 
@@ -495,30 +495,39 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         if use_dropout:
             self.output_projection = Dropout_wrapper(self.output_projection, dropout_rate=dropout_rate)
 
-    def add_causal_mask(self, input_tensor):
-        causal_mask = -1e12* (tf.ones_like(input_tensor) - tf.linalg.band_part(tf.ones_like(input_tensor), -1, 0)) #strictly upper triagonal -inf
+    def get_causal_mask(self, query):
+        query_shape = tf.shape(query)
+        tensor_of_ones = tf.ones(shape=[query_shape[0], query_shape[1], query_shape[1]])
+        causal_mask = -1e12* (tensor_of_ones - tf.linalg.band_part(tensor_of_ones, -1, 0)) #strictly upper triagonal -inf
 
-        return input_tensor + causal_mask
+        return causal_mask
 
-    def calculate_attention(self, query, value, key, self_attention=False):
+    def calculate_attention(self, query, value, key, self_attention_mask=None):
 
         score_pre_softmax = tf.matmul(query, key, transpose_b=True)
         score_pre_softmax = score_pre_softmax / tf.math.sqrt(tf.cast(tf.shape(value)[1], tf.float32))
-        if self_attention:
-            score_pre_softmax = self.add_causal_mask(score_pre_softmax)
+        if self_attention_mask is not None:
+            score_pre_softmax = score_pre_softmax + self_attention_mask
 
         score = tf.nn.softmax(score_pre_softmax, axis=-1)
         context_vector = tf.matmul(score, value)
 
         return context_vector
 
+    def slit_into_heads(self, signal):
+        signal_shape = tf.shape(signal)
+        return tf.reshape(signal, shape=[signal_shape[0], self.num_heads, signal_shape[1], self.units_per_head])
+    def merge_heads(self, signal):
+        signal_shape = tf.shape(signal)
+        return tf.reshape(signal, shape=[signal_shape[0], signal_shape[2], self.attention_features])
+
     def call(self, query, value=None):
 
         if value is None:
             value = query
-            self_attention = True
+            self_attention_mask = self.get_causal_mask(query)
         else:
-            self_attention = False
+            self_attention_mask = None
 
         full_query = self.W_query(query)
         full_key = self.W_key(value)
@@ -528,10 +537,11 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         for head in range(self.num_heads):
             start_feature = head*self.units_per_head
             end_feature = start_feature+self.units_per_head
-            head_query = full_query[:,:,start_feature:end_feature]
-            head_key = full_key[:,:,start_feature:end_feature]
-            head_value = full_value[:,:,start_feature:end_feature]
-            multihead_attention.append(self.calculate_attention(head_query, head_value, head_key, self_attention))
+            head_attention = self.calculate_attention(full_query[:,:,start_feature:end_feature],
+                                                      full_value[:,:,start_feature:end_feature],
+                                                      full_key[:,:,start_feature:end_feature],
+                                                      self_attention_mask)
+            multihead_attention.append(head_attention)
 
         multihead_attention = tf.concat(multihead_attention, axis=-1)
 

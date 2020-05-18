@@ -345,7 +345,7 @@ class Model_Container():
     def __train_model(self):
 
         callbacks = []
-        epochs = 1000
+        epochs = 300
         # ToDo: change back to '/train'
         PV_dataset = dataset_generator_PV(dataset_path=self.dataset_path,
                               train_batch_size=self.train_kwargs['batch_size'],
@@ -361,11 +361,11 @@ class Model_Container():
             test_set = PV_dataset.pdf_generator_test_dataset
 
         train_steps = PV_dataset.get_train_steps_per_epoch()
-        val_steps = PV_dataset.get_train_steps_per_epoch()
-        test_steps = PV_dataset.get_train_steps_per_epoch()
+        val_steps = PV_dataset.get_val_steps_per_epoch()
+        test_steps = PV_dataset.get_val_steps_per_epoch()
 
         # Transformer LR schedule, doesnt work .... too fast
-        optimizer = tf.keras.optimizers.Adam(CustomSchedule(128, warmup_steps=2000), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        optimizer = tf.keras.optimizers.Adam(CustomSchedule(128/4, warmup_steps=8000), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
         loss, metrics = self.get_losses_and_metrics()
         # learning_rate = np.sqrt(1/train_steps)
         # optimizer = tf.keras.optimizers.SGD(learning_rate = learning_rate,
@@ -378,10 +378,11 @@ class Model_Container():
 
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
-        callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=25,
-                                                                   mode='min',
-                                                                   restore_best_weights=True))
+        # callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
+        #                                                            patience=25,
+        #                                                            mode='min',
+        #                                                            restore_best_weights=True))
+        callbacks.append( SWA(swa_epoch=5) )
         callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,
                                                         write_graph=False,
                                                         #update_freq='epoch',
@@ -473,7 +474,47 @@ class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
 
         return tf.math.rsqrt(self.d_model) * tf.math.minimum(arg1, arg2)
 
-# ToDo: Rewrite this to be neater and work more flexibly, prepare for ragged shit
+class SWA(tf.keras.callbacks.Callback):
+    """
+    Stochastic Weight Averaging: https://arxiv.org/abs/1803.05407
+    Implementaton in Keras from user defined epochs assuming constant
+    learning rate
+    Cyclic learning rate implementation in https://arxiv.org/abs/1803.05407
+    not implemented
+    Created on July 4, 2018
+    @author: Krist Papadopoulos
+    """
+    def __init__(self, filepath=None, swa_epoch=5):
+        super(SWA, self).__init__()
+        self.filepath = filepath
+        self.swa_epoch = swa_epoch
+
+    def on_train_begin(self, logs=None):
+        self.nb_epoch = self.params['epochs']
+        print('Stochastic weight averaging selected for last {} epochs.'
+              .format(self.nb_epoch - self.swa_epoch))
+
+    def on_epoch_end(self, epoch, logs=None):
+
+        if epoch == self.swa_epoch:
+            self.swa_weights = self.model.get_weights()
+
+        elif epoch > self.swa_epoch:
+            for i, layer in enumerate(self.model.layers):
+                self.swa_weights[i] = (self.swa_weights[i] * (epoch - self.swa_epoch)  + self.model.get_weights()[i])\
+                                      /((epoch - self.swa_epoch)  + 1)
+
+        else:
+            pass
+
+    def on_train_end(self, logs=None):
+        self.model.set_weights(self.swa_weights)
+        print('Final model parameters set to stochastic weight average.')
+        if self.filepath is not None:
+            self.model.save_weights(self.filepath)
+            print('Final stochastic averaged weights saved to file.')
+#ToDo: Rewrite the keras model checkpoint callback to give back and average the last 5 weights!!
+
 class dataset_generator_PV():
     def __init__(self,
                  dataset_path=None,

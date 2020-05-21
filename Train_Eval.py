@@ -7,6 +7,7 @@ import glob
 import os
 import pickle
 from random import shuffle
+from Losses_and_Metrics import losses_and_metrics
 from datetime import datetime
 
 class Model_Container():
@@ -298,49 +299,24 @@ class Model_Container():
             print('trying to buid', model_type, 'but failed')
 
     def get_losses_and_metrics(self):
-        from Losses_and_Metrics import loss_wrapper
-        # assign the losses depending on scenario
-        if self.forecast_mode == 'pdf':
-            loss = loss_wrapper(last_output_dim_size=self.target_shape[-1], loss_type='KL-D')
-            metrics = [loss_wrapper(last_output_dim_size=self.target_shape[-1], loss_type='nME',
-                                    normalizer_value=1.0,
-                                    target_as_expected_value=False,
-                                    forecast_as_expected_value=False),
-                       loss_wrapper(last_output_dim_size=self.target_shape[-1], loss_type='nRMSE',
-                                    normalizer_value=1.0,
-                                    target_as_expected_value=False,
-                                    forecast_as_expected_value=False
-                                    ),
-                       loss_wrapper(last_output_dim_size=self.target_shape[-1], loss_type='CRPS',
-                                    target_as_expected_value=False,
-                                    forecast_as_expected_value=False
-                                    ),
-                       loss_wrapper(last_output_dim_size=self.target_shape[-1], loss_type='EMC',
-                                    target_as_expected_value=False,
-                                    forecast_as_expected_value=False
-                                    )
-                       ]
-            return loss, metrics
 
-        elif self.forecast_mode == 'ev':
-            loss = loss_wrapper(last_output_dim_size=self.target_shape[-1], loss_type='MSE',
-                                target_as_expected_value=True,
-                                forecast_as_expected_value=True
-                                )
-            metrics = [loss_wrapper(last_output_dim_size=self.target_shape[-1], loss_type='nME',
-                                    normalizer_value=self.dataset_info['normalizer_value'],
-                                    target_as_expected_value=True,
-                                    forecast_as_expected_value=True),
-                       loss_wrapper(last_output_dim_size=self.target_shape[-1], loss_type='nRMSE',
-                                    normalizer_value=self.dataset_info['normalizer_value'],
-                                    target_as_expected_value=True,
-                                    forecast_as_expected_value=True
-                                    )
-                       ]
-            return loss, metrics
-        else:
-            print(
-                'forecast mode was not specified as either <pdf> or <ev>, no idea how it got this far but expect some issues!!')
+        # assign the losses depending on scenario
+        if self.forecast_mode is not 'pdf' and self.forecast_mode is not 'ev':
+            print('forecast mode was not specified as either <pdf> or <ev>, no idea how compilation got this far but expect some issues!!')
+
+        losses = losses_and_metrics(last_output_dim_size=self.target_shape[-1],
+                                    normalizer_value=1.0,
+                                    target_as_expected_value=False if self.forecast_mode=='pdf' else True,
+                                    forecast_as_expected_value=False if self.forecast_mode=='pdf' else True)
+        loss = losses.KLD if self.forecast_mode == 'pdf' else losses.MSE
+
+        metrics = [losses.nME,
+                   losses.nRMSE]
+        if self.forecast_mode == 'pdf':
+            metrics.append(losses.CRPS)
+            metrics.append(losses.EMC)
+
+        return loss, metrics
 
     def __train_model(self):
 
@@ -365,7 +341,7 @@ class Model_Container():
         test_steps = PV_dataset.get_val_steps_per_epoch()
 
         # Transformer LR schedule, doesnt work .... too fast
-        optimizer = tf.keras.optimizers.Adam(CustomSchedule(128/4, warmup_steps=8000), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        optimizer = tf.keras.optimizers.Adam(CustomSchedule(self.model_kwargs['decoder_units'], warmup_steps=train_steps*8), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
         loss, metrics = self.get_losses_and_metrics()
         # learning_rate = np.sqrt(1/train_steps)
         # optimizer = tf.keras.optimizers.SGD(learning_rate = learning_rate,
@@ -378,11 +354,11 @@ class Model_Container():
 
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
-        # callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-        #                                                            patience=25,
-        #                                                            mode='min',
-        #                                                            restore_best_weights=True))
-        callbacks.append( SWA(swa_epoch=5) )
+        callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
+                                                                   patience=10,
+                                                                   mode='min',
+                                                                   restore_best_weights=True))
+        # callbacks.append( SWA(swa_epoch=5) )
         callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,
                                                         write_graph=False,
                                                         #update_freq='epoch',
@@ -527,7 +503,7 @@ class dataset_generator_PV():
 
         # We keep the training size as large as possible, this means the val size needs to be smaller due to memory thingies!
         self.train_batch_size = train_batch_size
-        self.val_batch_size = int(train_batch_size / 5)
+        self.val_batch_size = int(train_batch_size / 6)*2
 
         self.support_shape = support_shape
         self.history_shape = history_shape

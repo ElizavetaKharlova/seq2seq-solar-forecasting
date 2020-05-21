@@ -13,25 +13,25 @@ def do_experiment():
     # ToDo: do the dataset one folder up
     #hmmm...
 
-    experiment_name = 'FFNNGen-4xASAT-9H-128-BruteForce'
+    experiment_name = 'FFNNGen-3x-12H-256'
     sliding_window_length_days = 6
     model_kwargs = {'model_type': 'FFNN-Generator',
                     'forecast_mode': 'pdf',
 
                     # Architecture Hyperparameters
                     # Encoder:
-                        'encoder_units' :  128,
+                        'encoder_units' :  128+128,
                         'encoder_receptive_window': 6*4,
                         'encoder_self_attention': True,
                         'encoder_max_length_sequence': 2*sliding_window_length_days * 24 * 4,
                     # Decoder:
-                        'decoder_units': 128,
+                        'decoder_units': 128+128,
                         'decoder_receptive_window': 6,
                         'decoder_self_attention': True,
-                        'decoder_transformer_blocks': 4,
+                        'decoder_transformer_blocks': 3,
                         'decoder_max_length_sequence': 2*sliding_window_length_days*24,
 
-                    'attention_heads': 9,
+                    'attention_heads': 12,
 
                     # General information flow
                         'positional_embedding': True,
@@ -45,7 +45,7 @@ def do_experiment():
                         'L1': 0.0, 'L2': 0.0,
                         'use_norm' : True,
                     }
-    train_kwargs = {'batch_size': 2**8}
+    train_kwargs = {'batch_size': 2**7}
     runs = 1
     metrics = {}
     for run in range(runs):

@@ -479,6 +479,8 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
             self.max_length_sequence_query = max_length_sequence_query
             if max_length_sequence_value is None:
                 self.max_length_sequence_value = max_length_sequence_query
+            else:
+                self.max_length_sequence_value = max_length_sequence_value
         else:
             self.positional_embed = False
 

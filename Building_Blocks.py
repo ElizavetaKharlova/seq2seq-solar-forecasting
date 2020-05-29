@@ -475,17 +475,18 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         self.attention_features = self.units_per_head*self.num_heads
 
         if max_length_sequence_query is not None:
-            positional_embed = True
+            self.positional_embed = True
+            self.max_length_sequence_query = max_length_sequence_query
             if max_length_sequence_value is None:
-                max_length_sequence_value = max_length_sequence_query
+                self.max_length_sequence_value = max_length_sequence_query
+        else:
+            self.positional_embed = False
 
         self.W_query = tf.keras.layers.Dense(self.attention_features,
                                               activation=None,
                                               kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                               kernel_initializer=initializer,
                                               use_bias=True)
-        if positional_embed:
-            self.W_query = Positional_embedding_wrapper(self.W_query, max_length_sequence_query)
         if use_dropout:
             self.W_query = Dropout_wrapper(self.W_query, dropout_rate=dropout_rate)
 
@@ -494,8 +495,6 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                                               kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                               kernel_initializer=initializer,
                                               use_bias=True)
-        if positional_embed:
-            self.W_value = Positional_embedding_wrapper(self.W_value, max_length_sequence_value)
         if use_dropout:
             self.W_value = Dropout_wrapper(self.W_value, dropout_rate=dropout_rate)
 
@@ -504,8 +503,6 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                                           kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                           kernel_initializer=initializer,
                                           use_bias=True)
-        if positional_embed:
-            self.W_key = Positional_embedding_wrapper(self.W_key, max_length_sequence_value)
         if use_dropout:
             self.W_key = Dropout_wrapper(self.W_key, dropout_rate=dropout_rate)
 
@@ -550,6 +547,10 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
             self_attention_mask = self.get_causal_mask(query)
         else:
             self_attention_mask = None
+
+        if self.positional_embed:
+            query = add_timing_signal_1d(query, self.max_length_sequence_query)
+            value = add_timing_signal_1d(value, self.max_length_sequence_value)
 
         full_query = self.W_query(query)
         full_key = self.W_key(value)

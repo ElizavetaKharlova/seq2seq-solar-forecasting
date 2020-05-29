@@ -255,7 +255,6 @@ class Model_Container():
                              'use_norm': use_norm,
                              'use_dense': use_dense,
                              'force_relevant_context': force_relevant_context,
-                             'attention_squeeze': 0.5,
                              'use_self_attention': decoder_self_attention,
                              'transformer_blocks': decoder_transformer_blocks,
                              'positional_embedding': positional_embedding,
@@ -269,8 +268,7 @@ class Model_Container():
                              'attention_heads': attention_heads,
                              'use_self_attention': encoder_self_attention,
                              'transformer_blocks': encoder_transformer_blocks,
-                              'positional_embedding': positional_embedding,
-                             'attention_squeeze': 0.5}
+                              'positional_embedding': positional_embedding,}
             from Building_Blocks import ForecasterModel
             self.model = ForecasterModel(output_shape=self.target_shape,
                                          encoder_specs=encoder_specs,

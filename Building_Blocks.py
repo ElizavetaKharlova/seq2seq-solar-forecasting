@@ -90,7 +90,7 @@ def drop_timesteps_of_signal(input, dropout_rate):
                 training=tf.keras.backend.learning_phase())
 
 class Cropping_layer(tf.keras.layers.Layer):
-    def __init__(self, noise_rate):
+    def __init__(self, noise_rate=0.2):
         super(Cropping_layer, self).__init__()
         self.noise_rate = noise_rate
 
@@ -100,9 +100,18 @@ class Cropping_layer(tf.keras.layers.Layer):
                                                     training=tf.keras.backend.learning_phase())
 
     def randomize_input_lengths(self, signal):
-        rand = tf.random.uniform(shape=(), minval=1 , maxval=int(self.noise_rate*signal.shape[1]), dtype=tf.int32)
-        rand = tf.minimum(rand, signal.shape[1]-1)
-        signal = tf.slice(signal, begin=[0, rand, 0], size=[-1,-1,-1])
+
+        max_val=self.noise_rate*tf.cast(tf.shape(signal)[1], dtype=tf.float32)
+        slice_beginning = tf.random.uniform(shape=(), minval=0 , maxval=max_val)
+        slice_beginning = tf.cast(slice_beginning, dtype=tf.int32)
+
+        signal = tf.slice(signal, begin=[0, slice_beginning, 0], size=[-1,-1,-1])
+        # max_val = self.noise_rate[1]**tf.cast(tf.shape(signal)[1], dtype=tf.float32)
+        # slice_end = tf.random.uniform(shape=(), minval=0, maxval=max_val)
+        # slice_end = tf.cast(slice_end, dtype=tf.int32)
+        #
+        # signal = tf.slice(signal, begin=[0, 0, 0], size=[-1,tf.shape(signal)[1]-slice_end,-1])
+        # print(signal)
         # signal = signal[:, -new_signal_length:, :]
         return signal
 
@@ -456,18 +465,27 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
     def __init__(self, units_per_head=[80, 80],
                  output_units=20,
                  L1=0.0, L2=0.0,
-                 use_dropout=True, dropout_rate=0.2):
+                 use_dropout=True, dropout_rate=0.2,
+                 max_length_sequence_query=None,
+                 max_length_sequence_value=None):
         super(multihead_attentive_layer, self).__init__()
         # units is a list of lists, containing the numbers of units in the attention head
         self.num_heads = len(units_per_head)
         self.units_per_head = int(output_units*2/self.num_heads)
         self.attention_features = self.units_per_head*self.num_heads
 
+        if max_length_sequence_query is not None:
+            positional_embed = True
+            if max_length_sequence_value is None:
+                max_length_sequence_value = max_length_sequence_query
+
         self.W_query = tf.keras.layers.Dense(self.attention_features,
                                               activation=None,
                                               kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                               kernel_initializer=initializer,
                                               use_bias=True)
+        if positional_embed:
+            self.W_query = Positional_embedding_wrapper(self.W_query, max_length_sequence_query)
         if use_dropout:
             self.W_query = Dropout_wrapper(self.W_query, dropout_rate=dropout_rate)
 
@@ -476,6 +494,8 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                                               kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                               kernel_initializer=initializer,
                                               use_bias=True)
+        if positional_embed:
+            self.W_value = Positional_embedding_wrapper(self.W_value, max_length_sequence_value)
         if use_dropout:
             self.W_value = Dropout_wrapper(self.W_value, dropout_rate=dropout_rate)
 
@@ -484,6 +504,8 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                                           kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                                           kernel_initializer=initializer,
                                           use_bias=True)
+        if positional_embed:
+            self.W_key = Positional_embedding_wrapper(self.W_key, max_length_sequence_value)
         if use_dropout:
             self.W_key = Dropout_wrapper(self.W_key, dropout_rate=dropout_rate)
 
@@ -1292,7 +1314,7 @@ class CNN_decoder(tf.keras.layers.Layer):
 class FFNN_encoder(tf.keras.layers.Layer):
     def __init__(self,
                  num_initial_features,
-                 max_length_sequence,
+                 max_length_sequence_supplement,
                  attention_heads=5,
                  attention_squeeze=0.5,
                  use_residual=True,
@@ -1308,14 +1330,13 @@ class FFNN_encoder(tf.keras.layers.Layer):
 
         # self.crop = Cropping_layer(0.4)
         self.force_relevant_context = force_relevant_context
-
         self.pseudo_embedding = tf.keras.layers.Dense(num_initial_features,
                               activation=activation,
                               kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                               kernel_initializer=initializer,
                               use_bias=True)
-        if positional_embedding:
-            self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence)
+        # if positional_embedding:
+        #      self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence)
         if use_norm:
             self.pseudo_embedding = Norm_wrapper(self.pseudo_embedding, norm='layer')
 
@@ -1325,7 +1346,9 @@ class FFNN_encoder(tf.keras.layers.Layer):
             self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
                                                   use_dropout=False,
                                                   L2=L2, L1=L1,
-                                                  output_units=num_initial_features)
+                                                  output_units=num_initial_features,
+                                                  max_length_sequence_query=max_length_sequence_supplement,
+                                                       )
             if use_residual:
                 self_attention = Residual_wrapper(self_attention)
             if use_norm:
@@ -1337,6 +1360,8 @@ class FFNN_encoder(tf.keras.layers.Layer):
                 transform = Residual_wrapper(transform)
             if use_norm:
                 transform = Norm_wrapper(transform, norm='layer')
+            # if positional_embedding:
+            #     transform = Positional_embedding_wrapper(transform, max_length_sequence)
             self.transform_out = transform
 
 
@@ -1351,12 +1376,14 @@ class FFNN_encoder(tf.keras.layers.Layer):
         if self.force_relevant_context:
             signal = signal[:,-24*4:,:]
 
+
         return signal
 
 class FFNN_decoder(tf.keras.layers.Layer):
     def __init__(self,
                  num_initial_features=4*7,
-                 max_length_sequence=24,
+                 max_length_sequence_history=24,
+                 max_length_sequence_supplement=24*4,
                  attention_heads=5,
                  attention_squeeze=0.5,
                  projection_layer=None,
@@ -1377,8 +1404,8 @@ class FFNN_decoder(tf.keras.layers.Layer):
                               kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                               kernel_initializer=initializer,
                               use_bias=True)
-        if positional_embedding:
-            self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence)
+        # if positional_embedding:
+        #     self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence)
         if use_norm:
             self.pseudo_embedding = Norm_wrapper(self.pseudo_embedding, norm='layer')
 
@@ -1386,13 +1413,14 @@ class FFNN_decoder(tf.keras.layers.Layer):
         self.use_self_attention = use_self_attention
         self.transformer = []
 
-        for block in range(transformer_blocks):
+        for num_block in range(transformer_blocks):
             block = {}
             if use_self_attention:
                 self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
                                                       use_dropout=False,
                                                       L2=L2, L1=L1,
-                                                      output_units=num_initial_features)
+                                                      output_units=num_initial_features,
+                                                      max_length_sequence_query=max_length_sequence_history)
                 if use_residual:
                     self_attention = Residual_wrapper(self_attention)
                 if use_norm:
@@ -1402,7 +1430,9 @@ class FFNN_decoder(tf.keras.layers.Layer):
             attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
                                                   use_dropout=False,
                                                   L2=L2, L1=L1,
-                                                  output_units=num_initial_features)
+                                                  output_units=num_initial_features,
+                                                  max_length_sequence_query=max_length_sequence_history,
+                                                  max_length_sequence_value=max_length_sequence_supplement)
 
             if use_residual:
                 attention = Residual_wrapper(attention)
@@ -1415,6 +1445,8 @@ class FFNN_decoder(tf.keras.layers.Layer):
                 transform = Residual_wrapper(transform)
             if use_norm:
                 transform = Norm_wrapper(transform, norm='layer')
+            # if positional_embedding and num_block < transformer_blocks-1:
+            #     transform = Positional_embedding_wrapper(transform, max_length_sequence)
             block['transform'] = transform
 
             self.transformer.append(block)

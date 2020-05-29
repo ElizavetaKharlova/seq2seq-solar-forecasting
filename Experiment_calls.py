@@ -13,19 +13,19 @@ def do_experiment():
     # ToDo: do the dataset one folder up
     #hmmm...
 
-    experiment_name = 'FFNNGen-3x-12H-256'
+    experiment_name = 'FFNNGen-3x-12H-256-MorePositionalEmbedding'
     sliding_window_length_days = 6
     model_kwargs = {'model_type': 'FFNN-Generator',
                     'forecast_mode': 'pdf',
 
                     # Architecture Hyperparameters
                     # Encoder:
-                        'encoder_units' :  128+128,
+                        'encoder_units' :  256,
                         'encoder_receptive_window': 6*4,
                         'encoder_self_attention': True,
                         'encoder_max_length_sequence': 2*sliding_window_length_days * 24 * 4,
                     # Decoder:
-                        'decoder_units': 128+128,
+                        'decoder_units': 256,
                         'decoder_receptive_window': 6,
                         'decoder_self_attention': True,
                         'decoder_transformer_blocks': 3,
@@ -42,11 +42,11 @@ def do_experiment():
 
                     # Regularization Hyperparameters
                         # 'use_dropout' : False, 'dropout_rate' : 0.0,
-                        'L1': 0.0, 'L2': 0.0,
-                        'use_norm' : True,
+                        'L1': 0.0, 'L2': 5*1e-5,
+                        'use_norm' : False,
                     }
     train_kwargs = {'batch_size': 2**7}
-    runs = 1
+    runs = 3
     metrics = {}
     for run in range(runs):
         experiment = Model_Container(dataset_folder='Daniels_Dataset_1',

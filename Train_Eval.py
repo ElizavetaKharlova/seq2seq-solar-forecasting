@@ -248,7 +248,8 @@ class Model_Container():
             # decoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0, projection_layer=None)
             # encoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0
             decoder_specs = {'num_initial_features': decoder_units,
-                             'max_length_sequence': decoder_max_length_sequence,
+                             'max_length_sequence_history': decoder_max_length_sequence,
+                             'max_length_sequence_supplement': encoder_max_length_sequence,
                              'attention_heads': attention_heads,
                              'use_residual': use_residual,
                              'use_norm': use_norm,
@@ -260,7 +261,7 @@ class Model_Container():
                              'positional_embedding': positional_embedding,
                              'projection_layer': projection_block}
             encoder_specs = {'num_initial_features': encoder_units,
-                             'max_length_sequence': encoder_max_length_sequence,
+                             'max_length_sequence_supplement': encoder_max_length_sequence,
                              'use_residual': use_residual,
                              'use_norm': use_norm,
                              'use_dense': use_dense,
@@ -321,7 +322,7 @@ class Model_Container():
     def __train_model(self):
 
         callbacks = []
-        epochs = 300
+        epochs = 100
         # ToDo: change back to '/train'
         PV_dataset = dataset_generator_PV(dataset_path=self.dataset_path,
                               train_batch_size=self.train_kwargs['batch_size'],

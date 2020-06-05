@@ -105,17 +105,10 @@ class Cropping_layer(tf.keras.layers.Layer):
         slice_beginning = tf.random.uniform(shape=(), minval=0 , maxval=max_val)
         slice_beginning = tf.cast(slice_beginning, dtype=tf.int32)
 
-        signal = tf.slice(signal, begin=[0, slice_beginning, 0], size=[-1,-1,-1])
-        # max_val = self.noise_rate[1]**tf.cast(tf.shape(signal)[1], dtype=tf.float32)
-        # slice_end = tf.random.uniform(shape=(), minval=0, maxval=max_val)
-        # slice_end = tf.cast(slice_end, dtype=tf.int32)
-        #
-        # signal = tf.slice(signal, begin=[0, 0, 0], size=[-1,tf.shape(signal)[1]-slice_end,-1])
-        # print(signal)
-        # signal = signal[:, -new_signal_length:, :]
+        signal = tf.slice(signal, begin=[0, 0, 0], size=[tf.shape(signal)[0],tf.shape(signal)[1] -slice_beginning,tf.shape(signal)[2]])
         return signal
 
-from tensor2tensor.layers.common_attention import add_positional_embedding, add_timing_signal_1d, get_timing_signal_1d
+from tensor2tensor.layers.common_attention import add_positional_embedding_nd, add_timing_signal_1d, get_timing_signal_1d
 
 class Positional_embedding_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, max_length, name=None):
@@ -140,21 +133,12 @@ class Positional_embedding_wrapper(tf.keras.layers.Wrapper):
 class Dropout_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, dropout_rate, units=None):
         super(Dropout_wrapper, self).__init__(layer)
-        # self.dropout = tf.keras.layers.Dropout(rate=dropout_rate, noise_shape=(1, units))
-        self.units = units
-        self.dropout_rate = dropout_rate
+        self.dropout = tf.keras.layers.Dropout(rate=dropout_rate)
     def call(self, inputs, value=None):
         if value is None:
-            return drop_features_of_signal(self.layer(inputs), self.dropout_rate)
+            return self.dropout(self.layer(inputs))
         else:
-            return drop_features_of_signal(self.layer(inputs, value), self.dropout_rate)
-        # if value is None:
-        #     dropped_inputs = drop_features_of_signal(inputs, self.dropout_rate)
-        #     return self.layer(dropped_inputs)
-        # else:
-        #     dropped_inputs = drop_features_of_signal(inputs, self.dropout_rate)
-        #     dropped_values = drop_features_of_signal(value, self.dropout_rate)
-        #     return self.layer(dropped_inputs, dropped_values)
+            return self.dropout(self.layer(inputs, value))
 
 class Norm_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, norm='layer'):
@@ -467,12 +451,14 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                  L1=0.0, L2=0.0,
                  use_dropout=True, dropout_rate=0.2,
                  max_length_sequence_query=None,
-                 max_length_sequence_value=None):
+                 max_length_sequence_value=None,
+                 layer_name=None):
         super(multihead_attentive_layer, self).__init__()
         # units is a list of lists, containing the numbers of units in the attention head
         self.num_heads = len(units_per_head)
         self.units_per_head = int(output_units*2/self.num_heads)
         self.attention_features = self.units_per_head*self.num_heads
+        self.layer_name = layer_name
 
         if max_length_sequence_query is not None:
             self.positional_embed = True
@@ -550,9 +536,11 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         else:
             self_attention_mask = None
 
-        if self.positional_embed:
-            query = add_timing_signal_1d(query, self.max_length_sequence_query)
-            value = add_timing_signal_1d(value, self.max_length_sequence_value)
+        # if self.positional_embed:
+        #     # query = add_timing_signal_1d(query, self.max_length_sequence_query)
+        #     # value = add_timing_signal_1d(value, self.max_length_sequence_value)
+        #     query = add_positional_embedding_nd(query, self.max_length_sequence_query, self.name+'_query')
+        #     value = add_positional_embedding_nd(value, self.max_length_sequence_value, self.name+'_value')
 
         full_query = self.W_query(query)
         full_key = self.W_key(value)
@@ -1331,15 +1319,16 @@ class FFNN_encoder(tf.keras.layers.Layer):
                  ):
         super(FFNN_encoder, self).__init__()
 
-        # self.crop = Cropping_layer(0.4)
+        self.crop = Cropping_layer(0.2)
         self.force_relevant_context = force_relevant_context
         self.pseudo_embedding = tf.keras.layers.Dense(num_initial_features,
                               activation=activation,
                               kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                               kernel_initializer=initializer,
                               use_bias=True)
-        # if positional_embedding:
-        #      self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence)
+        # self.pseudo_embedding = Dropout_wrapper(self.pseudo_embedding, dropout_rate=0.1)
+        if positional_embedding:
+             self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence_supplement)
         if use_norm:
             self.pseudo_embedding = Norm_wrapper(self.pseudo_embedding, norm='layer')
 
@@ -1351,6 +1340,7 @@ class FFNN_encoder(tf.keras.layers.Layer):
                                                   L2=L2, L1=L1,
                                                   output_units=num_initial_features,
                                                   max_length_sequence_query=max_length_sequence_supplement,
+                                                       layer_name='encoder_sa'
                                                        )
             if use_residual:
                 self_attention = Residual_wrapper(self_attention)
@@ -1407,8 +1397,9 @@ class FFNN_decoder(tf.keras.layers.Layer):
                               kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                               kernel_initializer=initializer,
                               use_bias=True)
-        # if positional_embedding:
-        #     self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence)
+        self.pseudo_embedding = Dropout_wrapper(self.pseudo_embedding, dropout_rate=0.1)
+        if positional_embedding:
+            self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence_history)
         if use_norm:
             self.pseudo_embedding = Norm_wrapper(self.pseudo_embedding, norm='layer')
 
@@ -1423,7 +1414,8 @@ class FFNN_decoder(tf.keras.layers.Layer):
                                                       use_dropout=False,
                                                       L2=L2, L1=L1,
                                                       output_units=num_initial_features,
-                                                      max_length_sequence_query=max_length_sequence_history)
+                                                      max_length_sequence_query=max_length_sequence_history,
+                                                           layer_name='decoder_sa'+str(num_block))
                 if use_residual:
                     self_attention = Residual_wrapper(self_attention)
                 if use_norm:
@@ -1435,7 +1427,8 @@ class FFNN_decoder(tf.keras.layers.Layer):
                                                   L2=L2, L1=L1,
                                                   output_units=num_initial_features,
                                                   max_length_sequence_query=max_length_sequence_history,
-                                                  max_length_sequence_value=max_length_sequence_supplement)
+                                                  max_length_sequence_value=max_length_sequence_supplement,
+                                                  layer_name='decoder_a'+str(num_block))
 
             if use_residual:
                 attention = Residual_wrapper(attention)

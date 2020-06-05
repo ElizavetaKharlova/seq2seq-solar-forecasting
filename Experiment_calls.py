@@ -13,7 +13,7 @@ def do_experiment():
     # ToDo: do the dataset one folder up
     #hmmm...
 
-    experiment_name = 'FFNNGen-3x-12H-256-MorePositionalEmbedding'
+    experiment_name = 'FFNNGen-3x-12H-256-DecoderDropout'
     sliding_window_length_days = 6
     model_kwargs = {'model_type': 'FFNN-Generator',
                     'forecast_mode': 'pdf',

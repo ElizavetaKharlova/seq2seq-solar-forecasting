@@ -340,7 +340,7 @@ class Model_Container():
         test_steps = PV_dataset.get_val_steps_per_epoch()
 
         # Transformer LR schedule, doesnt work .... too fast
-        optimizer = tf.keras.optimizers.Adam(CustomSchedule(self.model_kwargs['decoder_units'], warmup_steps=train_steps*8), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        optimizer = tf.keras.optimizers.Adam(CustomSchedule(self.model_kwargs['decoder_units'], warmup_steps=train_steps*6), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
         loss, metrics = self.get_losses_and_metrics()
         # learning_rate = np.sqrt(1/train_steps)
         # optimizer = tf.keras.optimizers.SGD(learning_rate = learning_rate,

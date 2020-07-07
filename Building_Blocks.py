@@ -239,9 +239,9 @@ class LSTM_Residual_wrapper(tf.keras.layers.Wrapper):
         # self.transform_gate = tf.keras.layers.TimeDistributed(self.transform_gate )
 
     def call(self, input, initial_states=None):
-        output, states = self.layer(input, initial_states)
-        output[-1] = output[-1]+input
-        return output, states
+        output, state_h, state_c = self.layer(input, initial_states)
+        output = output+input
+        return output, state_h, state_c
 
 class LSTM_Highway_wrapper(tf.keras.layers.Wrapper):
     def __init__(self, layer, units, iniital_bias):
@@ -340,13 +340,12 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
 
     def call(self, signal, initial_states=None):
         out_states = []
-
         # Initialize as zero states if No state is given
         if initial_states is None:
             for lstm_block in self.multilayer_lstm:
                 out_states_block = []
                 for lstm in lstm_block:
-                    signal, state_h, state_c = lstm(signal)
+                    signal, state_h, state_c = lstm(signal, initial_state=None)
                     out_states_block.append([state_h, state_c])
                 out_states.append(out_states_block)
 
@@ -853,7 +852,8 @@ class project_input_to_4k_layer(tf.keras.layers.Layer):
 ########################################################################################################################
 
 class block_LSTM(tf.keras.layers.Layer):
-    def __init__(self, units=[[20, 20], [20,20]],
+    def __init__(self, units=20,
+                 num_encoder_blocks=1,
                  use_dropout=False,
                  dropout_rate=0.0,
                  use_norm=False,
@@ -863,20 +863,28 @@ class block_LSTM(tf.keras.layers.Layer):
         super(block_LSTM, self).__init__()
         self.return_state = return_state
         self.encoder_blocks = []
-        self.cropping_layer = Cropping_layer(0.3)
-        for block in units:
-            self.encoder_blocks.append(MultiLayer_LSTM(units=[block],
+        self.cropping_layer = Cropping_layer(0.2)
+        for block in range(num_encoder_blocks):
+            self.encoder_blocks.append(MultiLayer_LSTM(units=[[units]],
                                                 use_dropout=use_dropout, dropout_rate=dropout_rate,
                                                 use_norm=use_norm,
                                                 use_hw=use_hw, use_residuals=use_residual,
                                                 L1=L1, L2=L2))
+        self.transform_layer = tf.keras.layers.Dense(units,
+                                                    activation=activation,
+                                                    kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                                    kernel_initializer=initializer,
+                                                    use_bias=True)
+        if use_norm:
+            self.transform_layer = Norm_wrapper(self.transform_layer)
 
 
     def call(self, signal, initial_states=None):
-        signal = self.cropping_layer(signal)
+        # signal = self.cropping_layer(signal)
         encoder_outs = []
         encoder_last_states = []
-        
+        signal = self.transform_layer(signal)
+
         for block in range(len(self.encoder_blocks)):
             signal, block_states = self.encoder_blocks[block](signal, initial_states=initial_states)
             encoder_outs.append(signal)
@@ -889,7 +897,8 @@ class block_LSTM(tf.keras.layers.Layer):
 
 class decoder_LSTM_block(tf.keras.layers.Layer):
     def __init__(self,
-                 units=[[20, 20], [20,20]],
+                 units=20,
+                 num_decoder_blocks=1,
                  use_dropout=False,
                  dropout_rate=0.0,
                  use_hw=False, use_residual=False,
@@ -899,18 +908,26 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                  use_attention=False, attention_heads=5,
                  projection_layer=None):
         super(decoder_LSTM_block, self).__init__()
-        self.units = units
+        self.num_decoder_blocks = num_decoder_blocks
         self.use_attention = use_attention
         self.projection_layer=projection_layer
 
         self.cropping_layer = Cropping_layer(0.8)
 
+        self.transform_layer = tf.keras.layers.Dense(units,
+                                                    activation=activation,
+                                                    kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                                    kernel_initializer=initializer,
+                                                    use_bias=True)
+        if use_norm:
+            self.transform_layer = Norm_wrapper(self.transform_layer)
+
         if self.use_attention:
             self.attention_blocks = []
         self.decoder_blocks = []
 
-        for layer_units in units:
-            self.decoder_blocks.append(MultiLayer_LSTM(units=[layer_units],
+        for layer in range(num_decoder_blocks):
+            self.decoder_blocks.append(MultiLayer_LSTM(units=[[units]],
                                                 use_dropout=use_dropout, dropout_rate=dropout_rate,
                                                 use_norm=use_norm,
                                                 use_hw=use_hw, use_residuals=use_residual,
@@ -918,7 +935,7 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
             if self.use_attention:
                 if attention_heads == 1:
                     #equivalent to the dimensionality of attention heads
-                    attention = Attention(layer_units[0],
+                    attention = Attention(units,
                                         mode='Transformer',
                                         query_kernel= 1,
                                         key_kernel=1,
@@ -928,10 +945,10 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                                         only_context=True)
 
                 else:
-                    units_per_head =[int(layer_units[0]*attention_squeeze)]*attention_heads
+                    units_per_head =[int(units*attention_squeeze)]*attention_heads
                     attention = multihead_attentive_layer(units_per_head=units_per_head,
                                                           kernel_size=None,
-                                                          output_units=layer_units[0],
+                                                          output_units=units,
                                                           dropout_rate=dropout_rate,
                                                           use_dropout=use_dropout,
                                                           L1=L1,
@@ -958,8 +975,10 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
         return forecast
 
     def teacher_call(self, prev_history, teacher, decoder_init_state, attention_value, timesteps):
-        prev_history = self.cropping_layer(prev_history)
+        if prev_history.shape[-2] > 1:
+            prev_history = self.cropping_layer(prev_history)
         full_history = tf.concat([prev_history, teacher], axis=1)
+        full_history = self.transform_layer(full_history) # to get feature size for residuals
         unprojected_forecast = self.decode_layerwise(full_history, decoder_init_state, attention_value)
         forecast = self.projection_layer(unprojected_forecast[:,-timesteps:,:])
         return forecast
@@ -997,18 +1016,20 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
 
     def self_recurrent_call(self, prev_history, decoder_init_state, attention_values, timesteps):
         decoder_state = decoder_init_state  # [[[state_h, state_c]]] #(blocks, layers_in_block, 2)
+        prev_history = self.transform_layer(prev_history)
 
         for timestep in range(timesteps + prev_history.shape[1] - 1):
             if timestep < prev_history.shape[1]:
                 input = tf.expand_dims(prev_history[:,timestep,:], axis=1)
                 decoder_out, decoder_state = self.decode_stepwise(input, decoder_state, attention_values)
                 if timestep == prev_history.shape[1] - 1:
-                    forecast = self.projection_layer(decoder_out)
+                    forecast = decoder_out #self.projection_layer(decoder_out)
             else:
                 input = tf.expand_dims(forecast[:, -1, :], axis=1)
                 decoder_out, decoder_state = self.decode_stepwise(input, decoder_state, attention_values)
-                forecast = tf.concat([forecast, self.projection_layer(decoder_out)], axis=1)
+                forecast = tf.concat([forecast, decoder_out], axis=1) #self.projection_layer(decoder_out)], axis=1)
 
+        forecast = self.projection_layer(forecast)
         return forecast
 
     def decode_stepwise(self, input, last_step_states, attention_values):
@@ -1312,7 +1333,7 @@ class FFNN_encoder(tf.keras.layers.Layer):
                  use_dense=False,
                  use_norm=True,
                  L2=0.0, L1=0.0,
-                positional_embedding=True,
+                 positional_embedding=True,
                  force_relevant_context=False,
                  use_self_attention=False,
                  transformer_blocks=1,
@@ -1386,8 +1407,9 @@ class FFNN_decoder(tf.keras.layers.Layer):
                  L2=0.0, L1=0.0,
                  positional_embedding=True,
                  force_relevant_context=False,
-                transformer_blocks=1,
+                 transformer_blocks=1,
                  use_self_attention=False,
+                 use_attention=True,
                  ):
         super(FFNN_decoder, self).__init__()
         self.projection_layer = projection_layer
@@ -1397,7 +1419,7 @@ class FFNN_decoder(tf.keras.layers.Layer):
                               kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
                               kernel_initializer=initializer,
                               use_bias=True)
-        self.pseudo_embedding = Dropout_wrapper(self.pseudo_embedding, dropout_rate=0.1)
+        # self.pseudo_embedding = Dropout_wrapper(self.pseudo_embedding, dropout_rate=0.1)
         if positional_embedding:
             self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence_history)
         if use_norm:
@@ -1422,19 +1444,20 @@ class FFNN_decoder(tf.keras.layers.Layer):
                     self_attention = Norm_wrapper(self_attention, norm='layer')
                 block['self_attention'] = self_attention
 
-            attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
-                                                  use_dropout=False,
-                                                  L2=L2, L1=L1,
-                                                  output_units=num_initial_features,
-                                                  max_length_sequence_query=max_length_sequence_history,
-                                                  max_length_sequence_value=max_length_sequence_supplement,
-                                                  layer_name='decoder_a'+str(num_block))
+            if use_attention:
+                attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
+                                                    use_dropout=False,
+                                                    L2=L2, L1=L1,
+                                                    output_units=num_initial_features,
+                                                    max_length_sequence_query=max_length_sequence_history,
+                                                    max_length_sequence_value=max_length_sequence_supplement,
+                                                    layer_name='decoder_a'+str(num_block))
 
-            if use_residual:
-                attention = Residual_wrapper(attention)
-            if use_norm:
-                attention = Norm_wrapper(attention, norm='layer')
-            block['attention'] = attention
+                if use_residual:
+                    attention = Residual_wrapper(attention)
+                if use_norm:
+                    attention = Norm_wrapper(attention, norm='layer')
+                block['attention'] = attention
 
             transform = transformation_layer(num_initial_features, L1=L1, L2=L2, use_dropout=False)
             if use_residual:
@@ -1470,6 +1493,7 @@ class FFNN_decoder(tf.keras.layers.Layer):
             if 'transform' in block:
                 signal = block['transform'](signal)
 
+        # For predicting full targets vs. last 24 steps
         # signal = signal[:, -timesteps:, :]
         forecast = self.projection_layer(signal)
         return forecast
@@ -1674,28 +1698,261 @@ class generator_Dense_block(tf.keras.layers.Layer):
         return forecast
 
 ########################################################################################################################
+
+class Transformer_encoder(tf.keras.layers.Layer):
+    def __init__(self,
+                num_initial_features,
+                max_length_sequence_supplement,
+                transformer_blocks=1,
+                attention_heads=5,
+                attention_squeeze=0.5,
+                L1=0.0, L2=0.0,
+                positional_embedding=True,
+                use_norm=False,
+                use_residual=False,
+                ):
+        super(Transformer_encoder, self).__init__()
+        self.transformer_blocks = transformer_blocks
+
+        self.pseudo_embedding = tf.keras.layers.Dense(num_initial_features,
+                                                    activation=activation,
+                                                    kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                                    kernel_initializer=initializer,
+                                                    use_bias=True)
+        if positional_embedding:
+            self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence_supplement)
+        if use_norm:
+            self.pseudo_embedding = Norm_wrapper(self.pseudo_embedding, norm='layer')
+
+        attention_features = num_initial_features * attention_squeeze
+
+        self.self_attention = []
+        self.transform = []
+        for block in range(transformer_blocks):
+            self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
+                                                        output_units=num_initial_features,
+                                                        L1=0.0, L2=0.0,
+                                                        use_dropout=False,
+                                                        dropout_rate=0.0,
+                                                        max_length_sequence_query=max_length_sequence_supplement)
+            if use_residual:
+                self_attention = Residual_wrapper(self_attention)
+            if use_norm:
+                self_attention = Norm_wrapper(self_attention, norm='layer')
+            self.self_attention.append(self_attention)
+            
+            transform = transformation_layer(num_initial_features, L1=L1, L2=L2, use_dropout=False)
+            if use_residual:
+                transform = Residual_wrapper(transform)
+            if use_norm:
+                transform = Norm_wrapper(transform, norm='layer')
+            self.transform.append(transform)
+
+    def call(self, inputs):
+        signal = inputs
+        signal = self.pseudo_embedding(signal)
+        for block in range(self.transformer_blocks):
+            signal = self.self_attention[block](signal)
+            signal = self.transform[block](signal)
+        return signal
+
+class FFNN_LSTM_decoder(tf.keras.layers.Layer):
+    def __init__(self,
+                 num_initial_features=4*7,
+                 max_length_sequence_history=24,
+                 max_length_sequence_supplement=24*4,
+                 attention_heads=5,
+                 attention_squeeze=0.5,
+                 projection_layer=None,
+                 use_residual=True,
+                 use_dense=False,
+                 use_norm=True,
+                 L2=0.0, L1=0.0,
+                 positional_embedding=True,
+                 force_relevant_context=False,
+                 transformer_blocks=1,
+                 use_self_attention=False,
+                 use_attention=True,
+                 ):
+        super(FFNN_LSTM_decoder, self).__init__()
+        self.projection_layer = projection_layer
+
+        self.pseudo_embedding = tf.keras.layers.Dense(num_initial_features,
+                              activation=activation,
+                              kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                              kernel_initializer=initializer,
+                              use_bias=True)
+        # self.pseudo_embedding = Dropout_wrapper(self.pseudo_embedding, dropout_rate=0.1)
+        if positional_embedding:
+            self.pseudo_embedding = Positional_embedding_wrapper(self.pseudo_embedding, max_length=max_length_sequence_history)
+        if use_norm:
+            self.pseudo_embedding = Norm_wrapper(self.pseudo_embedding, norm='layer')
+
+        attention_features = num_initial_features * attention_squeeze
+        self.use_self_attention = use_self_attention
+        self.transformer = []
+
+        for num_block in range(transformer_blocks):
+            block = {}
+            if use_self_attention:
+                lstm_layer = MultiLayer_LSTM(units=[[num_initial_features]],
+                                            use_norm=use_norm,
+                                            use_residuals=use_residual,
+                                            L1=L1, L2=L2,)
+                block['lstm'] = lstm_layer
+
+            if use_attention:
+                attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
+                                                    use_dropout=False,
+                                                    L2=L2, L1=L1,
+                                                    output_units=num_initial_features,
+                                                    max_length_sequence_query=max_length_sequence_history,
+                                                    max_length_sequence_value=max_length_sequence_supplement,
+                                                    layer_name='decoder_a'+str(num_block))
+
+                if use_residual:
+                    attention = Residual_wrapper(attention)
+                if use_norm:
+                    attention = Norm_wrapper(attention, norm='layer')
+                block['attention'] = attention
+
+            transform = transformation_layer(num_initial_features, L1=L1, L2=L2, use_dropout=False)
+            if use_residual:
+                transform = Residual_wrapper(transform)
+            if use_norm:
+                transform = Norm_wrapper(transform, norm='layer')
+            # if positional_embedding and num_block < transformer_blocks-1:
+            #     transform = Positional_embedding_wrapper(transform, max_length_sequence)
+            block['transform'] = transform
+
+            self.transformer.append(block)
+
+
+    def call(self, history_input, teacher, attention_value, timesteps):
+        return tf.keras.backend.in_train_phase(self.training_call(history_input, teacher, attention_value, timesteps),
+                                               alt=self.inference_call(history_input, teacher, attention_value,
+                                                                       timesteps),
+                                               training=tf.keras.backend.learning_phase())
+
+    def training_call(self, history_input, teacher, attention_value, timesteps):
+        self.max_length = history_input.shape[1] + teacher.shape[1]
+        signal = tf.concat([history_input, teacher], axis=1)
+
+        signal = self.pseudo_embedding(signal) #Pseudo Embeddings
+        # signal = self.crop(signal)
+        # Put Transformer Decoder
+        for block in self.transformer:
+            if 'lstm' in block:
+                signal, states = block['lstm'](signal)
+            if 'attention' in block:
+                signal = block['attention'](signal, attention_value)
+            if 'transform' in block:
+                signal = block['transform'](signal)
+
+        # For predicting full targets vs. last 24 steps
+        # signal = signal[:, -timesteps:, :]
+        forecast = self.projection_layer(signal)
+        return forecast
+
+    def inference_call(self, history_input, teacher, attention_value, timesteps):
+
+        input_signal = history_input
+        for step in range(timesteps):
+            # make sure the signal we're feeding to the CNN always has the same length, because TF sucks
+            # projected_history = self.projection(history_input)
+            signal = self.pseudo_embedding(input_signal)
+
+            if step == 0:
+                buffers = []
+
+            for num_block in range(len(self.transformer)):
+                block = self.transformer[num_block]
+
+                if 'lstm' in block:
+
+                    if step == 0:
+                        buffers.append(signal)
+                        signal, states = block['lstm'](signal)
+                    else:
+                        query = signal[:,-1:,:]
+                        buffers[num_block] = tf.concat([buffers[num_block], query], axis=1)
+                        signal, states = block['lstm'](buffers[num_block]) # try just passing signal to it
+
+                if 'attention' in block:
+                    signal = block['attention'](signal, attention_value)
+                if 'transform' in block:
+                    signal = block['transform'](signal)
+
+            forecast_step = self.projection_layer(signal[:,-1:,:])
+            input_signal = tf.concat([input_signal, forecast_step], axis=1)
+
+
+        return input_signal[:,-timesteps:,:]
+
+class FFNN_block(tf.keras.layers.Layer):
+    def __init__(self,
+                 num_initial_features,
+                 num_layers,
+                 use_residual=True,
+                 use_norm=True,
+                 L2=0.0, L1=0.0,):
+        super(FFNN_block, self).__init__()
+
+        self.num_layers = num_layers
+
+        self.ffnn = []
+        for layer in range(num_layers):
+            one_ffnn = tf.keras.layers.Dense(num_initial_features,
+                                            activation=activation,
+                                            kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                            kernel_initializer=initializer,
+                                            use_bias=True)
+            if use_norm:
+                one_ffnn = Norm_wrapper(one_ffnn, norm='layer')
+            if use_residual:
+                one_ffnn = Residual_wrapper(one_ffnn)
+            self.ffnn.append(one_ffnn)
+
+    def call(self, inputs, timesteps):
+        sognal = inputs
+        for layer in range(self.num_layers):
+            signal = self.ffnn[layer](signal)
+        signal = signal[:,-timesteps:,:]
+        return signal
+
+########################################################################################################################
 class ForecasterModel(tf.keras.Model):
     def __init__(self,
                 output_shape,
                 encoder_specs,
                 decoder_specs,
-                model_type='LSTM'
+                model_type='LSTM',
+                history_and_features = True,
                 ):
         super(ForecasterModel, self).__init__()
         self.out_steps = output_shape[-2]
+        self.history_and_features = history_and_features
+        self.model_type = model_type
 
         # identify the model type and assemble accordingly
         if model_type == 'LSTM-Generator':
             self.encoder = block_LSTM(**encoder_specs)
             self.decoder = decoder_LSTM_block(**decoder_specs)
-        elif model_type == 'TCN-Generator':
-            self.encoder = attentive_TCN(**encoder_specs)
-            self.decoder = generator_Dense_block(**decoder_specs)
         elif model_type == 'CNN-Generator':
             self.encoder = CNN_encoder(**encoder_specs)
             self.decoder = CNN_decoder(**decoder_specs)
-        elif model_type == 'FFNN-Generator':
+        elif model_type == 'FFNN-Generator' and history_and_features:
             self.encoder = FFNN_encoder(**encoder_specs)
+            self.decoder = FFNN_decoder(**decoder_specs)
+        elif model_type == 'FFNN-Generator' and not history_and_features:
+            self.decoder = FFNN_decoder(**decoder_specs)
+        elif model_type == 'FFNN-LSTM-Generator' and history_and_features:
+            self.encoder = FFNN_encoder(**encoder_specs)
+            self.decoder = FFNN_LSTM_decoder(**decoder_specs)
+        elif model_type == 'FFNN-LSTM-Generator' and not history_and_features:
+            self.decoder = FFNN_LSTM_decoder(**decoder_specs)
+        elif model_type == 'Transformer-Generator':
+            self.encoder = Transformer_encoder(**encoder_specs)
             self.decoder = FFNN_decoder(**decoder_specs)
 
     def call(self, inputs,):
@@ -1703,15 +1960,61 @@ class ForecasterModel(tf.keras.Model):
         support_input = inputs['support_input']
         history_input = inputs['history_input']
         teacher = inputs['teacher'][:, 1:, :]
-        #
         # print(support_input, history_input, teacher)
         # run the model
-        encoder_features = self.encoder(support_input)
-        forecast = self.decoder(history_input,
-                                attention_value=encoder_features,
-                                timesteps=self.out_steps,
-                                teacher=teacher)
+        if self.history_and_features:
+            encoder_features = self.encoder(support_input)
+            forecast = self.decoder(history_input,
+                                    attention_value=encoder_features,
+                                    timesteps=self.out_steps,
+                                    teacher=teacher)
+        else:
+            forecast = self.decoder(history_input,
+                                    attention_value=None,
+                                    timesteps=self.out_steps,
+                                    teacher=teacher)
         return forecast
+
+class S2SModel(tf.keras.Model):
+    def __init__(self,
+                output_shape,
+                encoder_specs,
+                decoder_specs,
+                model_type,
+                ):
+        super().__init__()
+        self.out_steps = output_shape[-2]
+        self.model_type = model_type
+
+        if model_type == 'E-D':
+            self.encoder = block_LSTM(**encoder_specs)
+            self.decoder = decoder_LSTM_block(**decoder_specs)
+        elif model_type == 'Transformer':
+            self.encoder = Transformer_encoder(**encoder_specs)
+            self.decoder = FFNN_decoder(**decoder_specs)
+
+    def call(self, inputs):
+        # undictionary inputs (TF doesn't let you have multiple inputs)
+        nwp_pv_input = inputs['nwp_pv_input']
+        teacher = inputs['teacher']
+        decoder_input = tf.expand_dims(teacher[:,0,:], axis=1)
+
+        if self.model_type == 'E-D':
+            encoder_outputs, encoder_states = self.encoder(nwp_pv_input)
+            forecast = self.decoder(decoder_input,
+                                    teacher=teacher[:,1:,:],
+                                    decoder_init_state=encoder_states,
+                                    attention_value=encoder_outputs,
+                                    timesteps=self.out_steps)
+        elif self.model_type == 'Transformer':
+            encoder_outputs = self.encoder(nwp_pv_input)
+            forecast = self.decoder(decoder_input, 
+                                    attention_value=encoder_outputs,
+                                    timesteps=self.out_steps,
+                                    teacher=teacher[:,1:,:])
+
+        return forecast
+
 
 ########################################################################################################################
 

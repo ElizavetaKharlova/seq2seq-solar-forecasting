@@ -43,13 +43,15 @@ class Model_Container():
         self.raw_nwp_shape = [int( (self.sw_len_samples + self.fc_len_samples)/self.nwp_downsampling_rate ), self.nwp_dims]
         self.pdf_history_shape = [int(self.sw_len_samples/(self.fc_len_samples/self.fc_steps)), self.fc_tiles]
 
-        if model_kwargs['model_type'] == 'Encoder-Decoder' or model_kwargs['model_type'] == 'E-D' or 'MiMo' in model_kwargs['model_type'] or 'E-D' in model_kwargs['model_type']:
-
+        if model_kwargs['model_type'] == 'Encoder-Decoder' or model_kwargs['model_type'] == 'E-D' or 'MiMo' in model_kwargs['model_type'] or 'E-D' in model_kwargs['model_type'] or model_kwargs['model_type'] == 'Transformer':
+            
+            self.len_nwp = int(sw_len_days*24*60/15)
+            self.len_history = int((sw_len_days-1)*24)
             model_kwargs['input_shape'] = [int(self.sw_len_samples / self.nwp_downsampling_rate),
                                        self.raw_nwp_shape[1] + 1]
             # TODO: this is not required, only becasue it asks for it later
-            model_kwargs['support_shape'] = [int(3*24*60/15), self.dataset_info['nwp_dims']]
-            model_kwargs['history_shape'] = [int(2*24), self.fc_tiles]
+            model_kwargs['support_shape'] = [self.len_nwp, self.dataset_info['nwp_dims']]
+            model_kwargs['history_shape'] = [self.len_history, self.fc_tiles]
 
         elif 'MiMo' in model_kwargs['model_type']:
             model_kwargs['input_shape'] = [int(self.sw_len_samples / self.nwp_downsampling_rate),
@@ -111,7 +113,9 @@ class Model_Container():
                       decoder_max_length_sequence=None,
                       decoder_receptive_window=None,
                       decoder_self_attention=False,
+                      decoder_attention=False,
                       decoder_transformer_blocks=1,
+                      target_size=None,
                       ):
 
         if self.forecast_mode == 'pdf':
@@ -168,27 +172,63 @@ class Model_Container():
                                mode=mode)
 
         elif model_type == 'Encoder-Decoder' or model_type == 'E-D':
-            from Building_Blocks import block_LSTM, decoder_LSTM_block
-            from Models import S2S_model
+            self.target_size = target_size
             print('building E-D')
-            common_specs = {'units': encoder_units,
+            encoder_specs = {'units': encoder_units,
+                            'num_encoder_blocks': encoder_transformer_blocks,
                             'use_dropout': use_dropout,
                             'dropout_rate': dropout_rate,
-                            'use_norm': use_norm, 'use_hw': use_hw, 'use_residual': use_residual,
+                            'use_norm': use_norm,
+                            'use_hw': use_hw,
+                            'use_residual': use_residual,
+                            'L1': L1, 'L2': L2}
+            decoder_specs = {'units': decoder_units,
+                            'num_decoder_blocks': decoder_transformer_blocks,
+                            'use_dropout': use_dropout,
+                            'dropout_rate': dropout_rate,
+                            'use_norm': use_norm,
+                            'use_hw': use_hw,
+                            'use_residual': use_residual,
                             'L1': L1, 'L2': L2,
-                            }
+                            'use_attention': use_attention,
+                            'attention_heads': attention_heads,
+                            'projection_layer': projection_block}
 
-            encoder_specs = copy.deepcopy(common_specs)
-            encoder = block_LSTM(**encoder_specs)
-            decoder_specs = copy.deepcopy(common_specs)
-            decoder_specs['use_attention'] = use_attention
-            decoder_specs['attention_heads'] = attention_heads
-            decoder_specs['projection_layer'] = projection_block
-            decoder = decoder_LSTM_block(**decoder_specs)
-            self.model = S2S_model(encoder_block=encoder,
-                                   decoder_block=decoder,
-                                   input_shape=input_shape,
-                                   output_shape=[self.target_shape[0], 1] if self.forecast_mode =='ev' else self.target_shape)
+            from Building_Blocks import S2SModel
+            self.model = S2SModel(output_shape=self.target_shape,
+                                encoder_specs=encoder_specs,
+                                decoder_specs=decoder_specs,
+                                model_type=model_type)
+                            
+        elif model_type == 'Transformer':
+            self.target_size = target_size
+            print('Transformer')
+            decoder_specs = {'num_initial_features': decoder_units,
+                             'max_length_sequence_history': decoder_max_length_sequence,
+                             'max_length_sequence_supplement': encoder_max_length_sequence,
+                             'attention_heads': attention_heads,
+                             'use_residual': use_residual,
+                             'use_norm': use_norm,
+                             'use_dense': use_dense,
+                             'force_relevant_context': force_relevant_context,
+                             'use_self_attention': decoder_self_attention,
+                             'use_attention': decoder_attention,
+                             'transformer_blocks': decoder_transformer_blocks,
+                             'positional_embedding': positional_embedding,
+                             'projection_layer': projection_block}
+            encoder_specs = {'num_initial_features': encoder_units,
+                             'max_length_sequence_supplement': encoder_max_length_sequence,
+                             'use_residual': use_residual,
+                             'use_norm': use_norm,
+                             'attention_heads': attention_heads,
+                             'transformer_blocks': encoder_transformer_blocks,
+                             'positional_embedding': positional_embedding,}
+
+            from Building_Blocks import S2SModel
+            self.model = S2SModel(output_shape=self.target_shape,
+                                encoder_specs=encoder_specs,
+                                decoder_specs=decoder_specs,
+                                model_type=model_type)
 
         elif model_type == 'LSTM-Generator':
             from Building_Blocks import ForecasterModel
@@ -213,6 +253,7 @@ class Model_Container():
                                         model_type='LSTM')
 
         elif model_type=='CNN-Generator':
+            self.target_size = target_size
             decoder_specs = {'num_initial_features': decoder_units,
                              'max_length_sequence': decoder_max_length_sequence,
                              'length_receptive_window': decoder_receptive_window,
@@ -244,6 +285,7 @@ class Model_Container():
                                         decoder_specs=decoder_specs,
                                         model_type=model_type)
         elif model_type == 'FFNN-Generator':
+            self.target_size = target_size
             from Building_Blocks import FFNN_encoder, FFNN_decoder
             # decoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0, projection_layer=None)
             # encoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0
@@ -256,6 +298,7 @@ class Model_Container():
                              'use_dense': use_dense,
                              'force_relevant_context': force_relevant_context,
                              'use_self_attention': decoder_self_attention,
+                             'use_attention': decoder_attention,
                              'transformer_blocks': decoder_transformer_blocks,
                              'positional_embedding': positional_embedding,
                              'projection_layer': projection_block}
@@ -268,12 +311,83 @@ class Model_Container():
                              'attention_heads': attention_heads,
                              'use_self_attention': encoder_self_attention,
                              'transformer_blocks': encoder_transformer_blocks,
-                              'positional_embedding': positional_embedding,}
+                             'positional_embedding': positional_embedding,}
             from Building_Blocks import ForecasterModel
             self.model = ForecasterModel(output_shape=self.target_shape,
                                          encoder_specs=encoder_specs,
                                          decoder_specs=decoder_specs,
-                                         model_type=model_type)
+                                         model_type=model_type,
+                                         history_and_features=decoder_attention)
+
+        elif model_type == 'FFNN-LSTM-Generator':
+            from Building_Blocks import FFNN_encoder, FFNN_decoder
+            self.target_size = target_size
+            # decoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0, projection_layer=None)
+            # encoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0
+            decoder_specs = {'num_initial_features': decoder_units,
+                             'max_length_sequence_history': decoder_max_length_sequence,
+                             'max_length_sequence_supplement': encoder_max_length_sequence,
+                             'attention_heads': attention_heads,
+                             'use_residual': use_residual,
+                             'use_norm': use_norm,
+                             'use_dense': use_dense,
+                             'force_relevant_context': force_relevant_context,
+                             'use_self_attention': decoder_self_attention,
+                             'use_attention': decoder_attention,
+                             'transformer_blocks': decoder_transformer_blocks,
+                             'positional_embedding': positional_embedding,
+                             'projection_layer': projection_block}
+            encoder_specs = {'num_initial_features': encoder_units,
+                             'max_length_sequence_supplement': encoder_max_length_sequence,
+                             'use_residual': use_residual,
+                             'use_norm': use_norm,
+                             'use_dense': use_dense,
+                             'force_relevant_context': force_relevant_context,
+                             'attention_heads': attention_heads,
+                             'use_self_attention': encoder_self_attention,
+                             'transformer_blocks': encoder_transformer_blocks,
+                             'positional_embedding': positional_embedding,}
+            from Building_Blocks import ForecasterModel
+            self.model = ForecasterModel(output_shape=self.target_shape,
+                                         encoder_specs=encoder_specs,
+                                         decoder_specs=decoder_specs,
+                                         model_type=model_type,
+                                         history_and_features=decoder_attention)
+
+        elif model_type == 'Transformer-Generator':
+            from Building_Blocks import FFNN_encoder, FFNN_decoder
+            self.target_size = target_size
+            # decoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0, projection_layer=None)
+            # encoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0
+            decoder_specs = {'num_initial_features': decoder_units,
+                             'max_length_sequence_history': decoder_max_length_sequence,
+                             'max_length_sequence_supplement': encoder_max_length_sequence,
+                             'attention_heads': attention_heads,
+                             'use_residual': use_residual,
+                             'use_norm': use_norm,
+                             'use_dense': use_dense,
+                             'force_relevant_context': force_relevant_context,
+                             'use_self_attention': decoder_self_attention,
+                             'use_attention': decoder_attention,
+                             'transformer_blocks': decoder_transformer_blocks,
+                             'positional_embedding': positional_embedding,
+                             'projection_layer': projection_block}
+            encoder_specs = {'num_initial_features': encoder_units,
+                             'max_length_sequence_supplement': encoder_max_length_sequence,
+                             'use_residual': use_residual,
+                             'use_norm': use_norm,
+                            #  'force_relevant_context': force_relevant_context,
+                             'attention_heads': attention_heads,
+                            #  'use_self_attention': encoder_self_attention,
+                             'transformer_blocks': encoder_transformer_blocks,
+                             'positional_embedding': positional_embedding,}
+            from Building_Blocks import ForecasterModel
+            self.model = ForecasterModel(output_shape=self.target_shape,
+                                         encoder_specs=encoder_specs,
+                                         decoder_specs=decoder_specs,
+                                         model_type=model_type,
+                                         history_and_features=decoder_attention)
+
         elif model_type == 'TCN-Generator':
             from Building_Blocks import ForecasterModel
             print('building E-D')
@@ -328,16 +442,22 @@ class Model_Container():
                               history_shape=self.model_kwargs['history_shape'],
                               raw_history_shape=[self.nwp_downsampling_rate, int(self.sw_len_samples/self.nwp_downsampling_rate)],
                               val_target_shape=self.target_shape,
+                              dataset_info=self.dataset_info,
+                              target_size=self.target_size,
                               )
 
         if 'Generator' in self.model_kwargs['model_type']:
             train_set = PV_dataset.pdf_generator_training_dataset
             val_set = PV_dataset.pdf_generator_val_dataset
             test_set = PV_dataset.pdf_generator_test_dataset
+        elif 'E-D' in self.model_kwargs['model_type'] or self.model_kwargs['model_type'] == 'Transformer':
+            train_set = PV_dataset.pdf_s2s_training_dataset
+            val_set = PV_dataset.pdf_s2s_val_dataset
+            test_set = PV_dataset.pdf_s2s_test_dataset
 
         train_steps = PV_dataset.get_train_steps_per_epoch()
         val_steps = PV_dataset.get_val_steps_per_epoch()
-        test_steps = PV_dataset.get_val_steps_per_epoch()
+        test_steps = PV_dataset.get_test_steps_per_epoch()
 
         # Transformer LR schedule, doesnt work .... too fast
         optimizer = tf.keras.optimizers.Adam(CustomSchedule(self.model_kwargs['decoder_units'], warmup_steps=train_steps*6), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
@@ -498,7 +618,9 @@ class dataset_generator_PV():
                  history_shape=None,
                  raw_history_shape=None,
                  train_target_shape=None,
-                 val_target_shape=None):
+                 val_target_shape=None,
+                 dataset_info=None,
+                 target_size=None):
 
         # We keep the training size as large as possible, this means the val size needs to be smaller due to memory thingies!
         self.train_batch_size = train_batch_size
@@ -509,6 +631,8 @@ class dataset_generator_PV():
         self.raw_history_shape = raw_history_shape
         self.train_target_shape = train_target_shape if train_target_shape is not None else self.history_shape
         self.val_target_shape = val_target_shape
+        self.dataset_info = dataset_info
+        self.target_size = target_size
 
         self.flattened_nwp_shape = tf.reduce_prod(self.support_shape).numpy()
         self.flattened_historical_shape = tf.reduce_prod(self.history_shape).numpy()
@@ -537,7 +661,7 @@ class dataset_generator_PV():
         val_list = self.__get_all_tfrecords_in_folder(self.val_folder)
         return int(np.ceil(len(val_list) / self.val_batch_size))
 
-    def get_test_steps_epr_epoch(self):
+    def get_test_steps_per_epoch(self):
         test_list = self.__get_all_tfrecords_in_folder(self.val_folder)
         return int(np.ceil(len(test_list) / self.val_batch_size))
 
@@ -557,6 +681,21 @@ class dataset_generator_PV():
         return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.test_folder),
                                                   batch_size=self.val_batch_size,
                                                   process_sample=self.get_pdf_generator_inference_sample)
+
+    def pdf_s2s_training_dataset(self):
+        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.train_folder),
+                                                     batch_size=self.train_batch_size,
+                                                     process_sample=self.get_s2s_train_sample)
+
+    def pdf_s2s_val_dataset(self):
+        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.val_folder),
+                                                     batch_size=self.val_batch_size,
+                                                     process_sample=self.get_s2s_train_sample)
+
+    def pdf_s2s_test_dataset(self):
+        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.test_folder),
+                                                  batch_size=self.val_batch_size,
+                                                  process_sample=self.get_s2s_train_sample)
 
 
     def get_pdf_generator_inference_sample(self, example):
@@ -598,15 +737,42 @@ class dataset_generator_PV():
                              shape=self.val_target_shape)
 
         target = tf.reshape(tensor=raw_unprocessed_sample['pdf_target'], shape=self.val_target_shape)
-        target = tf.concat([history_pdf[1:,:], target], axis=0)
+        if self.target_size == 'full':
+            target = tf.concat([history_pdf[1:,:], target], axis=0) # for predicting full targets vs. last 24 steps
 
         # ATM sampling last 2days plus forecast day from NWP and last 2 days from history
         return {'support_input': support_data,
                 'history_input': history_pdf,
                 'teacher': teacher}, target
 
-    def get_S2S_train_sample(self, example):
-        pass
+    def get_s2s_train_sample(self, example):
+        
+        features = {'nwp_input': tf.io.FixedLenFeature(self.flattened_nwp_shape, tf.float32),
+                    'raw_historical_input': tf.io.FixedLenFeature(self.raw_history_shape, tf.float32),
+                    # 'pdf_historical_input': tf.io.FixedLenFeature(self.flattened_historical_shape, tf.float32),
+                    'pdf_target': tf.io.FixedLenFeature(self.flattened_val_targets_shape, tf.float32),
+                    'pdf_teacher': tf.io.FixedLenFeature(self.flattened_val_targets_shape, tf.float32),
+                    }
+
+        raw_unprocessed_sample = tf.io.parse_single_example(example, features)
+
+        nwp_inputs = tf.reshape(tensor=raw_unprocessed_sample['nwp_input'], shape=self.support_shape)
+        history = tf.reshape(tensor=raw_unprocessed_sample['raw_historical_input'], shape=self.raw_history_shape)
+        teacher = tf.reshape(tensor=raw_unprocessed_sample['pdf_teacher'],
+                             shape=self.val_target_shape)
+
+        target = tf.reshape(tensor=raw_unprocessed_sample['pdf_target'], shape=self.val_target_shape)
+
+        history = tf.transpose(history,[1,0])
+        history = tf.reduce_mean(history, axis=-1, keepdims=True)
+        nwp_downsampling_rate = self.raw_history_shape[0]
+        fc_len_samples = self.dataset_info['fc_len_samples']
+        nwp_inputs = nwp_inputs[int(fc_len_samples/nwp_downsampling_rate):,:]
+        inputs = tf.concat([nwp_inputs,history], axis=-1)
+
+        # ATM sampling last 2days plus forecast day from NWP and last 2 days from history
+        return {'nwp_pv_input': inputs,
+                'teacher': teacher}, target
 
     def __calculate_expected_value(self, signal, last_output_dim_size):
         indices = tf.range(last_output_dim_size)  # (last_output_dim_size)

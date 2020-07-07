@@ -9,43 +9,60 @@ import tensorflow as tf
 #ToDo: Experiment3 is to check for layer depth in Encoder and Decoder
 
 
-def do_experiment():
+def do_experiment(model_type,
+                exp_name,
+                target_size=None,
+                encoder_units=256,
+                encoder_self_attention=True,
+                encoder_transformer_blocks=1,
+                decoder_units=256,
+                decoder_self_attention=True,
+                decoder_attention=True,
+                decoder_transformer_blocks=3,
+                attention_heads=3,
+                positional_embedding=True,
+                use_residual=True,
+                use_norm=True,
+                ):
     # ToDo: do the dataset one folder up
     #hmmm...
 
-    experiment_name = 'FFNNGen-3x-12H-256-DecoderDropout'
+    experiment_name = exp_name #'FFNNGen-3x-12H-256-NoFeatures'
     sliding_window_length_days = 6
-    model_kwargs = {'model_type': 'FFNN-Generator',
+    model_kwargs = {'model_type': model_type,  #'FFNN-Generator',
                     'forecast_mode': 'pdf',
+                    'target_size': target_size,
 
                     # Architecture Hyperparameters
                     # Encoder:
-                        'encoder_units' :  256,
+                        'encoder_units' : encoder_units,
                         'encoder_receptive_window': 6*4,
-                        'encoder_self_attention': True,
+                        'encoder_self_attention': encoder_self_attention,
                         'encoder_max_length_sequence': 2*sliding_window_length_days * 24 * 4,
+                        'encoder_transformer_blocks': encoder_transformer_blocks,
                     # Decoder:
-                        'decoder_units': 256,
+                        'decoder_units': decoder_units,
                         'decoder_receptive_window': 6,
-                        'decoder_self_attention': True,
-                        'decoder_transformer_blocks': 3,
+                        'decoder_self_attention': decoder_self_attention,
+                        'decoder_attention': decoder_attention,
+                        'decoder_transformer_blocks': decoder_transformer_blocks,
                         'decoder_max_length_sequence': 2*sliding_window_length_days*24,
 
-                    'attention_heads': 12,
+                    'attention_heads': attention_heads,
 
                     # General information flow
-                        'positional_embedding': True,
+                        'positional_embedding': positional_embedding,
                         'force_relevant_context': False,
                         'use_dense': False,
-                        'use_residual': True,
+                        'use_residual': use_residual,
                         # 'downsample': False, 'mode': 'project',
 
                     # Regularization Hyperparameters
                         # 'use_dropout' : False, 'dropout_rate' : 0.0,
                         'L1': 0.0, 'L2': 5*1e-5,
-                        'use_norm' : False,
+                        'use_norm' : use_norm,
                     }
-    train_kwargs = {'batch_size': 2**7}
+    train_kwargs = {'batch_size': 2**5}
     runs = 3
     metrics = {}
     for run in range(runs):
@@ -143,4 +160,157 @@ def __plot_training_curves(metrics, experiment_name):
             plt.savefig(experiment_name, dpi=500, format='pdf')
             plt.show()
 
-do_experiment()
+#########################################################################################################################
+# Perform experiments. 
+# TODO: consider doing parameter changes for same models. 
+
+experiments = []
+
+# LSTM encoder-decoder with attention.
+experiments.append({'model_type': 'E-D',
+                    'exp_name': 'S2S-3x-3H-256',
+                    'encoder_units':256,
+                    'encoder_transformer_blocks': 3,
+                    'decoder_units': 256,
+                    'decoder_transformer_blocks': 3,
+                    'attention_heads': 3,
+                    })
+
+# Classic Transformer.
+experiments.append({'model_type': 'Transformer',
+                    'exp_name': 'Transformer-3x-12H-256',
+                    'encoder_units': 256,
+                     'encoder_self_attention': True,
+                    'encoder_transformer_blocks': 3,
+                    'decoder_units': 256,
+                    'decoder_self_attention': True,
+                    'decoder_attention': True,
+                    'decoder_transformer_blocks':3,
+                    'attention_heads': 12,
+                    'positional_embedding': True,
+                    'use_residual': True,
+                    'use_norm': True,})
+
+# Transformer encoder + generator.
+experiments.append({'model_type': 'Transformer-Generator',
+                    'exp_name': 'Transformer-Gen-3x-12H-256',
+                    # 'target_size': 'full', # set for full target case
+                    'encoder_units': 256,
+                    'encoder_self_attention': True,
+                    'encoder_transformer_blocks': 3,
+                    'decoder_units': 256,
+                    'decoder_self_attention': True,
+                    'decoder_attention': True,
+                    'decoder_transformer_blocks':3,
+                    'attention_heads': 12,
+                    'positional_embedding': True,
+                    'use_residual': True,
+                    'use_norm': True,})
+
+# Transformer encoder + generator with full targets
+experiments.append({'model_type': 'Transformer-Generator',
+                    'exp_name': 'Transformer-Gen-3x-12H-256-full-targets',
+                    'target_size': 'full', # set for full target case
+                    'encoder_units': 256,
+                    'encoder_self_attention': True,
+                    'encoder_transformer_blocks': 3,
+                    'decoder_units': 256,
+                    'decoder_self_attention': True,
+                    'decoder_attention': True,
+                    'decoder_transformer_blocks':3,
+                    'attention_heads': 12,
+                    'positional_embedding': True,
+                    'use_residual': True,
+                    'use_norm': True,})
+
+# Generator with full targets and with NO encoder.
+experiments.append({'model_type': 'FFNN-Generator',
+                    'exp_name': 'FFNNGen-3x-12H-256-NoFeatures-full-targets',
+                    'target_size': 'full', # only set for full target
+                    'encoder_units': 256,
+                    'encoder_self_attention': True,
+                    'encoder_transformer_blocks': 1,
+                    'decoder_units': 256,
+                    'decoder_self_attention': True,
+                    'decoder_attention': False, # this is for no features (aka no encoder)
+                    'decoder_transformer_blocks':3,
+                    'attention_heads': 12,
+                    'positional_embedding': True,
+                    'use_residual': True,
+                    'use_norm': True,
+                    })
+
+# Generator with LSTM instead of SA and full targets.
+experiments.append({'model_type': 'FFNN-LSTM-Generator-full-targets',
+                    'exp_name': 'FFNN-LSTM-Gen-3x-3H-256',
+                    'target_size': 'full', # only set for full target
+                    'encoder_units': 256,
+                    'encoder_self_attention': True,
+                    'encoder_transformer_blocks': 1,
+                    'decoder_units': 256,
+                    'decoder_self_attention': True,
+                    'decoder_attention': True,
+                    'decoder_transformer_blocks': 3,
+                    'attention_heads': 3,
+                    'positional_embedding': True,
+                    'use_residual': True,
+                    'use_norm': True,
+                    })
+
+# Generator with LSTM instead of SA and NO encoder. (full targets)
+experiments.append({'model_type': 'FFNN-LSTM-Generator-NoFeatures-full-targets',
+                    'exp_name': 'FFNN-LSTM-Gen-3x-3H-256-NoFeatures',
+                    'target_size': 'full', # only set for full target
+                    'encoder_units': 256,
+                    'encoder_self_attention': True,
+                    'encoder_transformer_blocks': 1,
+                    'decoder_units': 256,
+                    'decoder_self_attention': True,
+                    'decoder_attention': False, # no exogenous variables (no encoder)
+                    'decoder_transformer_blocks': 3,
+                    'attention_heads': 3,
+                    'positional_embedding': True,
+                    'use_residual': True,
+                    'use_norm': True,
+                    })
+
+# Generator with 24 step targets.
+experiments.append({'model_type': 'FFNN-Generator',
+                    'exp_name': 'FFNNGen-3x-12H-256',
+                    # 'target_size': 'full', # only set for full target
+                    'encoder_units': 256,
+                     'encoder_self_attention': True,
+                    'encoder_transformer_blocks': 1,
+                    'decoder_units': 256,
+                    'decoder_self_attention': True,
+                    'decoder_attention': True, 
+                    'decoder_transformer_blocks': 3,
+                    'attention_heads': 12,
+                    'positional_embedding': True,
+                    'use_residual': True,
+                    'use_norm': True,
+                    })
+
+# Generator with full targets: supposed to be best!
+experiments.append({'model_type': 'FFNN-Generator',
+                    'exp_name': 'FFNNGen-3x-12H-256-full-targets',
+                    'target_size': 'full', # only set for full target
+                    'encoder_units': 256,
+                     'encoder_self_attention': True,
+                    'encoder_transformer_blocks': 1,
+                    'decoder_units': 256,
+                    'decoder_self_attention': True,
+                    'decoder_attention': True,
+                    'decoder_transformer_blocks': 3,
+                    'attention_heads': 12,
+                    'positional_embedding': True,
+                    'use_residual': True,
+                    'use_norm': True,
+                    })
+
+
+
+# do our experiments
+for exp in range(len(experiments)):
+    model_args = experiments[exp]
+    do_experiment(**model_args)

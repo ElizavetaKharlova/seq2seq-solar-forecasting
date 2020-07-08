@@ -241,8 +241,8 @@ experiments.append({'model_type': 'FFNN-Generator',
                     })
 
 # Generator with LSTM instead of SA and full targets.
-experiments.append({'model_type': 'FFNN-LSTM-Generator-full-targets',
-                    'exp_name': 'FFNN-LSTM-Gen-3x-3H-256',
+experiments.append({'model_type': 'FFNN-LSTM-Generator',
+                    'exp_name': 'FFNN-LSTM-Gen-3x-3H-256-full-targets',
                     'target_size': 'full', # only set for full target
                     'encoder_units': 256,
                     'encoder_self_attention': True,
@@ -258,8 +258,8 @@ experiments.append({'model_type': 'FFNN-LSTM-Generator-full-targets',
                     })
 
 # Generator with LSTM instead of SA and NO encoder. (full targets)
-experiments.append({'model_type': 'FFNN-LSTM-Generator-NoFeatures-full-targets',
-                    'exp_name': 'FFNN-LSTM-Gen-3x-3H-256-NoFeatures',
+experiments.append({'model_type': 'FFNN-LSTM-Generator',
+                    'exp_name': 'FFNN-LSTM-Gen-3x-3H-256-NoFeatures-full-targets',
                     'target_size': 'full', # only set for full target
                     'encoder_units': 256,
                     'encoder_self_attention': True,

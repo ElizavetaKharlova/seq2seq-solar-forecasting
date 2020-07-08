@@ -301,7 +301,8 @@ class Model_Container():
                              'use_attention': decoder_attention,
                              'transformer_blocks': decoder_transformer_blocks,
                              'positional_embedding': positional_embedding,
-                             'projection_layer': projection_block}
+                             'projection_layer': projection_block,
+                             'target_size': target_size}
             encoder_specs = {'num_initial_features': encoder_units,
                              'max_length_sequence_supplement': encoder_max_length_sequence,
                              'use_residual': use_residual,
@@ -336,7 +337,8 @@ class Model_Container():
                              'use_attention': decoder_attention,
                              'transformer_blocks': decoder_transformer_blocks,
                              'positional_embedding': positional_embedding,
-                             'projection_layer': projection_block}
+                             'projection_layer': projection_block,
+                             'target_size': target_size}
             encoder_specs = {'num_initial_features': encoder_units,
                              'max_length_sequence_supplement': encoder_max_length_sequence,
                              'use_residual': use_residual,
@@ -371,7 +373,8 @@ class Model_Container():
                              'use_attention': decoder_attention,
                              'transformer_blocks': decoder_transformer_blocks,
                              'positional_embedding': positional_embedding,
-                             'projection_layer': projection_block}
+                             'projection_layer': projection_block,
+                             'target_size': target_size}
             encoder_specs = {'num_initial_features': encoder_units,
                              'max_length_sequence_supplement': encoder_max_length_sequence,
                              'use_residual': use_residual,

@@ -238,8 +238,8 @@ class LSTM_Residual_wrapper(tf.keras.layers.Wrapper):
         super(LSTM_Residual_wrapper, self).__init__(layer)
         # self.transform_gate = tf.keras.layers.TimeDistributed(self.transform_gate )
 
-    def call(self, input, initial_states=None):
-        output, state_h, state_c = self.layer(input, initial_states)
+    def call(self, input, initial_state=None):
+        output, state_h, state_c = self.layer(input, initial_state=initial_state)
         output = output+input
         return output, state_h, state_c
 
@@ -268,8 +268,8 @@ class LSTM_Norm_wrapper(tf.keras.layers.Wrapper):
         else:
             print('wrong norm type supplied to NormWrapper, supplied', norm_type)
 
-    def call(self, input, initial_state):
-        layer_out, state_h, state_c = self.layer(input, initial_state)
+    def call(self, input, initial_state=None):
+        layer_out, state_h, state_c = self.layer(input, initial_state=initial_state)
         layer_out = self.norm(layer_out)
         return layer_out, state_h, state_c
 
@@ -327,9 +327,9 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
                                                       bias_initializer='zeros')
 
                 # do we wanna highway
-                if self.use_hw:
-                    one_lstm = LSTM_Highway_wrapper(one_lstm)
-                elif self.use_residuals:
+                # if self.use_hw:
+                #     one_lstm = LSTM_Highway_wrapper(one_lstm)
+                if self.use_residuals:
                     one_lstm = LSTM_Residual_wrapper(one_lstm)
                 # do we wanna norm
                 if self.use_norm:
@@ -1410,8 +1410,10 @@ class FFNN_decoder(tf.keras.layers.Layer):
                  transformer_blocks=1,
                  use_self_attention=False,
                  use_attention=True,
+                 target_size=None,
                  ):
         super(FFNN_decoder, self).__init__()
+        self.target_size = target_size
         self.projection_layer = projection_layer
 
         self.pseudo_embedding = tf.keras.layers.Dense(num_initial_features,
@@ -1494,7 +1496,8 @@ class FFNN_decoder(tf.keras.layers.Layer):
                 signal = block['transform'](signal)
 
         # For predicting full targets vs. last 24 steps
-        # signal = signal[:, -timesteps:, :]
+        if not self.target_size == 'full':
+            signal = signal[:, -timesteps:, :]
         forecast = self.projection_layer(signal)
         return forecast
 
@@ -1773,8 +1776,10 @@ class FFNN_LSTM_decoder(tf.keras.layers.Layer):
                  transformer_blocks=1,
                  use_self_attention=False,
                  use_attention=True,
+                 target_size=None
                  ):
         super(FFNN_LSTM_decoder, self).__init__()
+        self.target_size = target_size
         self.projection_layer = projection_layer
 
         self.pseudo_embedding = tf.keras.layers.Dense(num_initial_features,
@@ -1850,7 +1855,8 @@ class FFNN_LSTM_decoder(tf.keras.layers.Layer):
                 signal = block['transform'](signal)
 
         # For predicting full targets vs. last 24 steps
-        # signal = signal[:, -timesteps:, :]
+        if not self.target_size == 'full':
+            signal = signal[:, -timesteps:, :]
         forecast = self.projection_layer(signal)
         return forecast
 

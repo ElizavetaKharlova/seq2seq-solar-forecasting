@@ -476,11 +476,11 @@ class Model_Container():
 
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
-        # callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-        #                                                            patience=10,
-        #                                                            mode='min',
-        #                                                            restore_best_weights=True))
-        callbacks.append( SWA(swa_epoch=5) )
+        callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
+                                                                   patience=10,
+                                                                   mode='min',
+                                                                   restore_best_weights=True))
+        # callbacks.append( SWA(swa_epoch=5) )
         callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,
                                                         write_graph=False,
                                                         #update_freq='epoch',

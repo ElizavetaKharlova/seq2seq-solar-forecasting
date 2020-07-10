@@ -190,7 +190,7 @@ class Model_Container():
                             'use_hw': use_hw,
                             'use_residual': use_residual,
                             'L1': L1, 'L2': L2,
-                            'use_attention': use_attention,
+                            'use_attention': decoder_attention,
                             'attention_heads': attention_heads,
                             'projection_layer': projection_block}
 
@@ -437,7 +437,7 @@ class Model_Container():
     def __train_model(self):
 
         callbacks = []
-        epochs = 100
+        epochs = 150
         # ToDo: change back to '/train'
         PV_dataset = dataset_generator_PV(dataset_path=self.dataset_path,
                               train_batch_size=self.train_kwargs['batch_size'],
@@ -463,7 +463,7 @@ class Model_Container():
         test_steps = PV_dataset.get_test_steps_per_epoch()
 
         # Transformer LR schedule, doesnt work .... too fast
-        optimizer = tf.keras.optimizers.Adam(CustomSchedule(self.model_kwargs['decoder_units'], warmup_steps=train_steps*6), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        optimizer = tf.keras.optimizers.Adam(CustomSchedule(self.model_kwargs['decoder_units'], warmup_steps=train_steps*8), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
         loss, metrics = self.get_losses_and_metrics()
         # learning_rate = np.sqrt(1/train_steps)
         # optimizer = tf.keras.optimizers.SGD(learning_rate = learning_rate,
@@ -476,11 +476,11 @@ class Model_Container():
 
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
-        callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=10,
-                                                                   mode='min',
-                                                                   restore_best_weights=True))
-        # callbacks.append( SWA(swa_epoch=5) )
+        # callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
+        #                                                            patience=10,
+        #                                                            mode='min',
+        #                                                            restore_best_weights=True))
+        callbacks.append( SWA(swa_epoch=5) )
         callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,
                                                         write_graph=False,
                                                         #update_freq='epoch',
@@ -724,7 +724,6 @@ class dataset_generator_PV():
 
     def get_pdf_generator_train_sample(self, example):
 
-
         features = {'nwp_input': tf.io.FixedLenFeature(self.flattened_nwp_shape, tf.float32),
                     'pdf_historical_input': tf.io.FixedLenFeature(self.flattened_historical_shape, tf.float32),
                     'pdf_target': tf.io.FixedLenFeature(self.flattened_val_targets_shape, tf.float32),
@@ -797,53 +796,3 @@ class dataset_generator_PV():
         dataset = dataset.batch(batch_size, drop_remainder=False)
         dataset = dataset.prefetch(3)
         return dataset
-
-    # def __read_and_process_normal_samples(self, example):
-    #     # 'nwp_input':
-    #     # 'raw_historical_input':
-    #     # 'raw_teacher':
-    #     # 'raw_target':
-    #     # 'pdf_historical_input':
-    #     # 'pdf_teacher':
-    #     # 'pdf_target':
-    #
-    #     flattened_nwp_shape = np.multiply(self.support_shape)
-    #     pdf_output_shape = np.multiply(self.val_target_shape)
-    #     flattened_historical_shape = np.multiply(self.history_shape)
-    #     flattened_val_targets_shape = np.multiply(self.val_target_shape)
-    #     flattened_raw_history_shape =np.multiply(self.raw_history_shape)
-    #     ev_output_shape = self.val_target_shape
-    #
-    #     features = {'nwp_input': tf.io.FixedLenFeature(flattened_nwp_shape, tf.float32),
-    #                 'raw_historical_input': tf.io.FixedLenFeature(flattened_raw_history_shape, tf.float32),
-    #                 'pdf_historical_input': tf.io.FixedLenFeature(flattened_historical_shape, tf.float32),
-    #                 'pdf_target': tf.io.FixedLenFeature(flattened_val_targets_shape, tf.float32),
-    #                 'pdf_teacher': tf.io.FixedLenFeature(flattened_val_targets_shape, tf.float32),
-    #                 #'raw_target': tf.io.FixedLenFeature(flattened_ev_output_shape, tf.float32),
-    #                 #'raw_teacher': tf.io.FixedLenFeature(flattened_ev_output_shape, tf.float32),
-    #                 }
-    #
-    #     unadjusted_example = tf.io.parse_single_example(example, features)
-    #     support_data = tf.reshape(tensor=unadjusted_example['nwp_input'], shape=self.support_shape)
-    #     teacher = tf.reshape(tensor=unadjusted_example['pdf_teacher'],
-    #                          shape=pdf_output_shape)
-    #     target = tf.reshape(tensor=unadjusted_example['pdf_target'], shape=pdf_output_shape)
-    #     history_pdf = tf.reshape(tensor=unadjusted_example['pdf_historical_input'],
-    #                              shape=self.pdf_history_shape)
-    #
-    #     if self.forecast_mode == 'ev':
-    #         target = self.__calculate_expected_value(target, pdf_output_shape[-1])
-    #         target = target * self.dataset_info['normalizer_value']
-    #         teacher = self.__calculate_expected_value(teacher, pdf_output_shape[-1])
-    #         teacher = teacher * self.dataset_info['normalizer_value']
-    #
-    #
-    #     history_pv = tf.reshape(tensor=unadjusted_example['raw_historical_input'], shape=self.raw_history_shape)
-    #     history_pv = tf.transpose(history_pv, [1,0])
-    #     history_pv = tf.reduce_mean(history_pv, axis=-1, keepdims=True)
-    #     nwp_inputs = support_data[int(self.fc_len_samples/self.nwp_downsampling_rate):,:]
-    #     inputs =tf.concat([nwp_inputs, history_pv], axis=-1)
-    #     if 'MiMo' in self.model_kwargs['model_type']:
-    #         return inputs, target
-    #     else:
-    #         return {'encoder_inputs': inputs, 'teacher_inputs': teacher}, target

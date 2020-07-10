@@ -176,137 +176,137 @@ experiments.append({'model_type': 'E-D',
                     'attention_heads': 3,
                     })
 
-# Classic Transformer.
-experiments.append({'model_type': 'Transformer',
-                    'exp_name': 'Transformer-3x-12H-256',
-                    'encoder_units': 256,
-                     'encoder_self_attention': True,
-                    'encoder_transformer_blocks': 3,
-                    'decoder_units': 256,
-                    'decoder_self_attention': True,
-                    'decoder_attention': True,
-                    'decoder_transformer_blocks':3,
-                    'attention_heads': 12,
-                    'positional_embedding': True,
-                    'use_residual': True,
-                    'use_norm': True,})
-
-# Transformer encoder + generator.
-experiments.append({'model_type': 'Transformer-Generator',
-                    'exp_name': 'Transformer-Gen-3x-12H-256',
-                    # 'target_size': 'full', # set for full target case
-                    'encoder_units': 256,
-                    'encoder_self_attention': True,
-                    'encoder_transformer_blocks': 3,
-                    'decoder_units': 256,
-                    'decoder_self_attention': True,
-                    'decoder_attention': True,
-                    'decoder_transformer_blocks':3,
-                    'attention_heads': 12,
-                    'positional_embedding': True,
-                    'use_residual': True,
-                    'use_norm': True,})
-
-# Transformer encoder + generator with full targets
-experiments.append({'model_type': 'Transformer-Generator',
-                    'exp_name': 'Transformer-Gen-3x-12H-256-full-targets',
-                    'target_size': 'full', # set for full target case
-                    'encoder_units': 256,
-                    'encoder_self_attention': True,
-                    'encoder_transformer_blocks': 3,
-                    'decoder_units': 256,
-                    'decoder_self_attention': True,
-                    'decoder_attention': True,
-                    'decoder_transformer_blocks':3,
-                    'attention_heads': 12,
-                    'positional_embedding': True,
-                    'use_residual': True,
-                    'use_norm': True,})
-
-# Generator with full targets and with NO encoder.
-experiments.append({'model_type': 'FFNN-Generator',
-                    'exp_name': 'FFNNGen-3x-12H-256-NoFeatures-full-targets',
-                    'target_size': 'full', # only set for full target
-                    'encoder_units': 256,
-                    'encoder_self_attention': True,
-                    'encoder_transformer_blocks': 1,
-                    'decoder_units': 256,
-                    'decoder_self_attention': True,
-                    'decoder_attention': False, # this is for no features (aka no encoder)
-                    'decoder_transformer_blocks':3,
-                    'attention_heads': 12,
-                    'positional_embedding': True,
-                    'use_residual': True,
-                    'use_norm': True,
-                    })
-
-# Generator with LSTM instead of SA and full targets.
-experiments.append({'model_type': 'FFNN-LSTM-Generator',
-                    'exp_name': 'FFNN-LSTM-Gen-3x-3H-256-full-targets',
-                    'target_size': 'full', # only set for full target
-                    'encoder_units': 256,
-                    'encoder_self_attention': True,
-                    'encoder_transformer_blocks': 1,
-                    'decoder_units': 256,
-                    'decoder_self_attention': True,
-                    'decoder_attention': True,
-                    'decoder_transformer_blocks': 3,
-                    'attention_heads': 3,
-                    'positional_embedding': True,
-                    'use_residual': True,
-                    'use_norm': True,
-                    })
-
-# Generator with LSTM instead of SA and NO encoder. (full targets)
-experiments.append({'model_type': 'FFNN-LSTM-Generator',
-                    'exp_name': 'FFNN-LSTM-Gen-3x-3H-256-NoFeatures-full-targets',
-                    'target_size': 'full', # only set for full target
-                    'encoder_units': 256,
-                    'encoder_self_attention': True,
-                    'encoder_transformer_blocks': 1,
-                    'decoder_units': 256,
-                    'decoder_self_attention': True,
-                    'decoder_attention': False, # no exogenous variables (no encoder)
-                    'decoder_transformer_blocks': 3,
-                    'attention_heads': 3,
-                    'positional_embedding': True,
-                    'use_residual': True,
-                    'use_norm': True,
-                    })
-
-# Generator with 24 step targets.
-experiments.append({'model_type': 'FFNN-Generator',
-                    'exp_name': 'FFNNGen-3x-12H-256',
-                    # 'target_size': 'full', # only set for full target
-                    'encoder_units': 256,
-                     'encoder_self_attention': True,
-                    'encoder_transformer_blocks': 1,
-                    'decoder_units': 256,
-                    'decoder_self_attention': True,
-                    'decoder_attention': True, 
-                    'decoder_transformer_blocks': 3,
-                    'attention_heads': 12,
-                    'positional_embedding': True,
-                    'use_residual': True,
-                    'use_norm': True,
-                    })
-
-# Generator with full targets: supposed to be best!
-experiments.append({'model_type': 'FFNN-Generator',
-                    'exp_name': 'FFNNGen-3x-12H-256-full-targets',
-                    'target_size': 'full', # only set for full target
-                    'encoder_units': 256,
-                     'encoder_self_attention': True,
-                    'encoder_transformer_blocks': 1,
-                    'decoder_units': 256,
-                    'decoder_self_attention': True,
-                    'decoder_attention': True,
-                    'decoder_transformer_blocks': 3,
-                    'attention_heads': 12,
-                    'positional_embedding': True,
-                    'use_residual': True,
-                    'use_norm': True,
-                    })
+# # Classic Transformer.
+# experiments.append({'model_type': 'Transformer',
+#                     'exp_name': 'Transformer-3x-12H-256',
+#                     'encoder_units': 256,
+#                      'encoder_self_attention': True,
+#                     'encoder_transformer_blocks': 3,
+#                     'decoder_units': 256,
+#                     'decoder_self_attention': True,
+#                     'decoder_attention': True,
+#                     'decoder_transformer_blocks':3,
+#                     'attention_heads': 12,
+#                     'positional_embedding': True,
+#                     'use_residual': True,
+#                     'use_norm': True,})
+#
+# # Transformer encoder + generator.
+# experiments.append({'model_type': 'Transformer-Generator',
+#                     'exp_name': 'Transformer-Gen-3x-12H-256',
+#                     # 'target_size': 'full', # set for full target case
+#                     'encoder_units': 256,
+#                     'encoder_self_attention': True,
+#                     'encoder_transformer_blocks': 3,
+#                     'decoder_units': 256,
+#                     'decoder_self_attention': True,
+#                     'decoder_attention': True,
+#                     'decoder_transformer_blocks':3,
+#                     'attention_heads': 12,
+#                     'positional_embedding': True,
+#                     'use_residual': True,
+#                     'use_norm': True,})
+#
+# # Transformer encoder + generator with full targets
+# experiments.append({'model_type': 'Transformer-Generator',
+#                     'exp_name': 'Transformer-Gen-3x-12H-256-full-targets',
+#                     'target_size': 'full', # set for full target case
+#                     'encoder_units': 256,
+#                     'encoder_self_attention': True,
+#                     'encoder_transformer_blocks': 3,
+#                     'decoder_units': 256,
+#                     'decoder_self_attention': True,
+#                     'decoder_attention': True,
+#                     'decoder_transformer_blocks':3,
+#                     'attention_heads': 12,
+#                     'positional_embedding': True,
+#                     'use_residual': True,
+#                     'use_norm': True,})
+#
+# # Generator with full targets and with NO encoder.
+# experiments.append({'model_type': 'FFNN-Generator',
+#                     'exp_name': 'FFNNGen-3x-12H-256-NoFeatures-full-targets',
+#                     'target_size': 'full', # only set for full target
+#                     'encoder_units': 256,
+#                     'encoder_self_attention': True,
+#                     'encoder_transformer_blocks': 1,
+#                     'decoder_units': 256,
+#                     'decoder_self_attention': True,
+#                     'decoder_attention': False, # this is for no features (aka no encoder)
+#                     'decoder_transformer_blocks':3,
+#                     'attention_heads': 12,
+#                     'positional_embedding': True,
+#                     'use_residual': True,
+#                     'use_norm': True,
+#                     })
+#
+# # Generator with LSTM instead of SA and full targets.
+# experiments.append({'model_type': 'FFNN-LSTM-Generator',
+#                     'exp_name': 'FFNN-LSTM-Gen-3x-3H-256-full-targets',
+#                     'target_size': 'full', # only set for full target
+#                     'encoder_units': 256,
+#                     'encoder_self_attention': True,
+#                     'encoder_transformer_blocks': 1,
+#                     'decoder_units': 256,
+#                     'decoder_self_attention': True,
+#                     'decoder_attention': True,
+#                     'decoder_transformer_blocks': 3,
+#                     'attention_heads': 3,
+#                     'positional_embedding': True,
+#                     'use_residual': True,
+#                     'use_norm': True,
+#                     })
+#
+# # Generator with LSTM instead of SA and NO encoder. (full targets)
+# experiments.append({'model_type': 'FFNN-LSTM-Generator',
+#                     'exp_name': 'FFNN-LSTM-Gen-3x-3H-256-NoFeatures-full-targets',
+#                     'target_size': 'full', # only set for full target
+#                     'encoder_units': 256,
+#                     'encoder_self_attention': True,
+#                     'encoder_transformer_blocks': 1,
+#                     'decoder_units': 256,
+#                     'decoder_self_attention': True,
+#                     'decoder_attention': False, # no exogenous variables (no encoder)
+#                     'decoder_transformer_blocks': 3,
+#                     'attention_heads': 3,
+#                     'positional_embedding': True,
+#                     'use_residual': True,
+#                     'use_norm': True,
+#                     })
+#
+# # Generator with 24 step targets.
+# experiments.append({'model_type': 'FFNN-Generator',
+#                     'exp_name': 'FFNNGen-3x-12H-256',
+#                     # 'target_size': 'full', # only set for full target
+#                     'encoder_units': 256,
+#                      'encoder_self_attention': True,
+#                     'encoder_transformer_blocks': 1,
+#                     'decoder_units': 256,
+#                     'decoder_self_attention': True,
+#                     'decoder_attention': True,
+#                     'decoder_transformer_blocks': 3,
+#                     'attention_heads': 12,
+#                     'positional_embedding': True,
+#                     'use_residual': True,
+#                     'use_norm': True,
+#                     })
+#
+# # Generator with full targets: supposed to be best!
+# experiments.append({'model_type': 'FFNN-Generator',
+#                     'exp_name': 'FFNNGen-3x-12H-256-full-targets',
+#                     'target_size': 'full', # only set for full target
+#                     'encoder_units': 256,
+#                      'encoder_self_attention': True,
+#                     'encoder_transformer_blocks': 1,
+#                     'decoder_units': 256,
+#                     'decoder_self_attention': True,
+#                     'decoder_attention': True,
+#                     'decoder_transformer_blocks': 3,
+#                     'attention_heads': 12,
+#                     'positional_embedding': True,
+#                     'use_residual': True,
+#                     'use_norm': True,
+#                     })
 
 
 

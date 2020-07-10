@@ -270,8 +270,8 @@ class LSTM_Norm_wrapper(tf.keras.layers.Wrapper):
 
     def call(self, input, initial_state=None):
         layer_out, state_h, state_c = self.layer(input, initial_state=initial_state)
-        layer_out = self.norm(layer_out)
-        return layer_out, state_h, state_c
+
+        return self.norm(layer_out) , state_h, state_c
 
 ########################################################################################################################
 
@@ -947,7 +947,6 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                 else:
                     units_per_head =[int(units*attention_squeeze)]*attention_heads
                     attention = multihead_attentive_layer(units_per_head=units_per_head,
-                                                          kernel_size=None,
                                                           output_units=units,
                                                           dropout_rate=dropout_rate,
                                                           use_dropout=use_dropout,
@@ -991,7 +990,7 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
             signal, block_state = self.decoder_blocks[num_block](signal, initial_states=block_state)
 
             if self.use_attention:
-                signal = self.attention_blocks[num_block](signal, value=attention_values)
+                signal = self.attention_blocks[num_block](signal, value=attention_values[-1])
                 # signal = tf.concat([signal, attention_context], axis=-1)
 
             # #ToDO: Tensorflow ragged tensors
@@ -1045,7 +1044,7 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                 this_step_states.append(block_state[0])
 
                 if self.use_attention:
-                    signal = self.attention_blocks[num_block](signal, value=attention_values)
+                    signal = self.attention_blocks[num_block](signal, value=attention_values[-1])
                     # signal = tf.concat([signal, attention_context], axis=-1)
 
             last_step_states = this_step_states

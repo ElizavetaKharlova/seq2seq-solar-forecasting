@@ -993,62 +993,43 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                 signal = self.attention_blocks[num_block](signal, value=attention_values[-1])
                 # signal = tf.concat([signal, attention_context], axis=-1)
 
-            # #ToDO: Tensorflow ragged tensors
-            # for step in range(num_steps):
-            #     signal_step = signal[:,step,:]
-            #     signal_step = tf.expand_dims(signal_step, axis=1)
-            #     signal_step, block_state = self.decoder_blocks[num_block](signal_step, initial_states=block_state)
-            #     print('.')
-            #
-            #     concat_states = tf.concat(block_state[0][-1], axis=-1)
-            #     concat_states = tf.expand_dims(concat_states, axis=1)
-            #     states_history = tf.concat([states_history, concat_states], axis=1)
-            #     out = tf.concat([out, signal_step], axis=1)
-            #
-            # signal = out
-            # if self.use_attention:
-            #     # attention value is the output of the encoder with no states
-            #     attention_context = self.attention_blocks[num_block](states_history, value=attention_value[num_block])
-            #     signal = tf.concat([signal, attention_context], axis=-1)
-
         return signal
 
     def self_recurrent_call(self, prev_history, decoder_init_state, attention_values, timesteps):
         decoder_state = decoder_init_state  # [[[state_h, state_c]]] #(blocks, layers_in_block, 2)
-        prev_history = self.transform_layer(prev_history)
-
         for timestep in range(timesteps + prev_history.shape[1] - 1):
             if timestep < prev_history.shape[1]:
                 input = tf.expand_dims(prev_history[:,timestep,:], axis=1)
                 decoder_out, decoder_state = self.decode_stepwise(input, decoder_state, attention_values)
                 if timestep == prev_history.shape[1] - 1:
-                    forecast = decoder_out #self.projection_layer(decoder_out)
+                    forecast = self.projection_layer(decoder_out) #self.projection_layer(decoder_out)
             else:
                 input = tf.expand_dims(forecast[:, -1, :], axis=1)
+                # input = forecast[:,-1:,:]
                 decoder_out, decoder_state = self.decode_stepwise(input, decoder_state, attention_values)
-                forecast = tf.concat([forecast, decoder_out], axis=1) #self.projection_layer(decoder_out)], axis=1)
+                forecast = tf.concat([forecast, self.projection_layer(decoder_out)], axis=1) #self.projection_layer(decoder_out)], axis=1)
 
-        forecast = self.projection_layer(forecast)
+        # forecast = self.projection_layer(forecast)
         return forecast
 
     def decode_stepwise(self, input, last_step_states, attention_values):
-            # attention layers and assign those to the decoder states later.
-            signal = input
+        # attention layers and assign those to the decoder states later.
+        signal = input
+        signal = self.transform_layer(signal)
+        this_step_states = []
+        for num_block in range(len(self.decoder_blocks)):
+            block_state = [last_step_states[num_block]] if last_step_states else None
+            signal, block_state = self.decoder_blocks[num_block](signal, 
+                                                                initial_states=block_state,
+                                                                )
+            this_step_states.append(block_state[0])
 
-            this_step_states = []
-            for num_block in range(len(self.decoder_blocks)):
-                    
-                signal, block_state = self.decoder_blocks[num_block](signal, 
-                                                                    initial_states=[last_step_states[num_block]] if last_step_states else None,
-                                                                    )
-                this_step_states.append(block_state[0])
-
-                if self.use_attention:
-                    signal = self.attention_blocks[num_block](signal, value=attention_values[-1])
+            if self.use_attention:
+                signal = self.attention_blocks[num_block](signal, value=attention_values[-1])
                     # signal = tf.concat([signal, attention_context], axis=-1)
 
-            last_step_states = this_step_states
-            return signal, last_step_states
+        last_step_states = this_step_states
+        return signal, last_step_states
 
 class classic_attn_decoder_LSTM_block():
     def __init__(self,

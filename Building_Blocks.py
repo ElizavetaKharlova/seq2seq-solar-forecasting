@@ -1849,7 +1849,7 @@ class FFNN_LSTM_decoder(tf.keras.layers.Layer):
             signal = self.pseudo_embedding(input_signal)
 
             if step == 0:
-                buffers = []
+                buffers = [] # history + forecast
 
             for num_block in range(len(self.transformer)):
                 block = self.transformer[num_block]
@@ -1862,7 +1862,7 @@ class FFNN_LSTM_decoder(tf.keras.layers.Layer):
                     else:
                         query = signal[:,-1:,:]
                         buffers[num_block] = tf.concat([buffers[num_block], query], axis=1)
-                        signal, states = block['lstm'](buffers[num_block]) # try just passing signal to it
+                        signal, states = block['lstm'](signal) #(buffers[num_block]) # try just passing signal to it
 
                 if 'attention' in block:
                     signal = block['attention'](signal, attention_value)

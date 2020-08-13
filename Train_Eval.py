@@ -172,7 +172,6 @@ class Model_Container():
                                mode=mode)
 
         elif model_type == 'Encoder-Decoder' or model_type == 'E-D':
-            self.target_size = target_size
             print('building E-D')
             encoder_specs = {'units': encoder_units,
                             'num_encoder_blocks': encoder_transformer_blocks,
@@ -201,7 +200,6 @@ class Model_Container():
                                 model_type=model_type)
                             
         elif model_type == 'Transformer':
-            self.target_size = target_size
             print('Transformer')
             decoder_specs = {'num_initial_features': decoder_units,
                              'max_length_sequence_history': decoder_max_length_sequence,
@@ -253,7 +251,6 @@ class Model_Container():
                                         model_type='LSTM')
 
         elif model_type=='CNN-Generator':
-            self.target_size = target_size
             decoder_specs = {'num_initial_features': decoder_units,
                              'max_length_sequence': decoder_max_length_sequence,
                              'length_receptive_window': decoder_receptive_window,
@@ -285,7 +282,6 @@ class Model_Container():
                                         decoder_specs=decoder_specs,
                                         model_type=model_type)
         elif model_type == 'FFNN-Generator':
-            self.target_size = target_size
             from Building_Blocks import FFNN_encoder, FFNN_decoder
             # decoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0, projection_layer=None)
             # encoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0
@@ -322,7 +318,6 @@ class Model_Container():
 
         elif model_type == 'FFNN-LSTM-Generator':
             from Building_Blocks import FFNN_encoder, FFNN_decoder
-            self.target_size = target_size
             # decoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0, projection_layer=None)
             # encoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0
             decoder_specs = {'num_initial_features': decoder_units,
@@ -358,7 +353,6 @@ class Model_Container():
 
         elif model_type == 'Transformer-Generator':
             from Building_Blocks import FFNN_encoder, FFNN_decoder
-            self.target_size = target_size
             # decoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0, projection_layer=None)
             # encoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0
             decoder_specs = {'num_initial_features': decoder_units,
@@ -390,26 +384,6 @@ class Model_Container():
                                          decoder_specs=decoder_specs,
                                          model_type=model_type,
                                          history_and_features=decoder_attention)
-
-        elif model_type == 'TCN-Generator':
-            from Building_Blocks import ForecasterModel
-            print('building E-D')
-            common_specs = {'units': encoder_units,
-                            'use_dropout': use_dropout,
-                            'dropout_rate': dropout_rate,
-                            'use_norm': use_norm, 
-                            'L1': L1, 'L2': L2,
-                            }
-
-            encoder_specs = copy.deepcopy(common_specs)
-            decoder_specs = copy.deepcopy(common_specs)
-            decoder_specs['attention_heads'] = attention_heads
-            decoder_specs['projection'] = projection_block
-
-            self.model = ForecasterModel(output_shape=self.target_shape,
-                                        encoder_specs=encoder_specs,
-                                        decoder_specs=decoder_specs,
-                                        model_type='TCN')
 
         else:
             print('trying to buid', model_type, 'but failed')
@@ -446,7 +420,7 @@ class Model_Container():
                               raw_history_shape=[self.nwp_downsampling_rate, int(self.sw_len_samples/self.nwp_downsampling_rate)],
                               val_target_shape=self.target_shape,
                               dataset_info=self.dataset_info,
-                              target_size=self.target_size,
+                              target_size=self.model_kwargs['target_size'],
                               )
 
         if 'Generator' in self.model_kwargs['model_type']:

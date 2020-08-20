@@ -1390,10 +1390,10 @@ class FFNN_decoder(tf.keras.layers.Layer):
                  transformer_blocks=1,
                  use_self_attention=False,
                  use_attention=True,
-                 target_size=None,
+                 full_targets=True,
                  ):
         super(FFNN_decoder, self).__init__()
-        self.target_size = target_size
+        self.full_targets = full_targets
         self.projection_layer = projection_layer
 
         self.pseudo_embedding = tf.keras.layers.Dense(num_initial_features,
@@ -1454,10 +1454,11 @@ class FFNN_decoder(tf.keras.layers.Layer):
 
 
     def call(self, history_input, teacher, attention_value, timesteps):
-        return tf.keras.backend.in_train_phase(self.training_call(history_input, teacher, attention_value, timesteps),
+        forecast = tf.keras.backend.in_train_phase(self.training_call(history_input, teacher, attention_value, timesteps),
                                                alt=self.inference_call(history_input, teacher, attention_value,
                                                                        timesteps),
                                                training=tf.keras.backend.learning_phase())
+        return forecast
 
     def training_call(self, history_input, teacher, attention_value, timesteps):
         self.max_length = history_input.shape[1] + teacher.shape[1]
@@ -1476,7 +1477,7 @@ class FFNN_decoder(tf.keras.layers.Layer):
                 signal = block['transform'](signal)
 
         # For predicting full targets vs. last 24 steps
-        if not self.target_size == 'full':
+        if not self.full_targets:
             signal = signal[:, -timesteps:, :]
         forecast = self.projection_layer(signal)
         return forecast
@@ -1756,10 +1757,10 @@ class FFNN_LSTM_decoder(tf.keras.layers.Layer):
                  transformer_blocks=1,
                  use_self_attention=False,
                  use_attention=True,
-                 target_size=None
+                 full_targets=True
                  ):
         super(FFNN_LSTM_decoder, self).__init__()
-        self.target_size = target_size
+        self.full_targets = full_targets
         self.projection_layer = projection_layer
 
         self.pseudo_embedding = tf.keras.layers.Dense(num_initial_features,
@@ -1835,7 +1836,7 @@ class FFNN_LSTM_decoder(tf.keras.layers.Layer):
                 signal = block['transform'](signal)
 
         # For predicting full targets vs. last 24 steps
-        if not self.target_size == 'full':
+        if not self.full_targets:
             signal = signal[:, -timesteps:, :]
         forecast = self.projection_layer(signal)
         return forecast
@@ -1900,7 +1901,7 @@ class FFNN_block(tf.keras.layers.Layer):
             self.ffnn.append(one_ffnn)
 
     def call(self, inputs, timesteps):
-        sognal = inputs
+        signal = inputs
         for layer in range(self.num_layers):
             signal = self.ffnn[layer](signal)
         signal = signal[:,-timesteps:,:]

@@ -85,20 +85,12 @@ def calculate_E_ME(target, prediction):
 
 
 
-def __calculatate_skillscore_baseline(set_targets, sample_spacing_in_mins=5, normalizer_value=1.0, persistent_forecast=None):
+def __calculatate_skillscore_baseline(targets, persistent_forecast=None):
     def __calculate_normalized_expected_value(signal):
         indices = tf.range(signal.shape[-1], dtype=tf.float32)  # (last_output_dim_size)
         weighted_signal = tf.multiply(signal, indices)  # (batches, timesteps, last_output_dim_size)
         expected_value = tf.reduce_sum(weighted_signal, axis=-1)
         return expected_value/signal.shape[-1]
-
-    if persistent_forecast is None:
-        persistency_offset = (24 * 60) / sample_spacing_in_mins
-        persistency_offset = int(persistency_offset)
-        targets = set_targets[persistency_offset:, :, :]
-        persistent_forecast = set_targets[:-persistency_offset, :,:]
-    else:
-        targets = set_targets
 
     targets = tf.cast(targets, dtype=tf.float32)
     persistent_forecast = tf.cast(persistent_forecast, dtype=tf.float32)

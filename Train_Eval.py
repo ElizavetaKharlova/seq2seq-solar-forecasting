@@ -17,7 +17,7 @@ class Model_Container():
                  model_kwargs, #see __build_model
                  train_kwargs, #currently only batch size
                  experiment_name='Default_Name',
-                 sw_len_days=3,
+                 sw_len_days=3, #deprecated
                  try_distribution_across_GPUs=True,
                  ):
         self.dataset_path = dataset_folder
@@ -26,45 +26,27 @@ class Model_Container():
         self.forecast_mode = model_kwargs['forecast_mode']
         self.dataset_info = pickle.load(open(dataset_folder + '/dataset_info.pickle', 'rb'))
         print(self.dataset_info)
-        self.sw_len_samples = self.dataset_info['sw_len_samples']
-        #self.sw_len_samples = int(5 * 24 * 60)
-        self.fc_len_samples = self.dataset_info['fc_len_samples']
-        #self.fc_len_samples = int(1 * 24 * 60)
+
         self.fc_steps = self.dataset_info['fc_steps']
-        #self.fc_steps = 24
         self.fc_tiles = self.dataset_info['fc_tiles']
-        #self.fc_tiles = 40
-        self.nwp_downsampling_rate = self.dataset_info['nwp_downsampling_rate']
-        # self.nwp_downsampling_rate = 15
-        self.nwp_dims = self.dataset_info['nwp_dims']
+        self.nwp_dims = self.dataset_info['support_shape'][-1]
         # self.nwp_dims = 16
         self.teacher_shape = [self.fc_steps, self.fc_tiles]
         self.target_shape = [self.fc_steps, self.fc_tiles]
-        self.raw_nwp_shape = [int( (self.sw_len_samples + self.fc_len_samples)/self.nwp_downsampling_rate ), self.nwp_dims]
-        self.pdf_history_shape = [int(self.sw_len_samples/(self.fc_len_samples/self.fc_steps)), self.fc_tiles]
+        self.pdf_history_shape = self.dataset_info['pdf_history_shape']
+        self.raw_history_shape = self.dataset_info['raw_history_shape']
 
+        model_kwargs['support_shape'] = self.dataset_info['support_shape']
+        model_kwargs['history_shape'] = self.dataset_info['pdf_history_shape']
+        model_kwargs['out_shape'] = self.target_shape
         if model_kwargs['model_type'] == 'Encoder-Decoder' or model_kwargs['model_type'] == 'E-D' or 'MiMo' in model_kwargs['model_type'] or 'E-D' in model_kwargs['model_type'] or model_kwargs['model_type'] == 'Transformer':
-            
-            self.len_nwp = int(sw_len_days*24*60/15)
-            self.len_history = int((sw_len_days-1)*24)
-            model_kwargs['input_shape'] = [int(self.sw_len_samples / self.nwp_downsampling_rate),
-                                       self.raw_nwp_shape[1] + 1]
-            # TODO: this is not required, only becasue it asks for it later
-            model_kwargs['support_shape'] = [self.len_nwp, self.dataset_info['nwp_dims']]
-            model_kwargs['history_shape'] = [self.len_history, self.fc_tiles]
+
+            model_kwargs['input_shape'] = self.dataset_info['support_shape']
+            model_kwargs['input_shape'][-1] = model_kwargs['input_shapeinput_shape'][-1] + 1 #since we have to add the PV dimension
 
         elif 'MiMo' in model_kwargs['model_type']:
-            model_kwargs['input_shape'] = [int(self.sw_len_samples / self.nwp_downsampling_rate),
-                                       self.raw_nwp_shape[1] + 1]
-
-        elif 'Generator' in model_kwargs['model_type']:
-            self.len_history = int((sw_len_days-1)*24)
-            self.len_nwp = int(sw_len_days*24*60/15)
-            model_kwargs['support_shape'] = [self.len_nwp, self.dataset_info['nwp_dims']]
-            model_kwargs['history_shape'] = [self.len_history, self.fc_tiles]
-
-
-        model_kwargs['out_shape'] = self.target_shape
+            model_kwargs['input_shape'] = self.dataset_info['support_shape']
+            model_kwargs['input_shape'][-1] = model_kwargs['input_shape'][-1] + 1 #since we have to add th
 
         self.model_kwargs = model_kwargs
         self.train_kwargs = train_kwargs
@@ -73,15 +55,15 @@ class Model_Container():
         tf.keras.backend.clear_session() # make sure we are working clean
 
         self.metrics = {}
-        # cross_ops = tf.distribute.ReductionToOneDevice()
-        cross_ops = tf.distribute.HierarchicalCopyAllReduce()
-        strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
+        # # cross_ops = tf.distribute.ReductionToOneDevice()
+        # cross_ops = tf.distribute.HierarchicalCopyAllReduce()
+        # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
+        #
+        # with strategy.scope():
+        self.__build_model(**self.model_kwargs)
 
-        with strategy.scope():
-            self.__build_model(**self.model_kwargs)
-
-            train_history, test_results = self.__train_model()
-            del self.model
+        train_history, test_results = self.__train_model()
+        del self.model
 
         tf.keras.backend.clear_session()
         results_dict = self.__manage_metrics(train_history, test_results)
@@ -115,7 +97,7 @@ class Model_Container():
                       decoder_self_attention=False,
                       decoder_attention=False,
                       decoder_transformer_blocks=1,
-                      target_size=None,
+                      full_targets=True
                       ):
 
         if self.forecast_mode == 'pdf':
@@ -298,7 +280,7 @@ class Model_Container():
                              'transformer_blocks': decoder_transformer_blocks,
                              'positional_embedding': positional_embedding,
                              'projection_layer': projection_block,
-                             'target_size': target_size}
+                             'full_targets': full_targets}
             encoder_specs = {'num_initial_features': encoder_units,
                              'max_length_sequence_supplement': encoder_max_length_sequence,
                              'use_residual': use_residual,
@@ -333,7 +315,7 @@ class Model_Container():
                              'transformer_blocks': decoder_transformer_blocks,
                              'positional_embedding': positional_embedding,
                              'projection_layer': projection_block,
-                             'target_size': target_size}
+                             'full_targets': full_targets}
             encoder_specs = {'num_initial_features': encoder_units,
                              'max_length_sequence_supplement': encoder_max_length_sequence,
                              'use_residual': use_residual,
@@ -368,7 +350,7 @@ class Model_Container():
                              'transformer_blocks': decoder_transformer_blocks,
                              'positional_embedding': positional_embedding,
                              'projection_layer': projection_block,
-                             'target_size': target_size}
+                             'full_targets': full_targets}
             encoder_specs = {'num_initial_features': encoder_units,
                              'max_length_sequence_supplement': encoder_max_length_sequence,
                              'use_residual': use_residual,
@@ -417,10 +399,10 @@ class Model_Container():
                               train_batch_size=self.train_kwargs['batch_size'],
                               support_shape=self.model_kwargs['support_shape'],
                               history_shape=self.model_kwargs['history_shape'],
-                              raw_history_shape=[self.nwp_downsampling_rate, int(self.sw_len_samples/self.nwp_downsampling_rate)],
+                              raw_history_shape=self.raw_history_shape,
                               val_target_shape=self.target_shape,
                               dataset_info=self.dataset_info,
-                              target_size=self.model_kwargs['target_size'],
+                              full_targets=self.model_kwargs['full_targets'],
                               )
 
         if 'Generator' in self.model_kwargs['model_type']:
@@ -597,7 +579,7 @@ class dataset_generator_PV():
                  train_target_shape=None,
                  val_target_shape=None,
                  dataset_info=None,
-                 target_size=None):
+                 full_targets=True):
 
         # We keep the training size as large as possible, this means the val size needs to be smaller due to memory thingies!
         self.train_batch_size = train_batch_size
@@ -609,9 +591,10 @@ class dataset_generator_PV():
         self.train_target_shape = train_target_shape if train_target_shape is not None else self.history_shape
         self.val_target_shape = val_target_shape
         self.dataset_info = dataset_info
-        self.target_size = target_size
+        self.full_targets = full_targets
 
-        self.flattened_nwp_shape = tf.reduce_prod(self.support_shape).numpy()
+        self.flattened_support_shape = tf.reduce_prod(self.support_shape).numpy()
+        print(self.flattened_support_shape)
         self.flattened_historical_shape = tf.reduce_prod(self.history_shape).numpy()
         self.flattened_val_targets_shape = tf.reduce_prod(self.val_target_shape).numpy()
 
@@ -676,67 +659,62 @@ class dataset_generator_PV():
 
 
     def get_pdf_generator_inference_sample(self, example):
-
-        features = {'nwp_input': tf.io.FixedLenFeature(self.flattened_nwp_shape, tf.float32),
-                    'pdf_historical_input': tf.io.FixedLenFeature(self.flattened_historical_shape, tf.float32),
-                    'pdf_target': tf.io.FixedLenFeature(self.flattened_val_targets_shape, tf.float32),
-                    'pdf_teacher': tf.io.FixedLenFeature(self.flattened_val_targets_shape, tf.float32)
+        features = {'support': tf.io.FixedLenFeature(self.flattened_support_shape, tf.float32),
+                    'pdf_history': tf.io.FixedLenFeature(self.flattened_historical_shape, tf.float32),
                     }
 
         raw_unprocessed_sample = tf.io.parse_single_example(example, features)
-        support_data = tf.reshape(tensor=raw_unprocessed_sample['nwp_input'], shape=self.support_shape)
-        target = tf.reshape(tensor=raw_unprocessed_sample['pdf_target'], shape=self.val_target_shape)
-        teacher = tf.reshape(tensor=raw_unprocessed_sample['pdf_teacher'],
-                             shape=self.val_target_shape)
-        history_pdf = tf.reshape(tensor=raw_unprocessed_sample['pdf_historical_input'],
-                                 shape=self.history_shape)
+        support_data = tf.reshape(tensor=raw_unprocessed_sample['support'], shape=self.support_shape)
+        full_pdf_history = tf.reshape(tensor=raw_unprocessed_sample['pdf_history'], shape=self.history_shape)
+        target = full_pdf_history[-self.val_target_shape[0]:,:]
+        teacher = full_pdf_history[-(self.val_target_shape[0]+1):-1,:]
+        history_input =  full_pdf_history[:-self.val_target_shape[0],:]
 
         # ATM sampling last 2days plus forecast day from NWP and last 2 days from history
         return {'support_input': support_data,
-                'history_input': history_pdf,
+                'history_input': history_input,
                 'teacher': teacher}, target
 
     def get_pdf_generator_train_sample(self, example):
-
-        features = {'nwp_input': tf.io.FixedLenFeature(self.flattened_nwp_shape, tf.float32),
-                    'pdf_historical_input': tf.io.FixedLenFeature(self.flattened_historical_shape, tf.float32),
-                    'pdf_target': tf.io.FixedLenFeature(self.flattened_val_targets_shape, tf.float32),
-                    'pdf_teacher': tf.io.FixedLenFeature(self.flattened_val_targets_shape, tf.float32),
-                    }
+        features = {
+        'support': tf.io.FixedLenFeature(self.flattened_support_shape, tf.float32),
+        'pdf_history': tf.io.FixedLenFeature(self.flattened_historical_shape, tf.float32),}
 
         raw_unprocessed_sample = tf.io.parse_single_example(example, features)
+        full_pdf_history = tf.reshape(tensor=raw_unprocessed_sample['pdf_history'], shape=self.history_shape)
+        support_data = tf.reshape(tensor=raw_unprocessed_sample['support'], shape=self.support_shape)
 
-        support_data = tf.reshape(tensor=raw_unprocessed_sample['nwp_input'], shape=self.support_shape)
-        history_pdf = tf.reshape(tensor=raw_unprocessed_sample['pdf_historical_input'],
-                                 shape=self.history_shape)
-        teacher = tf.reshape(tensor=raw_unprocessed_sample['pdf_teacher'],
-                             shape=self.val_target_shape)
+        if self.full_targets:
+            target = full_pdf_history[1:, :] # for predicting full targets vs. last 24 steps
+        else:
+            target = full_pdf_history[-self.val_target_shape[0]:, :]
 
-        target = tf.reshape(tensor=raw_unprocessed_sample['pdf_target'], shape=self.val_target_shape)
-        if self.target_size == 'full':
-            target = tf.concat([history_pdf[1:,:], target], axis=0) # for predicting full targets vs. last 24 steps
+        teacher = full_pdf_history[-(self.val_target_shape[0]+1):-1,:]
+        history_input =  full_pdf_history[:-self.val_target_shape[0],:]
 
         # ATM sampling last 2days plus forecast day from NWP and last 2 days from history
         return {'support_input': support_data,
-                'history_input': history_pdf,
+                'history_input': history_input,
                 'teacher': teacher}, target
 
+    #ToDo: fix those
     def get_s2s_train_sample(self, example):
         
-        features = {'nwp_input': tf.io.FixedLenFeature(self.flattened_nwp_shape, tf.float32),
-                    'raw_historical_input': tf.io.FixedLenFeature(self.raw_history_shape, tf.float32),
-                    # 'pdf_historical_input': tf.io.FixedLenFeature(self.flattened_historical_shape, tf.float32),
-                    'pdf_target': tf.io.FixedLenFeature(self.flattened_val_targets_shape, tf.float32),
-                    'pdf_teacher': tf.io.FixedLenFeature(self.flattened_val_targets_shape, tf.float32),
+        features = {'support': tf.io.FixedLenFeature(self.flattened_support_shape, tf.float32),
+                    'raw_history': tf.io.FixedLenFeature(self.raw_history_shape, tf.float32),
+                    'pdf_history': tf.io.FixedLenFeature(self.flattened_historical_shape, tf.float32),
                     }
+                    # 'pdf_target': tf.io.FixedLenFeature(self.flattened_val_targets_shape, tf.float32),
+                    # 'pdf_teacher': tf.io.FixedLenFeature(self.flattened_val_targets_shape, tf.float32),
+                    # }
 
         raw_unprocessed_sample = tf.io.parse_single_example(example, features)
 
-        nwp_inputs = tf.reshape(tensor=raw_unprocessed_sample['nwp_input'], shape=self.support_shape)
-        history = tf.reshape(tensor=raw_unprocessed_sample['raw_historical_input'], shape=self.raw_history_shape)
+        nwp_inputs = tf.reshape(tensor=raw_unprocessed_sample['support'], shape=self.support_shape)
+        history = tf.reshape(tensor=raw_unprocessed_sample['raw_history'], shape=self.raw_history_shape)
         teacher = tf.reshape(tensor=raw_unprocessed_sample['pdf_teacher'],
                              shape=self.val_target_shape)
-
+        full_pdf_history = tf.reshape(tensor=raw_unprocessed_sample['pdf_history'], shape=self.val_target_shape)
         target = tf.reshape(tensor=raw_unprocessed_sample['pdf_target'], shape=self.val_target_shape)
 
         history = tf.transpose(history,[1,0])
@@ -757,15 +735,15 @@ class dataset_generator_PV():
         return expected_value / last_output_dim_size
 
     def __dataset_from_folder_and_sample(self, process_sample, file_list, batch_size):
-
         option_no_order = tf.data.Options()
         option_no_order.experimental_deterministic = False
 
         # dataset = tf.data.Dataset.list_files(file_list)
-        dataset = tf.data.TFRecordDataset(file_list, num_parallel_reads=10)
+        dataset = tf.data.TFRecordDataset(file_list, num_parallel_reads=5)
         dataset = dataset.with_options(option_no_order)
-        dataset = dataset.map(process_sample, num_parallel_calls=10)
+        dataset = dataset.map(process_sample, num_parallel_calls=5)
         dataset = dataset.repeat()
+
         dataset = dataset.shuffle(50 * batch_size, reshuffle_each_iteration=True)
         dataset = dataset.batch(batch_size, drop_remainder=False)
         dataset = dataset.prefetch(3)

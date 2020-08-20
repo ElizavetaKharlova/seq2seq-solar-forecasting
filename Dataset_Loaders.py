@@ -7,6 +7,24 @@ import tensorflow as tf
 import pickle
 import shutil
 
+def read_profile_from_db(db_path='path',
+                         profile_name='sth',
+                         start_date='sth in date format',
+                         end_date='sth in date format'):
+    # function that reads the profile's one variable from the database for a specified duration
+    # if no duration is specified, default will be the whole data-array
+    pass
+
+def import_nwp_for_profile(csv_path='path of csv file',
+                           start_date='sth in date format',
+                           end_date='sth in date format'):
+    # function that reads a csv and converts this into an array
+    # the csv is expected to contain weather data
+    pass
+
+
+
+
 def get_Daniels_data(target_data='Pv',
                      input_len_samples=int(3 * 24 * (60 / 5)),
                      fc_len_samples=int(1 * 24 * (60 / 5)),
@@ -549,6 +567,7 @@ def _get_weather_data(weather_data_folder):
     print('replacing the fauly values with the mean of the array')
     faults = weather_mvts[:, -1]
     weather_mvts = weather_mvts[:, :-1]
+    #ToDo: Fix this, we should have percip in there, no?
 
     # delete 1 radiation, convext percipitation and normal percipitation
     weather_mvts = np.delete(weather_mvts, [2, 6, 7], axis=-1)

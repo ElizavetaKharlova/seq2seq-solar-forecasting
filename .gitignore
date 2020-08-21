@@ -3,6 +3,10 @@ venv/
 
 _data/
 
+PVHouse1/
+
+Daniels_Dataset_smaller/
+
 Daniels_dataset_1/
 
 Daniels_dataset_2/
@@ -56,3 +60,5 @@ med_MiMo-attn-tcn.pickle
 *.profile-empty
 
 *.trace
+
+*.PNG

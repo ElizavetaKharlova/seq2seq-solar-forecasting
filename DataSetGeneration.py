@@ -105,6 +105,9 @@ def read_and_process_single_csv(file_path):
         nwp_pd = nwp_pd.drop(columns=['Latitude'])
     if 'Longitude' in nwp_pd.columns:
         nwp_pd = nwp_pd.drop(columns=['Longitude'])
+
+    #ToDO: maybe drop long wave fluxes down and up
+
     return nwp_pd
 
 
@@ -194,8 +197,8 @@ def scale_dataframe(df, target_columns=None):
     return df
 
 # We'll split it into datasets
+#ToDo: Maybe split less than 1y for test and val
 def split_into_sets(profile_df, nwp_df):
-    # ToDo: we'll need to split our data in sets by datestamps
     if max(profile_df['tstamp']) - min(profile_df['tstamp']) < 5.0:
         print('NOT FORSEEN< WE HAVE LESS THAN 5Y data, ABOPOOORT')
     else:
@@ -241,18 +244,23 @@ def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, b
 
     prev_modulo = np.inf
     baseline_dict = {}
+    #ToDo: maybe do not take every 5 min sample of the nwp but instead every 15min sample of the nwp?
     for start_tstamp in valid_timestamps:
-        #we know this tstamp exists here, so we should be able to just index, no?
+
+        #This query takes from a dataframe: all the entries with a timestamp larger than the start timestamp
+        # and then discards all the entries with a timestamp larger than start+sw
         nwp_sample_df = nwp_df[nwp_df['Time']>=start_tstamp]
         nwp_sample_df = nwp_sample_df[start_tstamp+sliding_window > nwp_sample_df['Time']]
 
+        # ToDo: those lenghts should be a function fo the sliding window size if we wanna be fancy
         if nwp_sample_df.shape[0] == 672:
             nwp_sample_df = nwp_sample_df.drop('Time', axis=1)
-
 
             profile_sample_df = profile_df[profile_df['tstamp']>=start_tstamp]
             profile_sample_df = profile_sample_df[profile_sample_df['tstamp'] < start_tstamp + sliding_window]
             profile_sample_df = profile_sample_df.drop('tstamp', axis=1)
+
+            # ToDo: those lenghts should be a function fo the sliding window size if we wanna be fancy
             if profile_sample_df.shape[0] == 10080:
                 raw_profile_sample_np = profile_sample_df.to_numpy()
                 profile_sample_pdf_np = process_history_sample(raw_profile_sample_np, bins=bins)
@@ -260,7 +268,7 @@ def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, b
                 targets.append(profile_sample_pdf_np[-24:,:].tolist())
                 persistence.append(profile_sample_pdf_np[-48:-24,:].tolist())
 
-                # ToDo: why do we get 0 error scores now again?!?
+                # calculates persistence
                 if len(targets) >= 128:
                     batch_dict = __calculatate_skillscore_baseline(targets, persistence)
                     for key in batch_dict:
@@ -279,6 +287,8 @@ def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, b
             print('Progress at ', counter/progress_norm)
         prev_modulo = (10*counter)%progress_norm
         counter = counter + 1
+
+    # averages persistences
     for key in baseline_dict:
         baseline_dict[key] = np.mean(baseline_dict[key])
     #mnake sure we do not fuck thing up, so revert to previous wkdir
@@ -328,7 +338,7 @@ def process_history_sample(profile_sample, bins):
 def __convert_to_tf_example(nwp_input, historical_pdf, history):
 
     features = {'support': __convert_to_feature(nwp_input),
-                # 'raw_history': __convert_to_feature(history),
+                'raw_history': __convert_to_feature(history),
                 'pdf_history': __convert_to_feature(historical_pdf)
                 }
 
@@ -342,12 +352,14 @@ def __convert_to_feature(np_data):
 def save_sample_into_tf_ds(sample, set_name='trialset', subset_type='train'):
     pass
 
-# if __name__ == 'main':
+# ToDo: wrap this into a function, so we can generate load/pv datasets for specific houses
+#ToDo: replace all the explicit solar+ with a target_datatype variable
 engine = create_engine('postgresql://postgres:postgres@stargate/profiles')
 col_list = ['grid','"solar+"','grid + "solar+"']
+target_data_type='"solar+"'
 prof_list = list_of_profile_names(engine)
 target_profile_name = 'egauge2474'
-target_data_type='"solar+"'
+
 
 if target_profile_name not in prof_list:
     print('UhOh ... could not find the profile specified from the available profiles in the database')
@@ -356,17 +368,16 @@ else:
 
 nwp_df = assemble_weather_info(target_profile_name) #reads from csv and assembles in one df with reset indices
 
-
-
-
 nwp_df, profile_df = crop_dataframes_accordingly(nwp_df, profile_df) #crops and resets indixes so shit doesnt get bad
-from matplotlib import pyplot as plt
 
+#ToDo: somewhere here, interpolate NWP to 5min resolution --> more data for us
+#ToDo: add the weektime and daytime obs observations for load data
+#ToDo: add a yeartime observation for all of them
 
 nwp_df = scale_dataframe(nwp_df, target_columns=nwp_df.columns[1:]) # We do not want to normalize the time
 
-profile_df['solar+'] = profile_df['solar+'] - min(profile_df['solar+']) #this will be normalized from 0 to 1, since we will only need the pdf anyways
-profile_df['solar+'] = profile_df['solar+']/max(profile_df['solar+'])
+profile_df[target_data_type] = profile_df[target_data_type] - min(profile_df[target_data_type]) #this will be normalized from 0 to 1, since we will only need the pdf anyways
+profile_df[target_data_type] = profile_df[target_data_type]/max(profile_df[target_data_type])
 
 train_profile_df, val_profile_df, test_profile_df, train_nwp_df, val_nwp_df, test_nwp_df = split_into_sets(profile_df, nwp_df)
 del profile_df, nwp_df
@@ -402,12 +413,5 @@ for key in shape_dict:
 os.chdir(os.getcwd() + '/' + set_name)
 with open('dataset_info' + '.pickle', 'wb') as handle:
     pickle.dump(dataset_info, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
-# ToDo: We'll need to split this set into samples
-
-# ToDo: We'll need to produce the probabilistic data for the sample
-
-# ToDo: We'll need to save the sample as tf.dataset
-
 
 

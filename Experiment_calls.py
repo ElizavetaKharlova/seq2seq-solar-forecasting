@@ -275,10 +275,10 @@ experiments = []
 #                     'use_norm': True,
 #                     })
 #
-# # Generator with 24 step targets.
+# Generator with 24 step targets.
 # experiments.append({'model_type': 'FFNN-Generator',
 #                     'exp_name': 'FFNNGen-3x-12H-256',
-#                     # 'target_size': 'full', # only set for full target
+#                     'full_trgets': False, # only set for full target
 #                     'encoder_units': 256,
 #                      'encoder_self_attention': True,
 #                     'encoder_transformer_blocks': 1,
@@ -292,7 +292,7 @@ experiments = []
 #                     'use_norm': True,
 #                     })
 
-# Generator with full targets: supposed to be best!
+# # Generator with full targets: supposed to be best!
 experiments.append({'model_type': 'FFNN-Generator',
                     'exp_name': 'FFNNGen-3x-12H-256-full-targets',
                     'full_targets': True, # only set for full target
@@ -302,7 +302,7 @@ experiments.append({'model_type': 'FFNN-Generator',
                     'decoder_units': 256,
                     'decoder_self_attention': True,
                     'decoder_attention': True,
-                    'decoder_transformer_blocks': 3,
+                    'decoder_transformer_blocks': 4,
                     'attention_heads': 12,
                     'positional_embedding': True,
                     'use_residual': True,

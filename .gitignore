@@ -5,7 +5,13 @@ _data/
 
 PVHouse1/
 
-Daniels_Dataset_smaller/
+data/
+
+CNN_scale_axis_causal_mask/
+
+Daniels_Dataset_smaller/ 
+
+FFNN_final_model/
 
 Daniels_dataset_1/
 
@@ -13,7 +19,11 @@ Daniels_dataset_2/
 
 Daniels_dataset_3/
 
+Daniels_Dataset_1/
+
 Lizas_dataset_1/
+
+Lizas_Dataset_1/
 
 Lizas_dataset_2/
 
@@ -21,7 +31,9 @@ Lizas_Dataset_3/
 
 experiments/
 
-test.py
+test_runs/
+
+trials/
 
 Dataset_Loaders_for_Liza.py
 

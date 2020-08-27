@@ -251,6 +251,8 @@ def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, b
         # and then discards all the entries with a timestamp larger than start+sw
         nwp_sample_df = nwp_df[nwp_df['Time']>=start_tstamp]
         nwp_sample_df = nwp_sample_df[start_tstamp+sliding_window > nwp_sample_df['Time']]
+        # downsample back to 15 min
+        nwp_sample_df = downsample_nwp(nwp_sample_df, factor=3)
 
         # ToDo: those lenghts should be a function fo the sliding window size if we wanna be fancy
         if nwp_sample_df.shape[0] == 672:
@@ -352,66 +354,169 @@ def __convert_to_feature(np_data):
 def save_sample_into_tf_ds(sample, set_name='trialset', subset_type='train'):
     pass
 
+def interpolate_weather(nwp_df, factor):
+    nwp_shape = nwp_df.shape
+    new_indices = np.arange(nwp_df.shape[0]*factor)
+    nwp_indices = np.arange(0, nwp_df.shape[0]*factor, int(factor))
+    columns = nwp_df.keys()
+    nwp_interpolated = pd.DataFrame(columns=columns) 
+
+    # interpolate
+    for feature_axis in columns:
+        features = np.asarray(nwp_df[feature_axis], dtype=np.float64)
+        insert = np.interp(new_indices, nwp_indices, features)
+        nwp_interpolated[feature_axis] = insert.tolist()
+    del nwp_shape
+
+    return nwp_interpolated
+
+def add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=True):
+    if season_sine:
+        # convert into time stamp years and find where they change
+        years = [time.localtime(nwp_df['Time'][i]).tm_year for i in range(nwp_df.shape[0])]
+        years_split = np.where(np.roll(years,1)!=years)
+        # split according to years
+        years_arrays = np.split(nwp_df['Time'], years_split[0])
+        seasonal_wave = []
+        # why do leap years exist? 
+        # i think it should be fine for unfinished years
+        # just an insignificant difference in values
+        full_year = 4*24*365*3
+        # array size magic
+        # if len(years_arrays[1]) >= full_year:
+        #     fraction = (full_year-len(years_arrays[1])+0.5)/full_year
+        # else:
+        fraction = (full_year-len(years_arrays[1])+0.5)/full_year # murder me but i don't know why 0.5
+        sine_wave = np.arange(fraction,1, (1/full_year))
+        sine_wave = sine_wave * np.pi
+        for i in range(len(sine_wave)):
+            sine_wave[i] = np.sin(sine_wave[i])
+        seasonal_wave.append(sine_wave)
+
+        for year in years_arrays[2:]:
+            if len(year) < full_year: # check if year's incomplete
+                fraction = len(year)/full_year
+                sine_wave = np.arange(0,fraction,(1/full_year))
+                sine_wave = sine_wave * np.pi
+                # sine magic
+                for i in range(len(sine_wave)):
+                    sine_wave[i] = np.sin(sine_wave[i])
+            else:
+                sine_wave = np.arange(0,1,(1/len(year)))
+                sine_wave = sine_wave * np.pi
+                for i in range(len(sine_wave)):
+                    sine_wave[i] = np.sin(sine_wave[i])
+            # get sine waves
+            seasonal_wave.append(sine_wave)
+        seasonal_wave = np.concatenate(seasonal_wave)
+        nwp_df['Season_sine'] = seasonal_wave
+
+    if weekly_sine:
+        # add a sine wave for weekdays
+        weeks = [time.localtime(nwp_df['Time'][i]).tm_wday for i in range(nwp_df.shape[0])]
+        # splitting into weeks
+        dif = np.asarray(weeks[1:]) - np.asarray(weeks[:-1])
+        weeks_split = np.where(dif<0) 
+        weeks_arrays = np.split(weeks, weeks_split[0]+1)
+        weekly_wave = []
+        # the second week is always full, for interpolated data 
+        full_week = len(weeks_arrays[1]) 
+        # gotta make an exception for the first week of the year cause 
+        # it doesn't start on a monday sometimes
+        # there should be some math behind the +1
+        # if len(weeks_arrays[0]) == full_week:
+        #     fraction = (full_week-len(weeks_arrays[0])+0.5)/full_week
+        # else:
+        fraction = (full_week-len(weeks_arrays[0])+0.5)/full_week
+        sine_wave = np.arange(fraction,1, (1/full_week))
+        sine_wave = sine_wave * np.pi
+        for i in range(len(sine_wave)):
+            sine_wave[i] = np.sin(sine_wave[i])
+        weekly_wave.append(sine_wave)
+        # now all the rest 
+        for week in weeks_arrays[1:]:
+            fraction = len(week)/full_week
+            sine_wave = np.arange(0,fraction, (1/full_week))
+            sine_wave = sine_wave * np.pi
+            for i in range(len(sine_wave)):
+                sine_wave[i] = np.sin(sine_wave[i])
+            weekly_wave.append(sine_wave)
+        weekly_wave = np.concatenate(weekly_wave)
+        nwp_df['Week_sine'] = weekly_wave
+    return nwp_df
+
+def downsample_nwp(nwp_df, factor):
+    columns = nwp_df.keys()
+    nwp_downsampled = pd.DataFrame(columns=columns)
+    for column in columns:
+        col_array = np.asarray(nwp_df[column])
+        col_array = col_array[::factor]
+        nwp_downsampled[column] = col_array.tolist()
+    return nwp_downsampled
+
+
 # ToDo: wrap this into a function, so we can generate load/pv datasets for specific houses
-#ToDo: replace all the explicit solar+ with a target_datatype variable
-engine = create_engine('postgresql://postgres:postgres@stargate/profiles')
+def generate_dataset(target_data_type, target_profile_name):
+    engine = create_engine('postgresql://postgres:postgres@stargate/profiles')
+    prof_list = list_of_profile_names(engine)
+
+
+    if target_profile_name not in prof_list:
+        print('UhOh ... could not find the profile specified from the available profiles in the database')
+    else:
+        profile_df = extract_data_ts_from_db(target_profile_name, target_data_type, engine)
+
+    nwp_df = assemble_weather_info(target_profile_name) #reads from csv and assembles in one df with reset indices
+    nwp_df = interpolate_weather(nwp_df, factor=3)
+    nwp_df = add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=True)
+
+
+    nwp_df, profile_df = crop_dataframes_accordingly(nwp_df, profile_df) #crops and resets indixes so shit doesnt get bad
+
+    #ToDo: somewhere here, interpolate NWP to 5min resolution --> more data for us
+    #ToDo: add the weektime and daytime obs observations for load data
+    #ToDo: add a yeartime observation for all of them
+
+    nwp_df = scale_dataframe(nwp_df, target_columns=nwp_df.columns[1:]) # We do not want to normalize the time
+
+    profile_df[target_data_type] = profile_df[target_data_type] - min(profile_df[target_data_type]) #this will be normalized from 0 to 1, since we will only need the pdf anyways
+    profile_df[target_data_type] = profile_df[target_data_type]/max(profile_df[target_data_type])
+
+    train_profile_df, val_profile_df, test_profile_df, train_nwp_df, val_nwp_df, test_nwp_df = split_into_sets(profile_df, nwp_df)
+    del profile_df, nwp_df
+
+    dataset_info = {}
+    dataset_info['fc_tiles'] = 50
+    dataset_info['fc_steps'] = 24
+    set_name = 'PVHouse1'
+    dataset_info['test_baseline'], shape_dict = split_into_and_save_samples(profile_df=test_profile_df,
+                                                nwp_df=test_nwp_df,
+                                                sliding_window=7*24*60*60,
+                                                bins=dataset_info['fc_tiles'],
+                                                set_name=set_name,
+                                                subset_type='test')
+    print('test shapes', shape_dict)
+    dataset_info['val_baseline'], shape_dict= split_into_and_save_samples(profile_df=val_profile_df,
+                                                nwp_df=val_nwp_df,
+                                                sliding_window=7*24*60*60,
+                                                bins=dataset_info['fc_tiles'],
+                                                set_name=set_name,
+                                                subset_type='validation')
+    print('val shapes', shape_dict)
+
+    dataset_info['train_baseline'], shape_dict = split_into_and_save_samples(profile_df=train_profile_df,
+                                                nwp_df=train_nwp_df,
+                                                sliding_window=7*24*60*60,
+                                                bins=dataset_info['fc_tiles'],
+                                                set_name=set_name,
+                                                subset_type='train')
+    print('train shapes', shape_dict)
+    for key in shape_dict:
+        dataset_info[key] = shape_dict[key]
+    os.chdir(os.getcwd() + '/' + set_name)
+    with open('dataset_info' + '.pickle', 'wb') as handle:
+        pickle.dump(dataset_info, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+# Generate and save dataset for load/PV and house.
 col_list = ['grid','"solar+"','grid + "solar+"']
-target_data_type='"solar+"'
-prof_list = list_of_profile_names(engine)
-target_profile_name = 'egauge2474'
-
-
-if target_profile_name not in prof_list:
-    print('UhOh ... could not find the profile specified from the available profiles in the database')
-else:
-    profile_df = extract_data_ts_from_db(target_profile_name, target_data_type, engine)
-
-nwp_df = assemble_weather_info(target_profile_name) #reads from csv and assembles in one df with reset indices
-
-nwp_df, profile_df = crop_dataframes_accordingly(nwp_df, profile_df) #crops and resets indixes so shit doesnt get bad
-
-#ToDo: somewhere here, interpolate NWP to 5min resolution --> more data for us
-#ToDo: add the weektime and daytime obs observations for load data
-#ToDo: add a yeartime observation for all of them
-
-nwp_df = scale_dataframe(nwp_df, target_columns=nwp_df.columns[1:]) # We do not want to normalize the time
-
-profile_df[target_data_type] = profile_df[target_data_type] - min(profile_df[target_data_type]) #this will be normalized from 0 to 1, since we will only need the pdf anyways
-profile_df[target_data_type] = profile_df[target_data_type]/max(profile_df[target_data_type])
-
-train_profile_df, val_profile_df, test_profile_df, train_nwp_df, val_nwp_df, test_nwp_df = split_into_sets(profile_df, nwp_df)
-del profile_df, nwp_df
-
-dataset_info = {}
-dataset_info['fc_tiles'] = 50
-dataset_info['fc_steps'] = 24
-set_name = 'PVHouse1'
-dataset_info['test_baseline'], shape_dict = split_into_and_save_samples(profile_df=test_profile_df,
-                                             nwp_df=test_nwp_df,
-                                             sliding_window=7*24*60*60,
-                                             bins=dataset_info['fc_tiles'],
-                                             set_name=set_name,
-                                             subset_type='test')
-print('test shapes', shape_dict)
-dataset_info['val_baseline'], shape_dict= split_into_and_save_samples(profile_df=val_profile_df,
-                                             nwp_df=val_nwp_df,
-                                             sliding_window=7*24*60*60,
-                                             bins=dataset_info['fc_tiles'],
-                                             set_name=set_name,
-                                             subset_type='validation')
-print('val shapes', shape_dict)
-
-dataset_info['train_baseline'], shape_dict = split_into_and_save_samples(profile_df=train_profile_df,
-                                             nwp_df=train_nwp_df,
-                                             sliding_window=7*24*60*60,
-                                             bins=dataset_info['fc_tiles'],
-                                             set_name=set_name,
-                                             subset_type='train')
-print('train shapes', shape_dict)
-for key in shape_dict:
-    dataset_info[key] = shape_dict[key]
-os.chdir(os.getcwd() + '/' + set_name)
-with open('dataset_info' + '.pickle', 'wb') as handle:
-    pickle.dump(dataset_info, handle, protocol=pickle.HIGHEST_PROTOCOL)
-
-
+generate_dataset(target_data_type='"solar+"', target_profile_name = 'egauge2474')

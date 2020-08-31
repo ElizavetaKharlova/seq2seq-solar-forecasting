@@ -2,6 +2,7 @@
 
 from Losses_and_Metrics import __calculatate_skillscore_baseline
 from sqlalchemy import create_engine
+from matplotlib import pyplot as plt
 import pickle
 from sklearn.preprocessing import StandardScaler
 from bokeh.plotting import figure, output_file, show
@@ -105,6 +106,8 @@ def read_and_process_single_csv(file_path):
         nwp_pd = nwp_pd.drop(columns=['Latitude'])
     if 'Longitude' in nwp_pd.columns:
         nwp_pd = nwp_pd.drop(columns=['Longitude'])
+    if 'Short_Wave_Flux_Up [W/m2]' in nwp_pd.columns:
+        nwp_pd = nwp_pd.drop(columns=['Short_Wave_Flux_Up [W/m2]'])
 
     #ToDO: maybe drop long wave fluxes down and up
 
@@ -215,7 +218,7 @@ def split_into_sets(profile_df, nwp_df):
     return train_profile_df, val_profile_df, test_profile_df, train_nwp_df, val_nwp_df, test_nwp_df
 
 # We'll chunk it up in samples, do a data blabla
-def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, bins=50, set_name='TrialSet', subset_type='train'):
+def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, bins=50, set_name='TrialSet', subset_type='train', intersample_factor=None):
     # for each timestep in the nwp_df, crop the sliding window
     # find the corresponding start in the profile_df +24*60*60 ahead and crop the corresponding window
 
@@ -235,6 +238,9 @@ def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, b
     os.mkdir(subset_type)  # create a folder, move to the folder
     os.chdir((dataset_folder_path + '/' + subset_type))
 
+    if intersample_factor is not None:
+        nwp_df = interpolate_weather(nwp_df, factor=intersample_factor)
+
     valid_timestamps = nwp_df[nwp_df['Time']< (max(nwp_df['Time'])-sliding_window)]
     valid_timestamps = valid_timestamps['Time'].to_list()
     progress_norm = len(valid_timestamps)
@@ -252,7 +258,8 @@ def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, b
         nwp_sample_df = nwp_df[nwp_df['Time']>=start_tstamp]
         nwp_sample_df = nwp_sample_df[start_tstamp+sliding_window > nwp_sample_df['Time']]
         # downsample back to 15 min
-        nwp_sample_df = downsample_nwp(nwp_sample_df, factor=3)
+        if intersample_factor is not None:
+            nwp_sample_df = downsample_nwp(nwp_sample_df, factor=intersample_factor)
 
         # ToDo: those lenghts should be a function fo the sliding window size if we wanna be fancy
         if nwp_sample_df.shape[0] == 672:
@@ -351,9 +358,6 @@ def __convert_to_feature(np_data):
     list_flat = np_data.flatten().tolist()
     return tf.train.Feature(float_list=tf.train.FloatList(value=list_flat))
 
-def save_sample_into_tf_ds(sample, set_name='trialset', subset_type='train'):
-    pass
-
 def interpolate_weather(nwp_df, factor):
     nwp_shape = nwp_df.shape
     new_indices = np.arange(nwp_df.shape[0]*factor)
@@ -406,22 +410,24 @@ def generate_dataset(target_data_type, target_profile_name):
     engine = create_engine('postgresql://postgres:postgres@stargate/profiles')
     prof_list = list_of_profile_names(engine)
 
-
     if target_profile_name not in prof_list:
         print('UhOh ... could not find the profile specified from the available profiles in the database')
     else:
         profile_df = extract_data_ts_from_db(target_profile_name, target_data_type, engine)
+        target_data_type = profile_df.columns[0]
 
     nwp_df = assemble_weather_info(target_profile_name) #reads from csv and assembles in one df with reset indices
-    nwp_df = interpolate_weather(nwp_df, factor=3)
-    nwp_df = add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=True)
 
+    if 'solar' in target_data_type:
+        nwp_df = add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=False)
+    elif 'grid' in target_data_type:
+        nwp_df = add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=True)
 
     nwp_df, profile_df = crop_dataframes_accordingly(nwp_df, profile_df) #crops and resets indixes so shit doesnt get bad
-
-    #ToDo: somewhere here, interpolate NWP to 5min resolution --> more data for us
-    #ToDo: add the weektime and daytime obs observations for load data
-    #ToDo: add a yeartime observation for all of them
+    # print(nwp_df.columns)
+    # plt.plot(nwp_df['Long_Wave_Flux_Up [W/m2]'])
+    # plt.plot(nwp_df['Long_Wave_Flux_Down [W/m2]'])
+    # plt.show()
 
     nwp_df = scale_dataframe(nwp_df, target_columns=nwp_df.columns[1:]) # We do not want to normalize the time
 
@@ -429,33 +435,36 @@ def generate_dataset(target_data_type, target_profile_name):
     profile_df[target_data_type] = profile_df[target_data_type]/max(profile_df[target_data_type])
 
     train_profile_df, val_profile_df, test_profile_df, train_nwp_df, val_nwp_df, test_nwp_df = split_into_sets(profile_df, nwp_df)
-    del profile_df, nwp_df
+    # del profile_df, nwp_df
 
     dataset_info = {}
     dataset_info['fc_tiles'] = 50
     dataset_info['fc_steps'] = 24
     set_name = 'PVHouse1'
     dataset_info['test_baseline'], shape_dict = split_into_and_save_samples(profile_df=test_profile_df,
-                                                nwp_df=test_nwp_df,
-                                                sliding_window=7*24*60*60,
-                                                bins=dataset_info['fc_tiles'],
-                                                set_name=set_name,
-                                                subset_type='test')
+                                                                            nwp_df=test_nwp_df,
+                                                                            sliding_window=7*24*60*60,
+                                                                            bins=dataset_info['fc_tiles'],
+                                                                            set_name=set_name,
+                                                                            subset_type='test',
+                                                                            intersample_factor=None)
     print('test shapes', shape_dict)
     dataset_info['val_baseline'], shape_dict= split_into_and_save_samples(profile_df=val_profile_df,
-                                                nwp_df=val_nwp_df,
-                                                sliding_window=7*24*60*60,
-                                                bins=dataset_info['fc_tiles'],
-                                                set_name=set_name,
-                                                subset_type='validation')
+                                                                            nwp_df=val_nwp_df,
+                                                                            sliding_window=7*24*60*60,
+                                                                            bins=dataset_info['fc_tiles'],
+                                                                            set_name=set_name,
+                                                                            subset_type='validation',
+                                                                            intersample_factor=None)
     print('val shapes', shape_dict)
 
     dataset_info['train_baseline'], shape_dict = split_into_and_save_samples(profile_df=train_profile_df,
-                                                nwp_df=train_nwp_df,
-                                                sliding_window=7*24*60*60,
-                                                bins=dataset_info['fc_tiles'],
-                                                set_name=set_name,
-                                                subset_type='train')
+                                                                            nwp_df=train_nwp_df,
+                                                                            sliding_window=7*24*60*60,
+                                                                            bins=dataset_info['fc_tiles'],
+                                                                            set_name=set_name,
+                                                                            subset_type='train',
+                                                                            intersample_factor=5)
     print('train shapes', shape_dict)
     for key in shape_dict:
         dataset_info[key] = shape_dict[key]
@@ -465,4 +474,4 @@ def generate_dataset(target_data_type, target_profile_name):
 
 # Generate and save dataset for load/PV and house.
 col_list = ['grid','"solar+"','grid + "solar+"']
-generate_dataset(target_data_type='"solar+"', target_profile_name = 'egauge2474')
+generate_dataset(target_data_type=col_list[1], target_profile_name = 'egauge2474')

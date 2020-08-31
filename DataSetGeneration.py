@@ -378,6 +378,8 @@ def add_sine(time_array, interval):
     # calculate sine and cosine waves for a given time array
     time_array = time_array%interval
     time_array = (time_array*2*np.pi)/interval
+    time_array = time_array.to_numpy()
+    time_array = time_array.astype(float)
     ar_sin = np.sin(time_array)
     ar_cos = np.cos(time_array)
     return ar_sin, ar_cos

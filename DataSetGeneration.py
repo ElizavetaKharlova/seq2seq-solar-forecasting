@@ -370,80 +370,26 @@ def interpolate_weather(nwp_df, factor):
 
     return nwp_interpolated
 
+def add_sine(time_array, interval):
+    # calculate sine and cosine waves for a given time array
+    time_array = time_array%interval
+    time_array = (time_array*2*np.pi)/interval
+    ar_sin = np.sin(time_array)
+    ar_cos = np.cos(time_array)
+    return ar_sin, ar_cos
+
 def add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=True):
+    # add sine and cosine waves to a given dataframe 
     if season_sine:
-        # convert into time stamp years and find where they change
-        years = [time.localtime(nwp_df['Time'][i]).tm_year for i in range(nwp_df.shape[0])]
-        years_split = np.where(np.roll(years,1)!=years)
-        # split according to years
-        years_arrays = np.split(nwp_df['Time'], years_split[0])
-        seasonal_wave = []
-        # why do leap years exist? 
-        # i think it should be fine for unfinished years
-        # just an insignificant difference in values
-        full_year = 4*24*365*3
-        # array size magic
-        # if len(years_arrays[1]) >= full_year:
-        #     fraction = (full_year-len(years_arrays[1])+0.5)/full_year
-        # else:
-        fraction = (full_year-len(years_arrays[1])+0.5)/full_year # murder me but i don't know why 0.5
-        sine_wave = np.arange(fraction,1, (1/full_year))
-        sine_wave = sine_wave * np.pi
-        for i in range(len(sine_wave)):
-            sine_wave[i] = np.sin(sine_wave[i])
-        seasonal_wave.append(sine_wave)
-
-        for year in years_arrays[2:]:
-            if len(year) < full_year: # check if year's incomplete
-                fraction = len(year)/full_year
-                sine_wave = np.arange(0,fraction,(1/full_year))
-                sine_wave = sine_wave * np.pi
-                # sine magic
-                for i in range(len(sine_wave)):
-                    sine_wave[i] = np.sin(sine_wave[i])
-            else:
-                sine_wave = np.arange(0,1,(1/len(year)))
-                sine_wave = sine_wave * np.pi
-                for i in range(len(sine_wave)):
-                    sine_wave[i] = np.sin(sine_wave[i])
-            # get sine waves
-            seasonal_wave.append(sine_wave)
-        seasonal_wave = np.concatenate(seasonal_wave)
-        nwp_df['Season_sine'] = seasonal_wave
-
+        year_sin, year_cos = add_sine(nwp_df['Time'], interval=365.25*24*60*60)
+        nwp_df['Season_sin'] = year_sin
+        nwp_df['Season_cos'] = year_cos
     if weekly_sine:
-        # add a sine wave for weekdays
-        weeks = [time.localtime(nwp_df['Time'][i]).tm_wday for i in range(nwp_df.shape[0])]
-        # splitting into weeks
-        dif = np.asarray(weeks[1:]) - np.asarray(weeks[:-1])
-        weeks_split = np.where(dif<0) 
-        weeks_arrays = np.split(weeks, weeks_split[0]+1)
-        weekly_wave = []
-        # the second week is always full, for interpolated data 
-        full_week = len(weeks_arrays[1]) 
-        # gotta make an exception for the first week of the year cause 
-        # it doesn't start on a monday sometimes
-        # there should be some math behind the +1
-        # if len(weeks_arrays[0]) == full_week:
-        #     fraction = (full_week-len(weeks_arrays[0])+0.5)/full_week
-        # else:
-        fraction = (full_week-len(weeks_arrays[0])+0.5)/full_week
-        sine_wave = np.arange(fraction,1, (1/full_week))
-        sine_wave = sine_wave * np.pi
-        for i in range(len(sine_wave)):
-            sine_wave[i] = np.sin(sine_wave[i])
-        weekly_wave.append(sine_wave)
-        # now all the rest 
-        for week in weeks_arrays[1:]:
-            fraction = len(week)/full_week
-            sine_wave = np.arange(0,fraction, (1/full_week))
-            sine_wave = sine_wave * np.pi
-            for i in range(len(sine_wave)):
-                sine_wave[i] = np.sin(sine_wave[i])
-            weekly_wave.append(sine_wave)
-        weekly_wave = np.concatenate(weekly_wave)
-        nwp_df['Week_sine'] = weekly_wave
+        week_sin, week_cos = add_sine(nwp_df['Time'], interval=7*24*60*60)
+        nwp_df['Week_sin'] = week_sin
+        nwp_df['Week_cos'] = week_cos
     return nwp_df
+
 
 def downsample_nwp(nwp_df, factor):
     columns = nwp_df.keys()

@@ -42,7 +42,7 @@ class Model_Container():
         if model_kwargs['model_type'] == 'Encoder-Decoder' or model_kwargs['model_type'] == 'E-D' or 'MiMo' in model_kwargs['model_type'] or 'E-D' in model_kwargs['model_type'] or model_kwargs['model_type'] == 'Transformer':
 
             model_kwargs['input_shape'] = self.dataset_info['support_shape']
-            model_kwargs['input_shape'][-1] = model_kwargs['input_shapeinput_shape'][-1] + 1 #since we have to add the PV dimension
+            model_kwargs['input_shape'] = (model_kwargs['input_shape'][0], model_kwargs['input_shape'][-1] + 1) #since we have to add the PV dimension
 
         elif 'MiMo' in model_kwargs['model_type']:
             model_kwargs['input_shape'] = self.dataset_info['support_shape']
@@ -712,17 +712,21 @@ class dataset_generator_PV():
 
         nwp_inputs = tf.reshape(tensor=raw_unprocessed_sample['support'], shape=self.support_shape)
         history = tf.reshape(tensor=raw_unprocessed_sample['raw_history'], shape=self.raw_history_shape)
-        teacher = tf.reshape(tensor=raw_unprocessed_sample['pdf_teacher'],
-                             shape=self.val_target_shape)
-        full_pdf_history = tf.reshape(tensor=raw_unprocessed_sample['pdf_history'], shape=self.val_target_shape)
-        target = tf.reshape(tensor=raw_unprocessed_sample['pdf_target'], shape=self.val_target_shape)
+        full_pdf_history = tf.reshape(tensor=raw_unprocessed_sample['pdf_history'], shape=self.history_shape)
 
-        history = tf.transpose(history,[1,0])
-        history = tf.reduce_mean(history, axis=-1, keepdims=True)
-        nwp_downsampling_rate = self.raw_history_shape[0]
-        fc_len_samples = self.dataset_info['fc_len_samples']
-        nwp_inputs = nwp_inputs[int(fc_len_samples/nwp_downsampling_rate):,:]
+        target = full_pdf_history[-self.val_target_shape[0]:,:]
+        teacher = full_pdf_history[-(self.val_target_shape[0]+1):-1,:]
+        history_input =  full_pdf_history[:-self.val_target_shape[0],:]
+
+        # downsample both to (hourly) rate accodring to the target
+        history_downs_factor = int(history.shape[0]/full_pdf_history.shape[0])
+        nwp_downs_factor = int(nwp_inputs.shape[0]/full_pdf_history.shape[0])
+        nwp_inputs = nwp_inputs[::nwp_downs_factor,:]
+        history = history[::history_downs_factor,:]
+        # concat into one input
         inputs = tf.concat([nwp_inputs,history], axis=-1)
+        # cut off until target
+        inputs = inputs[:-self.val_target_shape[0],:]
 
         # ATM sampling last 2days plus forecast day from NWP and last 2 days from history
         return {'nwp_pv_input': inputs,

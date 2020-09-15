@@ -384,7 +384,7 @@ def add_sine(time_array, interval):
     ar_cos = np.cos(time_array)
     return ar_sin, ar_cos
 
-def add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=True):
+def add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=True, holidays=True):
     # add sine and cosine waves to a given dataframe 
     if season_sine:
         year_sin, year_cos = add_sine(nwp_df['Time'], interval=365.25*24*60*60)
@@ -394,6 +394,9 @@ def add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=True):
         week_sin, week_cos = add_sine(nwp_df['Time'], interval=7*24*60*60)
         nwp_df['Week_sin'] = week_sin
         nwp_df['Week_cos'] = week_cos
+    if holidays:
+        holidays_list = add_holidays(nwp_df['Time'])
+        nwp_df['Holidays'] = holidays_list
     return nwp_df
 
 
@@ -405,6 +408,32 @@ def downsample_nwp(nwp_df, factor):
         col_array = col_array[::factor]
         nwp_downsampled[column] = col_array.tolist()
     return nwp_downsampled
+
+def add_holidays(time_array):
+    import holidays
+    # get the years from the dataset
+    years = range(time.localtime(time_array[0]).tm_year, time.localtime(time_array[len(time_array)-1]).tm_year+1)
+    # create new column 
+    holidays_list = np.zeros([len(time_array),1], )
+    interval = 24*4
+    # go through the holidays in Washington state and add a ramp for each
+    for date, name in sorted(holidays.US(state='WA', years=years).items()):
+        holiday_tstamp = int(time.mktime(date.timetuple()))
+        # check if the holiday date is in the dataframe 
+        if time_array.isin([holiday_tstamp]).any().any():
+            ind = time_array[time_array==holiday_tstamp].index[0]
+            # assign ones to the holiday date
+            holidays_list[ind:ind+interval] = np.ones([interval,1])
+            # ramp up and down around the holiday 
+            ramp_up = np.expand_dims(np.arange(0,1,(1/interval)), axis=-1)
+            ramp_down = np.flip(ramp_up)
+            ramp_up = np.sin(ramp_up*np.pi/2)
+            ramp_down = np.sin(ramp_down*np.pi/2)
+            if ind > 0:
+                holidays_list[ind-interval:ind] = ramp_up
+            if ind < len(time_array)-interval:
+                holidays_list[ind+interval:ind+2*interval] = ramp_down
+    return holidays_list
 
 
 # ToDo: wrap this into a function, so we can generate load/pv datasets for specific houses
@@ -421,9 +450,9 @@ def generate_dataset(target_data_type, target_profile_name):
     nwp_df = assemble_weather_info(target_profile_name) #reads from csv and assembles in one df with reset indices
 
     if 'solar' in target_data_type:
-        nwp_df = add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=False)
+        nwp_df = add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=False, holidays=False)
     elif 'grid' in target_data_type:
-        nwp_df = add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=True)
+        nwp_df = add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=True, holidays=True)
 
     nwp_df, profile_df = crop_dataframes_accordingly(nwp_df, profile_df) #crops and resets indixes so shit doesnt get bad
     # print(nwp_df.columns)

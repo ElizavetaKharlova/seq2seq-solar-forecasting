@@ -27,7 +27,7 @@ def do_experiment(model_type,
     # ToDo: do the dataset one folder up
     #hmmm...
 
-    experiment_name = exp_name #'FFNNGen-3x-12H-256-NoFeatures'
+    experiment_name = exp_name
     sliding_window_length_days = 6
     model_kwargs = {'model_type': model_type,  #'FFNN-Generator',
                     'forecast_mode': 'pdf',
@@ -59,14 +59,14 @@ def do_experiment(model_type,
 
                     # Regularization Hyperparameters
                         # 'use_dropout' : False, 'dropout_rate' : 0.0,
-                        'L1': 0.0, 'L2': 5*1e-5,
+                        'L1': 1e-5, 'L2': 1e-5,
                         'use_norm' : use_norm,
                     }
-    train_kwargs = {'batch_size': 2**6}
+    train_kwargs = {'batch_size': 2**7 + 2**6 + 2**5}
     runs = 3
     metrics = {}
     for run in range(runs):
-        experiment = Model_Container(dataset_folder='PVHouse1',
+        experiment = Model_Container(dataset_path_list=['egauge4183solar+', 'egauge2474solar+'],
                                      experiment_name=experiment_name+str(run),
                                      sw_len_days=sliding_window_length_days,
                                       model_kwargs=model_kwargs,
@@ -277,8 +277,8 @@ experiments = []
 #
 # Generator with 24 step targets.
 # experiments.append({'model_type': 'FFNN-Generator',
-#                     'exp_name': 'FFNNGen-3x-12H-256',
-#                     'full_trgets': False, # only set for full target
+#                     'exp_name': 'FFNNGen-not_full_targets',
+#                     'full_targets': False, # only set for full target
 #                     'encoder_units': 256,
 #                      'encoder_self_attention': True,
 #                     'encoder_transformer_blocks': 1,
@@ -292,9 +292,9 @@ experiments = []
 #                     'use_norm': True,
 #                     })
 
-# # Generator with full targets: supposed to be best!
+# # # Generator with full targets: supposed to be best!
 experiments.append({'model_type': 'FFNN-Generator',
-                    'exp_name': 'FFNNGen-3x-12H-256-full-targets',
+                    'exp_name': 'FFNNGen-full-solar-L1',
                     'full_targets': True, # only set for full target
                     'encoder_units': 256,
                      'encoder_self_attention': True,
@@ -302,7 +302,7 @@ experiments.append({'model_type': 'FFNN-Generator',
                     'decoder_units': 256,
                     'decoder_self_attention': True,
                     'decoder_attention': True,
-                    'decoder_transformer_blocks': 4,
+                    'decoder_transformer_blocks': 3,
                     'attention_heads': 12,
                     'positional_embedding': True,
                     'use_residual': True,
@@ -311,7 +311,6 @@ experiments.append({'model_type': 'FFNN-Generator',
 
 # do_experiment(**experiments[0])
 
-rerun = [1]
 # do our experiments
 for exp_args in experiments: #range(len(experiments)):
     do_experiment(**exp_args)

@@ -9,10 +9,70 @@ import pickle
 from random import shuffle
 from Losses_and_Metrics import losses_and_metrics
 from datetime import datetime
+def check_dataset_length(dataset_path):
+    if os.path.isdir(dataset_path):
+        file_list = glob.glob(dataset_path + '/*.tfrecord')
+        return len(file_list)
+def aggregate_dataset_info(dataset_path_list):
+    print('extracting dataset information')
 
+    #prep help variables
+    aggregated_dataset_info = {}
+    accumulated_samples = {'train': 0, 'validation': 0, 'test': 0}
+    new_samples = {'train': 0, 'validation': 0, 'test': 0}
+
+    for dataset_path in dataset_path_list:
+        dataset_info = pickle.load(open(dataset_path + '/dataset_info.pickle', 'rb'))
+        for key in dataset_info.keys():
+            if 'baseline' in key:
+                # aggregate weighted averages by dataset sample size for baseline metrics, lets do this properly
+                if key not in aggregated_dataset_info.keys():
+                    aggregated_dataset_info[key] = dataset_info[key]
+
+                    # get the name of the dataset
+                    if 'train' in key:
+                        set_type = 'train'
+                    elif 'val' in key:
+                        set_type ='validation'
+                    elif 'test' in key:
+                        set_type ='test'
+                    else:
+                        print('huh ... stumbled upon baseline info not belonging to either test, train or val: ', key)
+                    accumulated_samples[set_type] = check_dataset_length(dataset_path + '/' + set_type)
+                else:
+                    # get the name of the dataset
+                    if 'train' in key:
+                        set_type = 'train'
+                    elif 'val' in key:
+                        set_type ='validation'
+                    elif 'test' in key:
+                        set_type ='test'
+                    else:
+                        print('huh ... stumbled upon baseline info not belonging to either test, train or val: ', key)
+                    accumulated_samples[set_type] = check_dataset_length(dataset_path + '/' + set_type)
+
+                    for metric in dataset_info[key].keys():
+                        aggregated_dataset_info[key][metric] = (accumulated_samples[set_type] * aggregated_dataset_info[key][metric]
+                                                               + new_samples[set_type]*dataset_info[key][metric]) / (accumulated_samples[set_type] + new_samples[set_type])
+
+
+                    accumulated_samples[set_type] = accumulated_samples[set_type] + new_samples[set_type]
+
+
+            else:
+                # other metrics, we should make sure those are consistent between datasets!
+                if key not in aggregated_dataset_info.keys():
+                    aggregated_dataset_info[key] = dataset_info[key]
+                else:
+                    if aggregated_dataset_info[key] != dataset_info[key]:
+                        print('UhOh ... stumbled upon discrepancy between datasets')
+                        print(key, 'aggregated holds ', aggregated_dataset_info[key], 'and new dataset', dataset_path, ' holds ', dataset_info[key])
+
+    print(aggregated_dataset_info)
+    return aggregated_dataset_info
 class Model_Container():
     def __init__(self,
-                 dataset_folder,
+                 dataset_path_list,
 
                  model_kwargs, #see __build_model
                  train_kwargs, #currently only batch size
@@ -20,12 +80,11 @@ class Model_Container():
                  sw_len_days=3, #deprecated
                  try_distribution_across_GPUs=True,
                  ):
-        self.dataset_path = dataset_folder
+        self.dataset_path_list = dataset_path_list
         self.experiment_name = experiment_name
 
         self.forecast_mode = model_kwargs['forecast_mode']
-        self.dataset_info = pickle.load(open(dataset_folder + '/dataset_info.pickle', 'rb'))
-        print(self.dataset_info)
+        self.dataset_info = aggregate_dataset_info(dataset_path_list)
 
         self.fc_steps = self.dataset_info['fc_steps']
         self.fc_tiles = self.dataset_info['fc_tiles']
@@ -395,7 +454,7 @@ class Model_Container():
         callbacks = []
         epochs = 150
         # ToDo: change back to '/train'
-        PV_dataset = dataset_generator_PV(dataset_path=self.dataset_path,
+        PV_dataset = dataset_generator_PV(dataset_path_list=self.dataset_path_list,
                               train_batch_size=self.train_kwargs['batch_size'],
                               support_shape=self.model_kwargs['support_shape'],
                               history_shape=self.model_kwargs['history_shape'],
@@ -433,7 +492,7 @@ class Model_Container():
         logdir =  os.path.join(self.experiment_name)
         print('copy paste for tboard:', logdir)
         callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=10,
+                                                                   patience=40,
                                                                    mode='min',
                                                                    restore_best_weights=True))
         # callbacks.append( SWA(swa_epoch=5) )
@@ -571,7 +630,7 @@ class SWA(tf.keras.callbacks.Callback):
 
 class dataset_generator_PV():
     def __init__(self,
-                 dataset_path=None,
+                 dataset_path_list=None,
                  train_batch_size=None,
                  support_shape=None,
                  history_shape=None,
@@ -599,61 +658,63 @@ class dataset_generator_PV():
         self.flattened_val_targets_shape = tf.reduce_prod(self.val_target_shape).numpy()
 
 
-        self.train_folder = dataset_path + '/train'
-        self.val_folder = dataset_path + '/validation'
-        self.test_folder = dataset_path + '/test'
+        self.train_sets = [dataset_path + '/train' for dataset_path in dataset_path_list]
+        self.val_sets = [dataset_path + '/validation' for dataset_path in dataset_path_list]
+        self.test_sets = [dataset_path + '/test' for dataset_path in dataset_path_list]
 
-    def __get_all_tfrecords_in_folder(self, folder):
+    def __get_all_tfrecords_in_folder(self, dataset_list):
+        accumulatet_dataset_files = []
+        for dataset in dataset_list:
+            if os.path.isdir(dataset):
+                dataset_files = glob.glob(dataset + '/*.tfrecord')
+                accumulatet_dataset_files.extend(dataset_files)
+            else:
+                print('didnt find training data folder, expect issues!!')
+        return accumulatet_dataset_files
 
-        if os.path.isdir(folder):
-            file_list = glob.glob(folder + '/*.tfrecord')
-            shuffle(file_list)
-            return file_list
-        else:
-            print('didnt find training data folder, expect issues!!')
 
 
     def get_train_steps_per_epoch(self):
-        train_list = self.__get_all_tfrecords_in_folder(self.train_folder)
+        train_list = self.__get_all_tfrecords_in_folder(self.train_sets)
         return int(len(train_list) / self.train_batch_size)
 
     def get_val_steps_per_epoch(self):
-        val_list = self.__get_all_tfrecords_in_folder(self.val_folder)
+        val_list = self.__get_all_tfrecords_in_folder(self.val_sets)
         return int(np.ceil(len(val_list) / self.val_batch_size))
 
     def get_test_steps_per_epoch(self):
-        test_list = self.__get_all_tfrecords_in_folder(self.val_folder)
+        test_list = self.__get_all_tfrecords_in_folder(self.test_sets)
         return int(np.ceil(len(test_list) / self.val_batch_size))
 
     # Turn this into get the different types of datasets for generator etc
 
     def pdf_generator_training_dataset(self):
-        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.train_folder),
+        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.train_sets),
                                                      batch_size=self.train_batch_size,
                                                      process_sample=self.get_pdf_generator_train_sample)
 
     def pdf_generator_val_dataset(self):
-        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.val_folder),
+        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.val_sets),
                                                      batch_size=self.val_batch_size,
                                                      process_sample=self.get_pdf_generator_inference_sample)
 
     def pdf_generator_test_dataset(self):
-        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.test_folder),
+        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.test_sets),
                                                   batch_size=self.val_batch_size,
                                                   process_sample=self.get_pdf_generator_inference_sample)
 
     def pdf_s2s_training_dataset(self):
-        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.train_folder),
+        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.train_sets),
                                                      batch_size=self.train_batch_size,
                                                      process_sample=self.get_s2s_train_sample)
 
     def pdf_s2s_val_dataset(self):
-        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.val_folder),
+        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.val_sets),
                                                      batch_size=self.val_batch_size,
                                                      process_sample=self.get_s2s_train_sample)
 
     def pdf_s2s_test_dataset(self):
-        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.test_folder),
+        return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.test_sets),
                                                   batch_size=self.val_batch_size,
                                                   process_sample=self.get_s2s_train_sample)
 
@@ -670,7 +731,6 @@ class dataset_generator_PV():
         teacher = full_pdf_history[-(self.val_target_shape[0]+1):-1,:]
         history_input =  full_pdf_history[:-self.val_target_shape[0],:]
 
-        # ATM sampling last 2days plus forecast day from NWP and last 2 days from history
         return {'support_input': support_data,
                 'history_input': history_input,
                 'teacher': teacher}, target
@@ -685,7 +745,7 @@ class dataset_generator_PV():
         support_data = tf.reshape(tensor=raw_unprocessed_sample['support'], shape=self.support_shape)
 
         if self.full_targets:
-            target = full_pdf_history[1:, :] # for predicting full targets vs. last 24 steps
+            target = full_pdf_history[1+24:, :] # for predicting full targets vs. last 24 steps
         else:
             target = full_pdf_history[-self.val_target_shape[0]:, :]
 

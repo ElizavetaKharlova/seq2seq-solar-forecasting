@@ -49,7 +49,7 @@ def aggregate_dataset_info(dataset_path_list):
                         set_type ='test'
                     else:
                         print('huh ... stumbled upon baseline info not belonging to either test, train or val: ', key)
-                    accumulated_samples[set_type] = check_dataset_length(dataset_path + '/' + set_type)
+                    new_samples[set_type] = check_dataset_length(dataset_path + '/' + set_type)
 
                     for metric in dataset_info[key].keys():
                         aggregated_dataset_info[key][metric] = (accumulated_samples[set_type] * aggregated_dataset_info[key][metric]
@@ -119,9 +119,42 @@ class Model_Container():
         # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
         #
         # with strategy.scope():
+        folder_name = self.model_kwargs['model_type']
+
         self.__build_model(**self.model_kwargs)
 
         train_history, test_results = self.__train_model()
+        print('Saving model to ...', folder_name)
+        self.model.save_weights(folder_name + "/model_ckpt")
+        del self.model
+
+        tf.keras.backend.clear_session()
+        results_dict = self.__manage_metrics(train_history, test_results)
+        del self.train_kwargs
+
+        return results_dict
+
+    def fine_tune(self):
+        tf.keras.backend.clear_session() # make sure we are working clean
+
+        self.metrics = {}
+        # # cross_ops = tf.distribute.ReductionToOneDevice()
+        # cross_ops = tf.distribute.HierarchicalCopyAllReduce()
+        # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
+        #
+        # with strategy.scope():
+        folder_name = self.model_kwargs['model_type']
+        if not os.path.isdir('./'+folder_name): # if there are no weights in the folder 
+            print('There is an error with finding model checkpoint. Folder', folder_name, 'does not exist.')
+
+        self.__build_model(**self.model_kwargs)
+
+        print('Loading model weights from checkpoint...', folder_name)
+        self.model.load_weights(folder_name + "/model_ckpt")
+
+        train_history, test_results = self.__train_model()
+        print('Saving fine-tuned model to ...', folder_name)
+        self.model.save_weights(folder_name + "/model_ckpt")
         del self.model
 
         tf.keras.backend.clear_session()
@@ -477,8 +510,14 @@ class Model_Container():
         val_steps = PV_dataset.get_val_steps_per_epoch()
         test_steps = PV_dataset.get_test_steps_per_epoch()
 
+        # For fine-tuning we want smaller learning rate
+        if self.train_kwargs['fine_tune']:
+            schedule_parameter = self.model_kwargs['decoder_units']*10
+        else: 
+            schedule_parameter = self.model_kwargs['decoder_units']
+
         # Transformer LR schedule, doesnt work .... too fast
-        optimizer = tf.keras.optimizers.Adam(CustomSchedule(self.model_kwargs['decoder_units'], warmup_steps=train_steps*8), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps*8), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
         loss, metrics = self.get_losses_and_metrics()
         # learning_rate = np.sqrt(1/train_steps)
         # optimizer = tf.keras.optimizers.SGD(learning_rate = learning_rate,

@@ -23,6 +23,8 @@ def do_experiment(model_type,
                 positional_embedding=True,
                 use_residual=True,
                 use_norm=True,
+                fine_tune=True,
+                dataset_path_list=['egauge4183solar+', 'egauge2474solar+'],
                 ):
     # ToDo: do the dataset one folder up
     #hmmm...
@@ -62,18 +64,31 @@ def do_experiment(model_type,
                         'L1': 1e-5, 'L2': 1e-5,
                         'use_norm' : use_norm,
                     }
-    train_kwargs = {'batch_size': 2**7 + 2**6 + 2**5}
-    runs = 3
+    train_kwargs = {'batch_size': 2**7 + 2**6 + 2**5,
+                    'fine_tune': fine_tune}
+    runs = 1
     metrics = {}
     for run in range(runs):
-        experiment = Model_Container(dataset_path_list=['egauge4183solar+', 'egauge2474solar+'],
-                                     experiment_name=experiment_name+str(run),
-                                     sw_len_days=sliding_window_length_days,
-                                      model_kwargs=model_kwargs,
-                                      train_kwargs=train_kwargs,)
-        results_dict = experiment.get_results()
-        tf.keras.backend.clear_session()
-        del experiment
+        if not fine_tune:
+            experiment = Model_Container(dataset_path_list=dataset_path_list,
+                                        experiment_name=experiment_name+str(run),
+                                        sw_len_days=sliding_window_length_days,
+                                        model_kwargs=model_kwargs,
+                                        train_kwargs=train_kwargs,)
+            results_dict = experiment.get_results()
+            tf.keras.backend.clear_session()
+            del experiment
+        
+        if fine_tune:
+            print('Fine-tuning model', model_type)
+            experiment = Model_Container(dataset_path_list=dataset_path_list,
+                                        experiment_name=experiment_name+str(run),
+                                        sw_len_days=sliding_window_length_days,
+                                        model_kwargs=model_kwargs,
+                                        train_kwargs=train_kwargs,)
+            results_dict = experiment.fine_tune()
+            tf.keras.backend.clear_session()
+            del experiment
 
 
         for key in results_dict:
@@ -166,16 +181,18 @@ def __plot_training_curves(metrics, experiment_name):
 
 experiments = []
 
-# # LSTM encoder-decoder with attention.
-# experiments.append({'model_type': 'E-D',
-#                     'exp_name': 'S2S-3x-12H-256',
-#                     'encoder_units':256,
-#                     'encoder_transformer_blocks': 3,
-#                     'decoder_units': 256,
-#                     'decoder_attention': True,
-#                     'decoder_transformer_blocks': 3,
-#                     'attention_heads': 12,
-#                     })
+# LSTM encoder-decoder with attention.
+experiments.append({'model_type': 'E-D',
+                    'exp_name': 'S2S-3x-12H-256',
+                    'encoder_units':16,
+                    'encoder_transformer_blocks': 1,
+                    'decoder_units': 16,
+                    'decoder_attention': True,
+                    'decoder_transformer_blocks': 1,
+                    'attention_heads': 3,
+                    'fine_tune': True,
+                    'dataset_path_list': ['egauge4183solar+', 'egauge2474solar+'],
+                    })
 #
 # # Classic Transformer.
 # experiments.append({'model_type': 'Transformer',
@@ -292,22 +309,23 @@ experiments = []
 #                     'use_norm': True,
 #                     })
 
-# # # Generator with full targets: supposed to be best!
-experiments.append({'model_type': 'FFNN-Generator',
-                    'exp_name': 'FFNNGen-full-solar-L1',
-                    'full_targets': True, # only set for full target
-                    'encoder_units': 256,
-                     'encoder_self_attention': True,
-                    'encoder_transformer_blocks': 1,
-                    'decoder_units': 256,
-                    'decoder_self_attention': True,
-                    'decoder_attention': True,
-                    'decoder_transformer_blocks': 3,
-                    'attention_heads': 12,
-                    'positional_embedding': True,
-                    'use_residual': True,
-                    'use_norm': True,
-                    })
+# # Generator with full targets: supposed to be best!
+# experiments.append({'model_type': 'FFNN-Generator',
+#                     'exp_name': 'FFNNGen-full-solar-L1',
+#                     'full_targets': True, # only set for full target
+#                     'encoder_units': 256,
+#                      'encoder_self_attention': True,
+#                     'encoder_transformer_blocks': 1,
+#                     'decoder_units': 256,
+#                     'decoder_self_attention': True,
+#                     'decoder_attention': True,
+#                     'decoder_transformer_blocks': 3,
+#                     'attention_heads': 12,
+#                     'positional_embedding': True,
+#                     'use_residual': True,
+#                     'use_norm': True,
+#                     'fine_tune': True,
+#                     })
 
 # do_experiment(**experiments[0])
 

@@ -41,14 +41,13 @@ def list_of_profile_names(engine):
 def extract_data_ts_from_db(profile_name, data_type, engine):
     data_query = " SELECT " + data_type + " FROM " + profile_name
     data_pd = pd.read_sql_query(data_query, engine)
+    if 'column' in data_pd.columns[0]:
+        data_pd.rename(columns={data_pd.columns[0]: 'grid'}, inplace=True)
 
     tstamp_query = " SELECT " + 'tstamp' + " FROM " + profile_name
     tstamp_pd = pd.read_sql_query(tstamp_query, engine)
     return data_pd.join(tstamp_pd)
 
-# Optional: We'll check the house data for faults
-def check_house_data_for_faults():
-    pass
 
 def find_all_files_of_type_in_folder(folder_path, datatype):
     file_list = []
@@ -65,14 +64,15 @@ def extract_datetime_format(datetime_string):
     return datetime_format
 
 # We'll need to load the weather data
-def assemble_weather_info(profile_name):
+def assemble_weather_info(profile_name, location):
     # we wanna read the folder to see all the csvs for the data
     # then we wanna start assemling for every csv
     nwp_folder = os.path.join(os.getcwd(), 'NWP_data')
+    nwp_folder = os.path.join(nwp_folder, location)
     if profile_name in os.listdir(nwp_folder):
         profile_folder_path = os.path.join(nwp_folder, profile_name)
         nwp_csv_paths = find_all_files_of_type_in_folder(profile_folder_path, '.csv')
-
+        print('found nwp data')
         nwp_pd = []
         for nwp_csv_path in nwp_csv_paths:
             single_csv = read_and_process_single_csv(nwp_csv_path)
@@ -98,36 +98,16 @@ def read_and_process_single_csv(file_path):
         time_stamp = time.mktime(time_tuple)
         nwp_pd.at[index, 'Time'] = int(time_stamp)
 
-    # we wanna read a single csv into a pandas dataframe,
-    # and then change the time value to the corresponding timestamp
-    if "index" in nwp_pd.columns:
-        nwp_pd = nwp_pd.drop(columns=['index'])
-    if 'Latitude' in nwp_pd.columns:
-        nwp_pd = nwp_pd.drop(columns=['Latitude'])
-    if 'Longitude' in nwp_pd.columns:
-        nwp_pd = nwp_pd.drop(columns=['Longitude'])
-    if 'Short_Wave_Flux_Up [W/m2]' in nwp_pd.columns:
-        nwp_pd = nwp_pd.drop(columns=['Short_Wave_Flux_Up [W/m2]'])
-
-    #ToDO: maybe drop long wave fluxes down and up
-
     return nwp_pd
-
-
-# We'll check the weather data for faults
-def check_weather_data_for():
-    pass
 
 # We'll need to synchronize this shit with the datetime arrays
 def crop_dataframes_accordingly(nwp_df, profile_df):
     # Find the inner start index for both arrays and crop
     common_start_ts = max(nwp_df.iloc[0]['Time'], profile_df.iloc[0]['tstamp'])
-    profile_start_ix = profile_df[profile_df['tstamp'] == common_start_ts].index.values.tolist()[
-        0]  # ToDo: can we do this in a nicer query?
-    profile_df = profile_df.truncate(before=profile_start_ix) if profile_start_ix != 0 else profile_df
+    profile_df = profile_df[profile_df['tstamp'] >= common_start_ts]
     profile_df.reset_index()
-    nwp_start_ix = nwp_df[nwp_df['Time'] == common_start_ts].index.values.tolist()[0]
-    nwp_df = nwp_df.truncate(before=nwp_start_ix) if nwp_start_ix != 0 else nwp_df
+
+    nwp_df = nwp_df[nwp_df['Time'] >= common_start_ts]
     nwp_df.reset_index()
     print('Cropped to the same starting timestamp at: ', common_start_ts)
     print('Nwp dataframe shape is ', nwp_df.shape, ' starting at ts', nwp_df.iloc[0]['Time'], 'going to ',
@@ -161,12 +141,9 @@ def crop_dataframes_accordingly(nwp_df, profile_df):
         nwp_crop_ts = nwp_last_ts - nwp_crop_steps * nwp_delta_ts
         profile_crop_ts = nwp_crop_ts + necessary_offset
 
-    profile_end_ix = profile_df[profile_df['tstamp'] == profile_crop_ts].index.values.tolist()[
-        0]  # ToDo: can we do this in a nicer query?
-    profile_df = profile_df.truncate(after=profile_end_ix) if profile_start_ix != profile_df.index[-1] else profile_df
+    profile_df = profile_df[profile_df['tstamp'] <= profile_crop_ts]
     profile_df.reset_index()
-    nwp_end_ix = nwp_df[nwp_df['Time'] == nwp_crop_ts].index.values.tolist()[0]
-    nwp_df = nwp_df.truncate(after=nwp_end_ix) if nwp_end_ix != nwp_df.index[-1] else nwp_df
+    nwp_df = nwp_df[nwp_df['Time'] <= nwp_crop_ts]
     nwp_df.reset_index()
     print('Cropped to the adequate end timestamps')
     print('Nwp dataframe shape is ', nwp_df.shape, ' starting at ts', nwp_df.iloc[0]['Time'], 'going to ',
@@ -238,6 +215,7 @@ def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, b
     os.mkdir(subset_type)  # create a folder, move to the folder
     os.chdir((dataset_folder_path + '/' + subset_type))
 
+    nwp_df = downsample_df(nwp_df, factor=2)  # ToDo: for now because Nigel's fault
     if intersample_factor is not None:
         nwp_df = interpolate_weather(nwp_df, factor=intersample_factor)
 
@@ -259,10 +237,10 @@ def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, b
         nwp_sample_df = nwp_sample_df[start_tstamp+sliding_window > nwp_sample_df['Time']]
         # downsample back to 15 min
         if intersample_factor is not None:
-            nwp_sample_df = downsample_nwp(nwp_sample_df, factor=intersample_factor)
+            nwp_sample_df = downsample_df(nwp_sample_df, factor=intersample_factor) #ToDo: For now because Nigel
 
         # ToDo: those lenghts should be a function fo the sliding window size if we wanna be fancy
-        if nwp_sample_df.shape[0] == 672:
+        if nwp_sample_df.shape[0] == sliding_window/(2*15*60):
             nwp_sample_df = nwp_sample_df.drop('Time', axis=1)
 
             profile_sample_df = profile_df[profile_df['tstamp']>=start_tstamp]
@@ -270,7 +248,7 @@ def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, b
             profile_sample_df = profile_sample_df.drop('tstamp', axis=1)
 
             # ToDo: those lenghts should be a function fo the sliding window size if we wanna be fancy
-            if profile_sample_df.shape[0] == 10080:
+            if profile_sample_df.shape[0] == sliding_window/60:
                 raw_profile_sample_np = profile_sample_df.to_numpy()
                 profile_sample_pdf_np = process_history_sample(raw_profile_sample_np, bins=bins)
 
@@ -384,30 +362,65 @@ def add_sine(time_array, interval):
     ar_cos = np.cos(time_array)
     return ar_sin, ar_cos
 
-def add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=True, holidays=True):
-    # add sine and cosine waves to a given dataframe 
-    if season_sine:
+def manage_features(nwp_df, target_data_type='solar+', location='Seattle'):
+
+    #ToDO: remove once Nigel has new NWP with fixed timezone
+    if location is 'Seattle':
+        nwp_df['Time'] = nwp_df['Time'] - 7*60*60
+    elif location is 'Edmonton':
+        nwp_df['Time'] = nwp_df['Time'] - 8 * 60 * 60
+    # general
+    if "index" in nwp_df.columns:
+        nwp_df = nwp_df.drop(columns=['index'])
+    if 'Latitude' in nwp_df.columns:
+        nwp_df = nwp_df.drop(columns=['Latitude'])
+    if 'Longitude' in nwp_df.columns:
+        nwp_df = nwp_df.drop(columns=['Longitude'])
+    if 'Short_Wave_Flux_Up [W/m2]' in nwp_df.columns:
+        nwp_df = nwp_df.drop(columns=['Short_Wave_Flux_Up [W/m2]'])
+    if 'Long_Wave_Flux_Up [W/m2]' in nwp_df.columns:
+        nwp_df = nwp_df.drop(columns=['Long_Wave_Flux_Up [W/m2]'])
+
+    if 'solar' in target_data_type:
         year_sin, year_cos = add_sine(nwp_df['Time'], interval=365.25*24*60*60)
         nwp_df['Season_sin'] = year_sin
-        nwp_df['Season_cos'] = year_cos
-    if weekly_sine:
+
+    elif 'grid' in target_data_type:
+
+        year_sin, year_cos = add_sine(nwp_df['Time'], interval=365.25*24*60*60)
+        nwp_df['Season_sin'] = year_sin
+
         week_sin, week_cos = add_sine(nwp_df['Time'], interval=7*24*60*60)
         nwp_df['Week_sin'] = week_sin
         nwp_df['Week_cos'] = week_cos
-    if holidays:
+
         holidays_list = add_holidays(nwp_df['Time'])
         nwp_df['Holidays'] = holidays_list
+
+        if 'Surface_Pressure [Pa]' in nwp_df.columns:
+            nwp_df = nwp_df.drop(columns=['Surface_Pressure [Pa]'])
+        if 'X_Wind [m/s]' in nwp_df.columns:
+            nwp_df = nwp_df.drop(columns=['X_Wind [m/s]'])
+        if 'Y_Wind [m/s]' in nwp_df.columns:
+            nwp_df = nwp_df.drop(columns=['Y_Wind [m/s]'])
+        if 'Humidity [kg/kg]' in nwp_df.columns:
+            nwp_df = nwp_df.drop(columns=['Humidity [kg/kg]'])
+        if 'Short_Wave_Flux_Down [W/m2]' in nwp_df.columns:
+            nwp_df = nwp_df.drop(columns=['Short_Wave_Flux_Down [W/m2]'])
+        if 'Long_Wave_Flux_Down [W/m2]' in nwp_df.columns:
+            nwp_df = nwp_df.drop(columns=['Long_Wave_Flux_Down [W/m2]'])
+            #ToDo: add wind and others, fix the rest :-(
+
     return nwp_df
 
-
-def downsample_nwp(nwp_df, factor):
-    columns = nwp_df.keys()
-    nwp_downsampled = pd.DataFrame(columns=columns)
+def downsample_df(_df, factor):
+    columns = _df.keys()
+    _df_downsampled = pd.DataFrame(columns=columns)
     for column in columns:
-        col_array = np.asarray(nwp_df[column])
+        col_array = np.asarray(_df[column])
         col_array = col_array[::factor]
-        nwp_downsampled[column] = col_array.tolist()
-    return nwp_downsampled
+        _df_downsampled[column] = col_array.tolist()
+    return _df_downsampled
 
 def add_holidays(time_array):
     import holidays
@@ -435,9 +448,24 @@ def add_holidays(time_array):
                 holidays_list[ind+interval:ind+2*interval] = ramp_down
     return holidays_list
 
+def __fix_history(profile_df, target_data_type, target_profile_name):
+
+
+    if target_profile_name == 'egauge4183':
+        target_data_array = profile_df[target_data_type].to_numpy()
+        max_pos = np.where(target_data_array == np.amax(target_data_array))[0]
+        lower_values = max_pos - (len(max_pos) + 1)
+        print(lower_values)
+        upper_values = max_pos + (len(max_pos) + 1)
+        target_data_array[max_pos] = (target_data_array[lower_values] + target_data_array[upper_values])/2
+        profile_df[target_data_type] = target_data_array
+
+    plt.plot(profile_df[target_data_type])
+    plt.show()
+    return profile_df
 
 # ToDo: wrap this into a function, so we can generate load/pv datasets for specific houses
-def generate_dataset(target_data_type, target_profile_name):
+def generate_dataset(target_data_type, target_profile_name, location='Seattle'):
     engine = create_engine('postgresql://postgres:postgres@stargate/profiles')
     prof_list = list_of_profile_names(engine)
 
@@ -447,18 +475,21 @@ def generate_dataset(target_data_type, target_profile_name):
         profile_df = extract_data_ts_from_db(target_profile_name, target_data_type, engine)
         target_data_type = profile_df.columns[0]
 
-    nwp_df = assemble_weather_info(target_profile_name) #reads from csv and assembles in one df with reset indices
+    nwp_df = assemble_weather_info(target_profile_name, location) #reads from csv and assembles in one df with reset indices
 
-    if 'solar' in target_data_type:
-        nwp_df = add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=False, holidays=False)
-    elif 'grid' in target_data_type:
-        nwp_df = add_seasonal_wave(nwp_df, season_sine=True, weekly_sine=True, holidays=True)
+    nwp_df = manage_features(nwp_df, target_data_type=target_data_type, location=location)
 
     nwp_df, profile_df = crop_dataframes_accordingly(nwp_df, profile_df) #crops and resets indixes so shit doesnt get bad
-    # print(nwp_df.columns)
-    # plt.plot(nwp_df['Long_Wave_Flux_Up [W/m2]'])
-    # plt.plot(nwp_df['Long_Wave_Flux_Down [W/m2]'])
-    # plt.show()
+
+    downsampled_profile = downsample_df(profile_df, 15)
+    downsampled_profile = downsampled_profile['solar+'].to_numpy()
+    nwp_solar = nwp_df['Short_Wave_Flux_Down [W/m2]'].to_numpy()
+    min_len = min(nwp_solar.shape[0], downsampled_profile.shape[0])
+    corcoeffs = np.corrcoef(nwp_solar[:min_len], downsampled_profile[:min_len])
+    print(corcoeffs)
+
+    profile_df = __fix_history(profile_df, target_data_type, target_profile_name)
+
 
     nwp_df = scale_dataframe(nwp_df, target_columns=nwp_df.columns[1:]) # We do not want to normalize the time
 
@@ -466,12 +497,11 @@ def generate_dataset(target_data_type, target_profile_name):
     profile_df[target_data_type] = profile_df[target_data_type]/max(profile_df[target_data_type])
 
     train_profile_df, val_profile_df, test_profile_df, train_nwp_df, val_nwp_df, test_nwp_df = split_into_sets(profile_df, nwp_df)
-    # del profile_df, nwp_df
 
     dataset_info = {}
     dataset_info['fc_tiles'] = 50
     dataset_info['fc_steps'] = 24
-    set_name = 'PVHouse1'
+    set_name = target_profile_name + target_data_type
     dataset_info['test_baseline'], shape_dict = split_into_and_save_samples(profile_df=test_profile_df,
                                                                             nwp_df=test_nwp_df,
                                                                             sliding_window=7*24*60*60,
@@ -504,5 +534,12 @@ def generate_dataset(target_data_type, target_profile_name):
         pickle.dump(dataset_info, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 # Generate and save dataset for load/PV and house.
-col_list = ['grid','"solar+"','grid + "solar+"']
+col_list = ['"solar+"','grid + "solar+"']
 generate_dataset(target_data_type=col_list[1], target_profile_name = 'egauge2474')
+#houses that are interesting:
+# egauge4183, but not grid
+# egauge22785
+# egauge2474
+
+
+

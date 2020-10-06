@@ -35,7 +35,8 @@ def do_experiment(model_type,
                   # pretrain is a list of datasets --> pretrain on those
                     # --> what do we evaluate the pretrained model on? all the sets and then the fine tune set?
                 fine_tune=True,
-                dataset_path_list=['egauge4183solar+', 'egauge2474solar+', 'egauge4183solar+'],
+                test=False,
+                dataset_path_list=['egauge4183solar+', 'egauge2474solar+'],
                 ):
 
 
@@ -196,8 +197,9 @@ experiments.append({'model_type': 'E-D',
                     'decoder_attention': True,
                     'decoder_transformer_blocks': 1,
                     'attention_heads': 3,
-                    'fine_tune': True,
-                    'dataset_path_list': ['egauge4183solar+', 'egauge2474solar+'],
+                    'fine_tune': False,
+                    'test': True,
+                    'dataset_path_list': ['NWP_data/PVHouse1'],
                     })
 #
 # # Classic Transformer.

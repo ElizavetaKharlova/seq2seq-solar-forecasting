@@ -125,7 +125,7 @@ class Model_Container():
 
         train_history, test_results = self.__train_model()
         print('Saving model to ...', folder_name)
-        self.model.save_weights(folder_name + "/model_ckpt")
+        self.model.save_weights(folder_name + '_' + self.experiment_name + "/model_ckpt")
         del self.model
 
         tf.keras.backend.clear_session()
@@ -133,6 +133,8 @@ class Model_Container():
         del self.train_kwargs
 
         return results_dict
+
+    # ToDo: maybe build the model separately before when we call the experiment, and then in fine tune load the weights and go from there?
 
     def fine_tune(self):
         tf.keras.backend.clear_session() # make sure we are working clean
@@ -150,15 +152,42 @@ class Model_Container():
         self.__build_model(**self.model_kwargs)
 
         print('Loading model weights from checkpoint...', folder_name)
-        self.model.load_weights(folder_name + "/model_ckpt")
+        self.model.load_weights(folder_name + '_' + self.experiment_name  + "/model_ckpt")
 
         train_history, test_results = self.__train_model()
         print('Saving fine-tuned model to ...', folder_name)
-        self.model.save_weights(folder_name + "/model_ckpt")
+        self.model.save_weights(folder_name + '_' + self.experiment_name  + "/model_ckpt")
         del self.model
 
         tf.keras.backend.clear_session()
         results_dict = self.__manage_metrics(train_history, test_results)
+        del self.train_kwargs
+
+        return results_dict
+
+    def test(self):
+        tf.keras.backend.clear_session() # make sure we are working clean
+
+        self.metrics = {}
+        # # cross_ops = tf.distribute.ReductionToOneDevice()
+        # cross_ops = tf.distribute.HierarchicalCopyAllReduce()
+        # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
+        #
+        # with strategy.scope():
+        folder_name = self.model_kwargs['model_type']
+        if not os.path.isdir('./'+folder_name): # if there are no weights in the folder 
+            print('There is an error with finding model checkpoint. Folder', folder_name, 'does not exist.')
+
+        self.__build_model(**self.model_kwargs)
+
+        print('Loading model weights from checkpoint...', folder_name)
+        self.model.load_weights(folder_name + '_' + self.experiment_name  + "/model_ckpt").expect_partial()
+
+        test_results = self.__test_model()
+        del self.model
+        tf.keras.backend.clear_session()
+
+        results_dict = self.__manage_test_metrics(test_results)
         del self.train_kwargs
 
         return results_dict
@@ -482,12 +511,41 @@ class Model_Container():
 
         return loss, metrics
 
+    def __get_callbacks(self,
+                        fine_tuning=True,
+                        tboard=True,
+                        ):
+        callbacks = []
+        if tboard:
+            logdir = os.path.join(self.experiment_name)
+            print('copy paste for tboard:', logdir)
+            callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,
+                                                            write_graph=False,
+                                                            # update_freq='epoch',
+                                                            ))
+
+        # ToDo: for pre-training we definitively want brute-force learning and then SWA
+        # ToDo: for fine-tuning we might now want swa
+        if not fine_tuning:
+            print('setting autostop criteria to pretrain')
+            callbacks.append(SWA(swa_epoch=5))
+            callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='EMC',
+                                                              baseline=0.99,
+                                                              patience=15,
+                                                              mode='min',
+                                                              restore_best_weights=False))
+        else:
+            print('setting autostop criteria to fifnetune')
+            callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
+                                                              patience=40,
+                                                              mode='min',
+                                                              restore_best_weights=True))
+        return callbacks
+
     def __train_model(self):
 
-        callbacks = []
-        epochs = 150
-        # ToDo: change back to '/train'
-        PV_dataset = dataset_generator_PV(dataset_path_list=self.dataset_path_list,
+        epochs = 100
+        dataset = dataset_generator(dataset_path_list=self.dataset_path_list,
                               train_batch_size=self.train_kwargs['batch_size'],
                               support_shape=self.model_kwargs['support_shape'],
                               history_shape=self.model_kwargs['history_shape'],
@@ -498,17 +556,66 @@ class Model_Container():
                               )
 
         if 'Generator' in self.model_kwargs['model_type']:
-            train_set = PV_dataset.pdf_generator_training_dataset
-            val_set = PV_dataset.pdf_generator_val_dataset
-            test_set = PV_dataset.pdf_generator_test_dataset
+            train_set = dataset.pdf_generator_training_dataset
+            val_set = dataset.pdf_generator_val_dataset
+            test_set = dataset.pdf_generator_test_dataset
         elif 'E-D' in self.model_kwargs['model_type'] or self.model_kwargs['model_type'] == 'Transformer':
-            train_set = PV_dataset.pdf_s2s_training_dataset
-            val_set = PV_dataset.pdf_s2s_val_dataset
-            test_set = PV_dataset.pdf_s2s_test_dataset
+            train_set = dataset.pdf_s2s_training_dataset
+            val_set = dataset.pdf_s2s_val_dataset
+            test_set = dataset.pdf_s2s_test_dataset
 
-        train_steps = PV_dataset.get_train_steps_per_epoch()
-        val_steps = PV_dataset.get_val_steps_per_epoch()
-        test_steps = PV_dataset.get_test_steps_per_epoch()
+        train_steps = dataset.get_train_steps_per_epoch()
+        val_steps = dataset.get_val_steps_per_epoch()
+        test_steps = dataset.get_test_steps_per_epoch()
+
+        # For fine-tuning we want smaller learning rate
+        # ToDo: make the learning rate or the optimizer adaptible from fine-tuning to pretraining....
+        schedule_parameter = self.model_kwargs['decoder_units']*10 if self.train_kwargs['fine_tune'] else self.model_kwargs['decoder_units']
+
+        optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps*8), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        loss, metrics = self.get_losses_and_metrics()
+
+        self.model.compile(optimizer=optimizer, loss=loss, metrics=metrics)  # compile, print summary
+
+        print('starting to train model')
+        train_history = self.model.fit(train_set(),
+                                        steps_per_epoch=train_steps,
+                                        epochs=epochs,
+                                        verbose=2,
+                                        validation_data=val_set(),
+                                        validation_steps=val_steps,
+                                        callbacks=self.__get_callbacks(fine_tuning=self.train_kwargs['fine_tune'], tboard=True))
+
+        # ToDo: why do we test here if we also have a class that is called test??
+        test_results = self.model.evaluate(test_set(),
+                                           steps=test_steps,
+                                            verbose=2)
+        self.model.summary()
+        del dataset
+
+        return train_history.history, test_results
+
+    #ToDO: avoid loading the same datasset multiple times, we should move this to its own function call, make a self.dataset and then refer to this?!
+
+    def __test_model(self):
+
+        dataset = dataset_generator(dataset_path_list=self.dataset_path_list,
+                              train_batch_size=self.train_kwargs['batch_size'],
+                              support_shape=self.model_kwargs['support_shape'],
+                              history_shape=self.model_kwargs['history_shape'],
+                              raw_history_shape=self.raw_history_shape,
+                              val_target_shape=self.target_shape,
+                              dataset_info=self.dataset_info,
+                              full_targets=self.model_kwargs['full_targets'],
+                              )
+
+        if 'Generator' in self.model_kwargs['model_type']:
+            test_set = dataset.pdf_generator_test_dataset
+        elif 'E-D' in self.model_kwargs['model_type'] or self.model_kwargs['model_type'] == 'Transformer':
+            test_set = dataset.pdf_s2s_test_dataset
+
+        train_steps = dataset.get_train_steps_per_epoch()
+        test_steps = dataset.get_test_steps_per_epoch()
 
         # For fine-tuning we want smaller learning rate
         if self.train_kwargs['fine_tune']:
@@ -517,52 +624,19 @@ class Model_Container():
             schedule_parameter = self.model_kwargs['decoder_units']
 
         # Transformer LR schedule, doesnt work .... too fast
+        # ToDO: what do we need the optimizer for?
         optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps*8), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
         loss, metrics = self.get_losses_and_metrics()
-        # learning_rate = np.sqrt(1/train_steps)
-        # optimizer = tf.keras.optimizers.SGD(learning_rate = learning_rate,
-        #                                      momentum=0.9,
-        #                                      nesterov=True,
-        #                                     # clipnorm=1.0, # Apparently some works do clipnorm
-        #                                     )
 
         self.model.compile(optimizer=optimizer, loss=loss, metrics=metrics)  # compile, print summary
 
-        logdir =  os.path.join(self.experiment_name)
-        print('copy paste for tboard:', logdir)
-        callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                                   patience=40,
-                                                                   mode='min',
-                                                                   restore_best_weights=True))
-        # callbacks.append( SWA(swa_epoch=5) )
-        callbacks.append(tf.keras.callbacks.TensorBoard(log_dir=logdir,
-                                                        write_graph=False,
-                                                        #update_freq='epoch',
-                                                        ))
-
-        # callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(monitor='loss',
-        #                                                        factor=0.2,
-        #                                                        patience=5,
-        #                                                       min_lr=1e-6,
-        #                                                        verbose=True,
-        #                                                        mode='min',
-        #                                                        cooldown=5))
-        print('starting to train model')
-        train_history = self.model.fit(train_set(),
-                                        steps_per_epoch=train_steps,
-                                        epochs=epochs,
-                                        verbose=2,
-                                        validation_data=val_set(),
-                                        validation_steps=val_steps,
-                                        callbacks=callbacks)
-        train_history = train_history.history
         test_results = self.model.evaluate(test_set(),
                                            steps=test_steps,
                                             verbose=2)
         self.model.summary()
-        del PV_dataset
+        del dataset
 
-        return train_history, test_results
+        return test_results
 
 
 
@@ -592,6 +666,27 @@ class Model_Container():
 
         if self.forecast_mode == 'pdf':
             print('val_skill CRPS', results_dict['val_CRPS_skill'])
+            print('test_skill CRPS', results_dict['test_CRPS_skill'])
+
+        return results_dict
+
+    def __manage_test_metrics(self, test_results):
+
+        results_dict = {}
+        results_dict['test_loss'] = test_results[0]
+        results_dict['test_nME'] = test_results[1]
+        results_dict['test_nRMSE'] = test_results[2]
+        if self.forecast_mode == 'pdf':
+            results_dict['test_CRPS'] = test_results[3]
+
+        results_dict['test_nRMSE_skill'] = 1 - (results_dict['test_nRMSE'] / self.dataset_info['test_baseline']['nRMSE'])
+
+        if self.forecast_mode == 'pdf':
+            results_dict['test_CRPS_skill'] = 1 - (results_dict['test_CRPS'] / self.dataset_info['test_baseline']['CRPS'])
+
+        print('test_skill nRMSE', results_dict['test_nRMSE_skill'])
+
+        if self.forecast_mode == 'pdf':
             print('test_skill CRPS', results_dict['test_CRPS_skill'])
 
         return results_dict
@@ -667,7 +762,7 @@ class SWA(tf.keras.callbacks.Callback):
             print('Final stochastic averaged weights saved to file.')
 #ToDo: Rewrite the keras model checkpoint callback to give back and average the last 5 weights!!
 
-class dataset_generator_PV():
+class dataset_generator():
     def __init__(self,
                  dataset_path_list=None,
                  train_batch_size=None,

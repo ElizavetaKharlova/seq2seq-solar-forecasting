@@ -82,20 +82,38 @@ def do_experiment(model_type,
     metrics = {}
     for run in range(runs):
 
-        experiment = Model_Container(dataset_path_list=dataset_path_list,
-                                    experiment_name=experiment_name+str(run),
-                                    sw_len_days=sliding_window_length_days,
-                                    model_kwargs=model_kwargs,
-                                    train_kwargs=train_kwargs,)
-        if fine_tune:
-            print('Fine-tuning model', model_type)
-            results_dict = experiment.fine_tune()
-        else:
+        if not fine_tune and not test:
+            experiment = Model_Container(dataset_path_list=dataset_path_list,
+                                        experiment_name=experiment_name+str(run),
+                                        sw_len_days=sliding_window_length_days,
+                                        model_kwargs=model_kwargs,
+                                        train_kwargs=train_kwargs,)
+            print('Training model', model_type, experiment_name)
             results_dict = experiment.get_results()
+            tf.keras.backend.clear_session()
+            del experiment
+        
+        if fine_tune:
+            experiment = Model_Container(dataset_path_list=dataset_path_list,
+                                        experiment_name=experiment_name+str(run),
+                                        sw_len_days=sliding_window_length_days,
+                                        model_kwargs=model_kwargs,
+                                        train_kwargs=train_kwargs,)
+            print('Fine-tuning model', model_type, experiment_name)
+            results_dict = experiment.fine_tune()
+            tf.keras.backend.clear_session()
+            del experiment
 
-        tf.keras.backend.clear_session()
-
-        del experiment
+        if test:
+            experiment = Model_Container(dataset_path_list=dataset_path_list,
+                                        experiment_name=experiment_name+str(run),
+                                        sw_len_days=sliding_window_length_days,
+                                        model_kwargs=model_kwargs,
+                                        train_kwargs=train_kwargs,)
+            print('Testing model', model_type, experiment_name)
+            results_dict = experiment.test()
+            tf.keras.backend.clear_session()
+            del experiment
 
 
         for key in results_dict:
@@ -198,7 +216,7 @@ experiments.append({'model_type': 'E-D',
                     'decoder_transformer_blocks': 1,
                     'attention_heads': 3,
                     'fine_tune': False,
-                    'test': True,
+                    'test': False,
                     'dataset_path_list': ['NWP_data/PVHouse1'],
                     })
 #
@@ -339,4 +357,12 @@ experiments.append({'model_type': 'E-D',
 
 # do our experiments
 for exp_args in experiments: #range(len(experiments)):
+    do_experiment(**exp_args)
+    # test on the new dataset
+    exp_args['test'] = True
+    exp_args['dataset_path_list'] = ['NWP_data/PVHouse1'] # TODO: CHANGE DATASET NAMES HERE
+    do_experiment(**exp_args)
+    # fine-tune on the new dataset
+    exp_args['test'] = False
+    exp_args['fine_tune'] = True
     do_experiment(**exp_args)

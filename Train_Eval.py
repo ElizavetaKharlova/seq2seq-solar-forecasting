@@ -618,10 +618,7 @@ class Model_Container():
         test_steps = dataset.get_test_steps_per_epoch()
 
         # For fine-tuning we want smaller learning rate
-        if self.train_kwargs['fine_tune']:
-            schedule_parameter = self.model_kwargs['decoder_units']*10
-        else: 
-            schedule_parameter = self.model_kwargs['decoder_units']
+        schedule_parameter = self.model_kwargs['decoder_units']*10 if self.train_kwargs['fine_tune'] else self.model_kwargs['decoder_units']
 
         # Transformer LR schedule, doesnt work .... too fast
         # ToDO: what do we need the optimizer for?

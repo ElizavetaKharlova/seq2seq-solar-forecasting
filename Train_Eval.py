@@ -125,7 +125,7 @@ class Model_Container():
 
         train_history, test_results = self.__train_model()
         print('Saving model to ...', folder_name)
-        self.model.save_weights(folder_name + "/model_ckpt")
+        self.model.save_weights(folder_name + '_' + self.experiment_name + "/model_ckpt")
         del self.model
 
         tf.keras.backend.clear_session()
@@ -150,15 +150,42 @@ class Model_Container():
         self.__build_model(**self.model_kwargs)
 
         print('Loading model weights from checkpoint...', folder_name)
-        self.model.load_weights(folder_name + "/model_ckpt")
+        self.model.load_weights(folder_name + '_' + self.experiment_name  + "/model_ckpt")
 
         train_history, test_results = self.__train_model()
         print('Saving fine-tuned model to ...', folder_name)
-        self.model.save_weights(folder_name + "/model_ckpt")
+        self.model.save_weights(folder_name + '_' + self.experiment_name  + "/model_ckpt")
         del self.model
 
         tf.keras.backend.clear_session()
         results_dict = self.__manage_metrics(train_history, test_results)
+        del self.train_kwargs
+
+        return results_dict
+
+    def test(self):
+        tf.keras.backend.clear_session() # make sure we are working clean
+
+        self.metrics = {}
+        # # cross_ops = tf.distribute.ReductionToOneDevice()
+        # cross_ops = tf.distribute.HierarchicalCopyAllReduce()
+        # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
+        #
+        # with strategy.scope():
+        folder_name = self.model_kwargs['model_type']
+        if not os.path.isdir('./'+folder_name): # if there are no weights in the folder 
+            print('There is an error with finding model checkpoint. Folder', folder_name, 'does not exist.')
+
+        self.__build_model(**self.model_kwargs)
+
+        print('Loading model weights from checkpoint...', folder_name)
+        self.model.load_weights(folder_name + '_' + self.experiment_name  + "/model_ckpt").expect_partial()
+
+        test_results = self.__test_model()
+        del self.model
+        tf.keras.backend.clear_session()
+
+        results_dict = self.__manage_test_metrics(test_results)
         del self.train_kwargs
 
         return results_dict
@@ -564,6 +591,49 @@ class Model_Container():
 
         return train_history, test_results
 
+    def __test_model(self):
+
+        callbacks = []
+        epochs = 1 #150
+        # ToDo: change back to '/train'
+        PV_dataset = dataset_generator_PV(dataset_path_list=self.dataset_path_list,
+                              train_batch_size=self.train_kwargs['batch_size'],
+                              support_shape=self.model_kwargs['support_shape'],
+                              history_shape=self.model_kwargs['history_shape'],
+                              raw_history_shape=self.raw_history_shape,
+                              val_target_shape=self.target_shape,
+                              dataset_info=self.dataset_info,
+                              full_targets=self.model_kwargs['full_targets'],
+                              )
+
+        if 'Generator' in self.model_kwargs['model_type']:
+            test_set = PV_dataset.pdf_generator_test_dataset
+        elif 'E-D' in self.model_kwargs['model_type'] or self.model_kwargs['model_type'] == 'Transformer':
+            test_set = PV_dataset.pdf_s2s_test_dataset
+
+        train_steps = PV_dataset.get_train_steps_per_epoch()
+        test_steps = PV_dataset.get_test_steps_per_epoch()
+
+        # For fine-tuning we want smaller learning rate
+        if self.train_kwargs['fine_tune']:
+            schedule_parameter = self.model_kwargs['decoder_units']*10
+        else: 
+            schedule_parameter = self.model_kwargs['decoder_units']
+
+        # Transformer LR schedule, doesnt work .... too fast
+        optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps*8), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        loss, metrics = self.get_losses_and_metrics()
+
+        self.model.compile(optimizer=optimizer, loss=loss, metrics=metrics)  # compile, print summary
+
+        test_results = self.model.evaluate(test_set(),
+                                           steps=test_steps,
+                                            verbose=2)
+        self.model.summary()
+        del PV_dataset
+
+        return test_results
+
 
 
     def __manage_metrics(self, train_history, test_results):
@@ -592,6 +662,27 @@ class Model_Container():
 
         if self.forecast_mode == 'pdf':
             print('val_skill CRPS', results_dict['val_CRPS_skill'])
+            print('test_skill CRPS', results_dict['test_CRPS_skill'])
+
+        return results_dict
+
+    def __manage_test_metrics(self, test_results):
+
+        results_dict = {}
+        results_dict['test_loss'] = test_results[0]
+        results_dict['test_nME'] = test_results[1]
+        results_dict['test_nRMSE'] = test_results[2]
+        if self.forecast_mode == 'pdf':
+            results_dict['test_CRPS'] = test_results[3]
+
+        results_dict['test_nRMSE_skill'] = 1 - (results_dict['test_nRMSE'] / self.dataset_info['test_baseline']['nRMSE'])
+
+        if self.forecast_mode == 'pdf':
+            results_dict['test_CRPS_skill'] = 1 - (results_dict['test_CRPS'] / self.dataset_info['test_baseline']['CRPS'])
+
+        print('test_skill nRMSE', results_dict['test_nRMSE_skill'])
+
+        if self.forecast_mode == 'pdf':
             print('test_skill CRPS', results_dict['test_CRPS_skill'])
 
         return results_dict

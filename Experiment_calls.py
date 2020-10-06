@@ -24,6 +24,7 @@ def do_experiment(model_type,
                 use_residual=True,
                 use_norm=True,
                 fine_tune=True,
+                test=False,
                 dataset_path_list=['egauge4183solar+', 'egauge2474solar+'],
                 ):
     # ToDo: do the dataset one folder up
@@ -69,7 +70,7 @@ def do_experiment(model_type,
     runs = 1
     metrics = {}
     for run in range(runs):
-        if not fine_tune:
+        if not fine_tune and not test:
             experiment = Model_Container(dataset_path_list=dataset_path_list,
                                         experiment_name=experiment_name+str(run),
                                         sw_len_days=sliding_window_length_days,
@@ -87,6 +88,17 @@ def do_experiment(model_type,
                                         model_kwargs=model_kwargs,
                                         train_kwargs=train_kwargs,)
             results_dict = experiment.fine_tune()
+            tf.keras.backend.clear_session()
+            del experiment
+
+        if test:
+            print('Testing model', model_type)
+            experiment = Model_Container(dataset_path_list=dataset_path_list,
+                                        experiment_name=experiment_name+str(run),
+                                        sw_len_days=sliding_window_length_days,
+                                        model_kwargs=model_kwargs,
+                                        train_kwargs=train_kwargs,)
+            results_dict = experiment.test()
             tf.keras.backend.clear_session()
             del experiment
 
@@ -190,8 +202,9 @@ experiments.append({'model_type': 'E-D',
                     'decoder_attention': True,
                     'decoder_transformer_blocks': 1,
                     'attention_heads': 3,
-                    'fine_tune': True,
-                    'dataset_path_list': ['egauge4183solar+', 'egauge2474solar+'],
+                    'fine_tune': False,
+                    'test': True,
+                    'dataset_path_list': ['NWP_data/PVHouse1'],
                     })
 #
 # # Classic Transformer.

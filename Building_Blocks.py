@@ -1479,6 +1479,8 @@ class FFNN_decoder(tf.keras.layers.Layer):
         # For predicting full targets vs. last 24 steps
         if not self.full_targets:
             signal = signal[:, -timesteps:, :]
+        else:
+            signal = signal[:,24:,:]
         forecast = self.projection_layer(signal)
         return forecast
 

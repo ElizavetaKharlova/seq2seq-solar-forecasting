@@ -11,6 +11,7 @@ import tensorflow as tf
 
 def do_experiment(model_type,
                 exp_name,
+
                 full_targets=True,
                 encoder_units=256,
                 encoder_self_attention=True,
@@ -23,11 +24,20 @@ def do_experiment(model_type,
                 positional_embedding=True,
                 use_residual=True,
                 use_norm=True,
+                #ToDo: format this a little better ...
+                  # what happens when fine-tune is true but we only have one folder
+                  # what happens when it is false and we have several folders
+                  # how do we evaluate on several datasets?
+                  # etc
+                  # maybe have a fine-tune dataset and a pretrain dataset handle?
+                  # fine_tune dataset not none --> finetune on this
+                    # --> which model do we load for fine-tuning?
+                  # pretrain is a list of datasets --> pretrain on those
+                    # --> what do we evaluate the pretrained model on? all the sets and then the fine tune set?
                 fine_tune=True,
-                dataset_path_list=['egauge4183solar+', 'egauge2474solar+'],
+                dataset_path_list=['egauge4183solar+', 'egauge2474solar+', 'egauge4183solar+'],
                 ):
-    # ToDo: do the dataset one folder up
-    #hmmm...
+
 
     experiment_name = exp_name
     sliding_window_length_days = 6
@@ -64,31 +74,27 @@ def do_experiment(model_type,
                         'L1': 1e-5, 'L2': 1e-5,
                         'use_norm' : use_norm,
                     }
+
     train_kwargs = {'batch_size': 2**7 + 2**6 + 2**5,
                     'fine_tune': fine_tune}
     runs = 1
     metrics = {}
     for run in range(runs):
-        if not fine_tune:
-            experiment = Model_Container(dataset_path_list=dataset_path_list,
-                                        experiment_name=experiment_name+str(run),
-                                        sw_len_days=sliding_window_length_days,
-                                        model_kwargs=model_kwargs,
-                                        train_kwargs=train_kwargs,)
-            results_dict = experiment.get_results()
-            tf.keras.backend.clear_session()
-            del experiment
-        
+
+        experiment = Model_Container(dataset_path_list=dataset_path_list,
+                                    experiment_name=experiment_name+str(run),
+                                    sw_len_days=sliding_window_length_days,
+                                    model_kwargs=model_kwargs,
+                                    train_kwargs=train_kwargs,)
         if fine_tune:
             print('Fine-tuning model', model_type)
-            experiment = Model_Container(dataset_path_list=dataset_path_list,
-                                        experiment_name=experiment_name+str(run),
-                                        sw_len_days=sliding_window_length_days,
-                                        model_kwargs=model_kwargs,
-                                        train_kwargs=train_kwargs,)
             results_dict = experiment.fine_tune()
-            tf.keras.backend.clear_session()
-            del experiment
+        else:
+            results_dict = experiment.get_results()
+
+        tf.keras.backend.clear_session()
+
+        del experiment
 
 
         for key in results_dict:

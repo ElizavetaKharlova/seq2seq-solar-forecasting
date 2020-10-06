@@ -394,8 +394,9 @@ def manage_features(nwp_df, target_data_type='solar+', location='Seattle'):
         nwp_df['Week_sin'] = week_sin
         nwp_df['Week_cos'] = week_cos
 
-        holidays_list = add_holidays(nwp_df['Time'])
-        nwp_df['Holidays'] = holidays_list
+        if location == 'Seattle':
+            holidays_list = add_holidays(nwp_df['Time'])
+            nwp_df['Holidays'] = holidays_list
 
         if 'Surface_Pressure [Pa]' in nwp_df.columns:
             nwp_df = nwp_df.drop(columns=['Surface_Pressure [Pa]'])
@@ -424,6 +425,8 @@ def downsample_df(_df, factor):
 
 def add_holidays(time_array):
     import holidays
+    #ToDo: DIsclaimer: only works for 15min resolutions!!
+
     # get the years from the dataset
     years = range(time.localtime(time_array[0]).tm_year, time.localtime(time_array[len(time_array)-1]).tm_year+1)
     # create new column 
@@ -439,11 +442,12 @@ def add_holidays(time_array):
             holidays_list[ind:ind+interval] = np.ones([interval,1])
             # ramp up and down around the holiday 
             ramp_up = np.expand_dims(np.arange(0,1,(1/interval)), axis=-1)
-            ramp_down = np.flip(ramp_up)
+
             ramp_up = np.sin(ramp_up*np.pi/2)
-            ramp_down = np.sin(ramp_down*np.pi/2)
+            ramp_down = np.flip(ramp_up)
+
             if ind > 0:
-                holidays_list[ind-interval:ind] = ramp_up
+                holidays_list[max(ind-interval, 0):ind] = ramp_up[-min(interval, ind):]
             if ind < len(time_array)-interval:
                 holidays_list[ind+interval:ind+2*interval] = ramp_down
     return holidays_list
@@ -481,12 +485,12 @@ def generate_dataset(target_data_type, target_profile_name, location='Seattle'):
 
     nwp_df, profile_df = crop_dataframes_accordingly(nwp_df, profile_df) #crops and resets indixes so shit doesnt get bad
 
-    downsampled_profile = downsample_df(profile_df, 15)
-    downsampled_profile = downsampled_profile['solar+'].to_numpy()
-    nwp_solar = nwp_df['Short_Wave_Flux_Down [W/m2]'].to_numpy()
-    min_len = min(nwp_solar.shape[0], downsampled_profile.shape[0])
-    corcoeffs = np.corrcoef(nwp_solar[:min_len], downsampled_profile[:min_len])
-    print(corcoeffs)
+    # downsampled_profile = downsample_df(profile_df, 15)
+    # downsampled_profile = downsampled_profile['solar+'].to_numpy()
+    # nwp_solar = nwp_df['Short_Wave_Flux_Down [W/m2]'].to_numpy()
+    # min_len = min(nwp_solar.shape[0], downsampled_profile.shape[0])
+    # corcoeffs = np.corrcoef(nwp_solar[:min_len], downsampled_profile[:min_len])
+    # print(corcoeffs)
 
     profile_df = __fix_history(profile_df, target_data_type, target_profile_name)
 

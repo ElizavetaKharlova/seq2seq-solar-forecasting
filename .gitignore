@@ -1,7 +1,18 @@
+egauge2474solar+/
+egauge22785solar+/
+egauge4183solar+/
+
+egauge2474grid/
+egauge22785grid/
+egauge4183grid/
 
 venv/
 
 _data/
+
+egauge13830solar+/
+
+NWP_data/
 
 PVHouse1/
 

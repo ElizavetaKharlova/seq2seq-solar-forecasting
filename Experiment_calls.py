@@ -217,7 +217,7 @@ experiments.append({'model_type': 'E-D',
                     'attention_heads': 3,
                     'fine_tune': False,
                     'test': False,
-                    'dataset_path_list': ['NWP_data/PVHouse1'],
+                    'dataset_path_list': ['egauge22785solar+', 'egauge22785solar+'],
                     })
 #
 # # Classic Transformer.

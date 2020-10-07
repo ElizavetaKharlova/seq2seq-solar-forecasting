@@ -528,12 +528,12 @@ class Model_Container():
         # ToDo: for fine-tuning we might now want swa
         if not fine_tuning:
             print('setting autostop criteria to pretrain')
-            callbacks.append(SWA(swa_epoch=5))
             callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='EMC',
-                                                              baseline=0.99,
-                                                              patience=15,
-                                                              mode='min',
-                                                              restore_best_weights=False))
+                                                              baseline=0.9,
+                                                              min_delta=1e-4,
+                                                              patience=20,
+                                                              mode='max',
+                                                              restore_best_weights=True))
         else:
             print('setting autostop criteria to fifnetune')
             callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
@@ -573,6 +573,10 @@ class Model_Container():
         schedule_parameter = self.model_kwargs['decoder_units']*10 if self.train_kwargs['fine_tune'] else self.model_kwargs['decoder_units']
 
         optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps*8), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        # ToDo: figure this out, read the papert first
+        # if self.train_kwargs['fine_tune']:
+        #    opt = tfa.optimizers.SWA(opt, start_averaging=10, average_period=5, sequential_update=True)
+
         loss, metrics = self.get_losses_and_metrics()
 
         self.model.compile(optimizer=optimizer, loss=loss, metrics=metrics)  # compile, print summary
@@ -596,7 +600,6 @@ class Model_Container():
         return train_history.history, test_results
 
     #ToDO: avoid loading the same datasset multiple times, we should move this to its own function call, make a self.dataset and then refer to this?!
-
     def __test_model(self):
 
         dataset = dataset_generator(dataset_path_list=self.dataset_path_list,
@@ -718,47 +721,7 @@ class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
 
         return tf.math.rsqrt(self.d_model) * tf.math.minimum(arg1, arg2)
 
-class SWA(tf.keras.callbacks.Callback):
-    """
-    Stochastic Weight Averaging: https://arxiv.org/abs/1803.05407
-    Implementaton in Keras from user defined epochs assuming constant
-    learning rate
-    Cyclic learning rate implementation in https://arxiv.org/abs/1803.05407
-    not implemented
-    Created on July 4, 2018
-    @author: Krist Papadopoulos
-    """
-    def __init__(self, filepath=None, swa_epoch=5):
-        super(SWA, self).__init__()
-        self.filepath = filepath
-        self.swa_epoch = swa_epoch
-
-    def on_train_begin(self, logs=None):
-        self.nb_epoch = self.params['epochs']
-        print('Stochastic weight averaging selected for last {} epochs.'
-              .format(self.nb_epoch - self.swa_epoch))
-
-    def on_epoch_end(self, epoch, logs=None):
-
-        if epoch == self.swa_epoch:
-            self.swa_weights = self.model.get_weights()
-
-        elif epoch > self.swa_epoch:
-            for i, layer in enumerate(self.model.layers):
-                self.swa_weights[i] = (self.swa_weights[i] * (epoch - self.swa_epoch)  + self.model.get_weights()[i])\
-                                      /((epoch - self.swa_epoch)  + 1)
-
-        else:
-            pass
-
-    def on_train_end(self, logs=None):
-        self.model.set_weights(self.swa_weights)
-        print('Final model parameters set to stochastic weight average.')
-        if self.filepath is not None:
-            self.model.save_weights(self.filepath)
-            print('Final stochastic averaged weights saved to file.')
 #ToDo: Rewrite the keras model checkpoint callback to give back and average the last 5 weights!!
-
 class dataset_generator():
     def __init__(self,
                  dataset_path_list=None,

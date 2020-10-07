@@ -206,19 +206,19 @@ def __plot_training_curves(metrics, experiment_name):
 
 experiments = []
 
-# LSTM encoder-decoder with attention.
-experiments.append({'model_type': 'E-D',
-                    'exp_name': 'S2S-3x-12H-256',
-                    'encoder_units':16,
-                    'encoder_transformer_blocks': 1,
-                    'decoder_units': 16,
-                    'decoder_attention': True,
-                    'decoder_transformer_blocks': 1,
-                    'attention_heads': 3,
-                    'fine_tune': False,
-                    'test': False,
-                    'dataset_path_list': ['egauge22785solar+', 'egauge22785solar+'],
-                    })
+# # LSTM encoder-decoder with attention.
+# experiments.append({'model_type': 'E-D',
+#                     'exp_name': 'S2S-3x-12H-256',
+#                     'encoder_units':16,
+#                     'encoder_transformer_blocks': 1,
+#                     'decoder_units': 16,
+#                     'decoder_attention': True,
+#                     'decoder_transformer_blocks': 1,
+#                     'attention_heads': 3,
+#                     'fine_tune': False,
+#                     'test': False,
+#                     'dataset_path_list': ['/media/elizaveta/Seagate Portable Drive/egauge22785solar+'], #, '/media/elizaveta/Seagate Portable Drive/egauge22785solar+'],
+#                     })
 #
 # # Classic Transformer.
 # experiments.append({'model_type': 'Transformer',
@@ -335,23 +335,25 @@ experiments.append({'model_type': 'E-D',
 #                     'use_norm': True,
 #                     })
 
-# # Generator with full targets: supposed to be best!
-# experiments.append({'model_type': 'FFNN-Generator',
-#                     'exp_name': 'FFNNGen-full-solar-L1',
-#                     'full_targets': True, # only set for full target
-#                     'encoder_units': 256,
-#                      'encoder_self_attention': True,
-#                     'encoder_transformer_blocks': 1,
-#                     'decoder_units': 256,
-#                     'decoder_self_attention': True,
-#                     'decoder_attention': True,
-#                     'decoder_transformer_blocks': 3,
-#                     'attention_heads': 12,
-#                     'positional_embedding': True,
-#                     'use_residual': True,
-#                     'use_norm': True,
-#                     'fine_tune': True,
-#                     })
+# Generator with full targets: supposed to be best!
+experiments.append({'model_type': 'FFNN-Generator',
+                    'exp_name': 'FFNNGen-full-solar-L1',
+                    'full_targets': True, # only set for full target
+                    'encoder_units': 256,
+                     'encoder_self_attention': True,
+                    'encoder_transformer_blocks': 1,
+                    'decoder_units': 256,
+                    'decoder_self_attention': True,
+                    'decoder_attention': True,
+                    'decoder_transformer_blocks': 3,
+                    'attention_heads': 12,
+                    'positional_embedding': True,
+                    'use_residual': True,
+                    'use_norm': True,
+                    'fine_tune': False,
+                    'test': False,
+                    'dataset_path_list': ['/media/elizaveta/Seagate Portable Drive/egauge2474solar+', '/media/elizaveta/Seagate Portable Drive/egauge4183solar+'],
+                    })
 
 # do_experiment(**experiments[0])
 
@@ -360,7 +362,7 @@ for exp_args in experiments: #range(len(experiments)):
     do_experiment(**exp_args)
     # test on the new dataset
     exp_args['test'] = True
-    exp_args['dataset_path_list'] = ['NWP_data/PVHouse1'] # TODO: CHANGE DATASET NAMES HERE
+    exp_args['dataset_path_list'] = ['/media/elizaveta/Seagate Portable Drive/egauge22785solar+'] # TODO: CHANGE DATASET NAMES HERE
     do_experiment(**exp_args)
     # fine-tune on the new dataset
     exp_args['test'] = False

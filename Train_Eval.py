@@ -119,13 +119,13 @@ class Model_Container():
         # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
         #
         # with strategy.scope():
-        folder_name = self.model_kwargs['model_type']
+        folder_name = self.model_kwargs['model_type'] + '_' + self.experiment_name 
 
         self.__build_model(**self.model_kwargs)
 
         train_history, test_results = self.__train_model()
         print('Saving model to ...', folder_name)
-        self.model.save_weights(folder_name + '_' + self.experiment_name + "/model_ckpt")
+        self.model.save_weights(folder_name + "/model_ckpt")
         del self.model
 
         tf.keras.backend.clear_session()
@@ -145,18 +145,18 @@ class Model_Container():
         # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
         #
         # with strategy.scope():
-        folder_name = self.model_kwargs['model_type']
-        if not os.path.isdir('./'+folder_name): # if there are no weights in the folder 
+        folder_name = self.model_kwargs['model_type'] + '_' + self.experiment_name
+        if not os.path.isdir('./' + folder_name): # if there are no weights in the folder 
             print('There is an error with finding model checkpoint. Folder', folder_name, 'does not exist.')
 
         self.__build_model(**self.model_kwargs)
 
-        print('Loading model weights from checkpoint...', folder_name)
-        self.model.load_weights(folder_name + '_' + self.experiment_name  + "/model_ckpt")
+        print('...Loading model weights from checkpoint...', folder_name)
+        self.model.load_weights(folder_name + "/model_ckpt")
 
         train_history, test_results = self.__train_model()
         print('Saving fine-tuned model to ...', folder_name)
-        self.model.save_weights(folder_name + '_' + self.experiment_name  + "/model_ckpt")
+        self.model.save_weights(folder_name + "/model_ckpt")
         del self.model
 
         tf.keras.backend.clear_session()
@@ -174,14 +174,14 @@ class Model_Container():
         # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
         #
         # with strategy.scope():
-        folder_name = self.model_kwargs['model_type']
+        folder_name = self.model_kwargs['model_type']  + '_' + self.experiment_name
         if not os.path.isdir('./'+folder_name): # if there are no weights in the folder 
             print('There is an error with finding model checkpoint. Folder', folder_name, 'does not exist.')
 
         self.__build_model(**self.model_kwargs)
 
-        print('Loading model weights from checkpoint...', folder_name)
-        self.model.load_weights(folder_name + '_' + self.experiment_name  + "/model_ckpt").expect_partial()
+        print('...Loading model weights from checkpoint...', folder_name)
+        self.model.load_weights(folder_name + "/model_ckpt").expect_partial()
 
         test_results = self.__test_model()
         del self.model

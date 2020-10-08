@@ -77,8 +77,7 @@ def drop_features_of_signal(input, dropout_rate):
                               dropout_rate,
                               noise_shape=(batch_dim, 1, input.shape[2]),
                               ),
-                alt=input,
-                training=tf.keras.backend.learning_phase())
+                alt=input,)
 
 def drop_timesteps_of_signal(input, dropout_rate):
     batch_dim = tf.shape(input)[0]
@@ -86,8 +85,7 @@ def drop_timesteps_of_signal(input, dropout_rate):
     #     batch_dim = 128
     return tf.keras.backend.in_train_phase(
                 tf.nn.dropout(input, dropout_rate, noise_shape=(batch_dim, input.shape[1], 1)),
-                alt=input,
-                training=tf.keras.backend.learning_phase())
+                alt=input,)
 
 class Cropping_layer(tf.keras.layers.Layer):
     def __init__(self, noise_rate=0.2):
@@ -96,8 +94,7 @@ class Cropping_layer(tf.keras.layers.Layer):
 
     def call(self, signal):
         return tf.keras.backend.in_train_phase(self.randomize_input_lengths(signal),
-                                                    alt=signal,
-                                                    training=tf.keras.backend.learning_phase())
+                                                    alt=signal,)
 
     def randomize_input_lengths(self, signal):
 
@@ -968,8 +965,7 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                                                    alt=self.self_recurrent_call(prev_history,
                                                                                 decoder_init_state,
                                                                                 attention_value,
-                                                                                timesteps),
-                                                   training=tf.keras.backend.learning_phase())
+                                                                                timesteps),)
 
         return forecast
 
@@ -1236,8 +1232,7 @@ class CNN_decoder(tf.keras.layers.Layer):
     def call(self, history_input, teacher, attention_value, timesteps):
         return tf.keras.backend.in_train_phase(self.training_call(history_input, teacher, attention_value, timesteps),
                                                alt=self.inference_call(history_input, teacher, attention_value,
-                                                                       timesteps),
-                                               training=tf.keras.backend.learning_phase())
+                                                                       timesteps),)
 
     def training_call(self, history_input, teacher, attention_value, timesteps):
         self.max_length = history_input.shape[1] + teacher.shape[1]
@@ -1456,8 +1451,7 @@ class FFNN_decoder(tf.keras.layers.Layer):
     def call(self, history_input, teacher, attention_value, timesteps):
         forecast = tf.keras.backend.in_train_phase(self.training_call(history_input, teacher, attention_value, timesteps),
                                                alt=self.inference_call(history_input, teacher, attention_value,
-                                                                       timesteps),
-                                               training=tf.keras.backend.learning_phase())
+                                                                       timesteps),)
         return forecast
 
     def training_call(self, history_input, teacher, attention_value, timesteps):
@@ -1678,8 +1672,7 @@ class generator_Dense_block(tf.keras.layers.Layer):
         self.history_length = history.shape[1]
 
         forecast = tf.keras.backend.in_train_phase(self.training_call(tf.concat([history, teacher], axis=1)),
-                                        alt=self.validation_call(history),
-                                        training=tf.keras.backend.learning_phase())
+                                        alt=self.validation_call(history),)
 
         return forecast
 
@@ -1819,8 +1812,7 @@ class FFNN_LSTM_decoder(tf.keras.layers.Layer):
     def call(self, history_input, teacher, attention_value, timesteps):
         return tf.keras.backend.in_train_phase(self.training_call(history_input, teacher, attention_value, timesteps),
                                                alt=self.inference_call(history_input, teacher, attention_value,
-                                                                       timesteps),
-                                               training=tf.keras.backend.learning_phase())
+                                                                       timesteps),)
 
     def training_call(self, history_input, teacher, attention_value, timesteps):
         self.max_length = history_input.shape[1] + teacher.shape[1]

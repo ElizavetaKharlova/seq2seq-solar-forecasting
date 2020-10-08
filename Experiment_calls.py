@@ -72,11 +72,11 @@ def do_experiment(model_type,
 
                     # Regularization Hyperparameters
                         # 'use_dropout' : False, 'dropout_rate' : 0.0,
-                        'L1': 1e-5, 'L2': 1e-5,
+                        'L1': 0.0, 'L2': 0.0,
                         'use_norm' : use_norm,
                     }
 
-    train_kwargs = {'batch_size': 2**7 + 2**6 + 2**5,
+    train_kwargs = {'batch_size': 2**7,
                     'fine_tune': fine_tune}
     runs = 1
     metrics = {}
@@ -337,7 +337,7 @@ experiments = []
 
 # Generator with full targets: supposed to be best!
 experiments.append({'model_type': 'FFNN-Generator',
-                    'exp_name': 'FFNNGen-full-solar-L1',
+                    'exp_name': 'FFNNGen-full-grid-L1',
                     'full_targets': True, # only set for full target
                     'encoder_units': 256,
                      'encoder_self_attention': True,
@@ -352,7 +352,7 @@ experiments.append({'model_type': 'FFNN-Generator',
                     'use_norm': True,
                     'fine_tune': False,
                     'test': False,
-                    'dataset_path_list': ['/media/elizaveta/Seagate Portable Drive/egauge2474solar+', '/media/elizaveta/Seagate Portable Drive/egauge4183solar+'],
+                    'dataset_path_list': ['egauge2474grid', 'egauge4183grid'],
                     })
 
 # do_experiment(**experiments[0])
@@ -362,7 +362,7 @@ for exp_args in experiments: #range(len(experiments)):
     do_experiment(**exp_args)
     # test on the new dataset
     exp_args['test'] = True
-    exp_args['dataset_path_list'] = ['/media/elizaveta/Seagate Portable Drive/egauge22785solar+'] # TODO: CHANGE DATASET NAMES HERE
+    exp_args['dataset_path_list'] = ['egauge22785grid'] # TODO: CHANGE DATASET NAMES HERE
     do_experiment(**exp_args)
     # fine-tune on the new dataset
     exp_args['test'] = False

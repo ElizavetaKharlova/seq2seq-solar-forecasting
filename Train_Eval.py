@@ -544,7 +544,7 @@ class Model_Container():
 
     def __train_model(self):
 
-        epochs = 100
+        epochs = 5
         dataset = dataset_generator(dataset_path_list=self.dataset_path_list,
                               train_batch_size=self.train_kwargs['batch_size'],
                               support_shape=self.model_kwargs['support_shape'],

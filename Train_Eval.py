@@ -1,6 +1,7 @@
 # dumb variation of the encoder decoder
 # this will be using teacher forcing
 import tensorflow as tf
+import tensorflow_addons as tfa
 import numpy as np
 import copy
 import glob
@@ -524,15 +525,12 @@ class Model_Container():
                                                             # update_freq='epoch',
                                                             ))
 
-        # ToDo: for pre-training we definitively want brute-force learning and then SWA
-        # ToDo: for fine-tuning we might now want swa
         if not fine_tuning:
             print('setting autostop criteria to pretrain')
-            callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='EMC',
-                                                              baseline=0.9,
+            callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='loss',
                                                               min_delta=1e-4,
                                                               patience=20,
-                                                              mode='max',
+                                                              mode='min',
                                                               restore_best_weights=True))
         else:
             print('setting autostop criteria to fifnetune')
@@ -544,7 +542,7 @@ class Model_Container():
 
     def __train_model(self):
 
-        epochs = 5
+        epochs = 100
         dataset = dataset_generator(dataset_path_list=self.dataset_path_list,
                               train_batch_size=self.train_kwargs['batch_size'],
                               support_shape=self.model_kwargs['support_shape'],
@@ -570,12 +568,11 @@ class Model_Container():
 
         # For fine-tuning we want smaller learning rate
         # ToDo: make the learning rate or the optimizer adaptible from fine-tuning to pretraining....
-        schedule_parameter = self.model_kwargs['decoder_units']*10 if self.train_kwargs['fine_tune'] else self.model_kwargs['decoder_units']
+        schedule_parameter = self.model_kwargs['decoder_units']*10 if self.train_kwargs['fine_tune'] else self.model_kwargs['decoder_units']/8
 
-        optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps*8), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps*16), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
         # ToDo: figure this out, read the papert first
-        # if self.train_kwargs['fine_tune']:
-        #    opt = tfa.optimizers.SWA(opt, start_averaging=10, average_period=5, sequential_update=True)
+        # optimizer = tfa.optimizers.SWA(optimizer, start_averaging=(5*train_steps), average_period=int(train_steps/1000), sequential_update=True)
 
         loss, metrics = self.get_losses_and_metrics()
 
@@ -621,11 +618,11 @@ class Model_Container():
         test_steps = dataset.get_test_steps_per_epoch()
 
         # For fine-tuning we want smaller learning rate
-        schedule_parameter = self.model_kwargs['decoder_units']*10 if self.train_kwargs['fine_tune'] else self.model_kwargs['decoder_units']
+        schedule_parameter = self.model_kwargs['decoder_units']*10 if self.train_kwargs['fine_tune'] else self.model_kwargs['decoder_units']/4
 
         # Transformer LR schedule, doesnt work .... too fast
         # ToDO: what do we need the optimizer for?
-        optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps*8), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps*12), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
         loss, metrics = self.get_losses_and_metrics()
 
         self.model.compile(optimizer=optimizer, loss=loss, metrics=metrics)  # compile, print summary

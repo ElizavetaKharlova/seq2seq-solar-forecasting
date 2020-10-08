@@ -568,9 +568,17 @@ class Model_Container():
 
         # For fine-tuning we want smaller learning rate
         # ToDo: make the learning rate or the optimizer adaptible from fine-tuning to pretraining....
-        schedule_parameter = self.model_kwargs['decoder_units']*10 if self.train_kwargs['fine_tune'] else self.model_kwargs['decoder_units']/8
+        if self.train_kwargs['fine_tune']: #assuming we will be able to use the Transformer schedule for fine-tuning
+            schedule_parameter = self.model_kwargs['decoder_units']
+            optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps * 4),
+                                                 beta_1=0.9, beta_2=0.98, epsilon=1e-9)
 
-        optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps*16), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        else: #we assume we pretrain
+            schedule_parameter = self.model_kwargs['decoder_units']/8
+            optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps * 16),
+                                             beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+
+
         # ToDo: figure this out, read the papert first
         # optimizer = tfa.optimizers.SWA(optimizer, start_averaging=(5*train_steps), average_period=int(train_steps/1000), sequential_update=True)
 

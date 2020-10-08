@@ -156,8 +156,8 @@ class Model_Container():
         self.model.load_weights(folder_name + "/model_ckpt")
 
         train_history, test_results = self.__train_model()
-        print('Saving fine-tuned model to ...', folder_name)
-        self.model.save_weights(folder_name + "/model_ckpt")
+        print('Saving fine-tuned model to ...', folder_name + 'fine-tuned')
+        self.model.save_weights(folder_name + 'fine-tuned' + "/model_ckpt")
         del self.model
 
         tf.keras.backend.clear_session()

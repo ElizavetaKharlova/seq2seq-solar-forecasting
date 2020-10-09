@@ -9,7 +9,7 @@ class losses_and_metrics(object):
         self.target_as_expected_value = target_as_expected_value
         self.forecast_as_expected_value = forecast_as_expected_value
 
-    def __convert_to_expectedvalue_if_needed(self, signal, is_expected_value):
+    def _convert_to_expectedvalue_if_needed(self, signal, is_expected_value):
         if not is_expected_value:
             indices = tf.range(self.last_output_dim_size, dtype=tf.float32)  # (last_output_dim_size)
             expected_value = tf.multiply(signal, indices)  # (batches, timesteps, last_output_dim_size)
@@ -19,20 +19,20 @@ class losses_and_metrics(object):
             return signal
 
     def nME(self, target, prediction):
-        e_target = self.__convert_to_expectedvalue_if_needed(target, self.target_as_expected_value)
-        e_prediction = self.__convert_to_expectedvalue_if_needed(prediction, self.forecast_as_expected_value)
+        e_target = self._convert_to_expectedvalue_if_needed(target, self.target_as_expected_value)
+        e_prediction = self._convert_to_expectedvalue_if_needed(prediction, self.forecast_as_expected_value)
         expected_nME = calculate_E_ME(e_target, e_prediction)/self.normalizer_value
         return expected_nME
 
     def nRMSE(self, target, prediction):
-        e_target = self.__convert_to_expectedvalue_if_needed(target, self.target_as_expected_value)
-        e_prediction = self.__convert_to_expectedvalue_if_needed(prediction, self.forecast_as_expected_value)
+        e_target = self._convert_to_expectedvalue_if_needed(target, self.target_as_expected_value)
+        e_prediction = self._convert_to_expectedvalue_if_needed(prediction, self.forecast_as_expected_value)
         nRMSE = calculate_E_RMSE(e_target, e_prediction)/self.normalizer_value
         return nRMSE
 
     def MSE(self, target, prediction):
-        e_target = self.__convert_to_expectedvalue_if_needed(target, self.target_as_expected_value)
-        e_prediction = self.__convert_to_expectedvalue_if_needed(prediction, self.forecast_as_expected_value)
+        e_target = self._convert_to_expectedvalue_if_needed(target, self.target_as_expected_value)
+        e_prediction = self._convert_to_expectedvalue_if_needed(prediction, self.forecast_as_expected_value)
         expected_MSE = tf.square(e_target - e_prediction)
         return tf.reduce_mean(expected_MSE, axis=-1)
     def KLD(self, target, prediction):

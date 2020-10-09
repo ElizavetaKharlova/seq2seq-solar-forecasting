@@ -18,6 +18,8 @@ PVHouse1/
 
 data/
 
+models/
+
 CNN_scale_axis_causal_mask/
 
 Daniels_Dataset_smaller/ 

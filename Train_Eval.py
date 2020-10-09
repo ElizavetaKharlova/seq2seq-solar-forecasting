@@ -110,6 +110,7 @@ class Model_Container():
 
         self.model_kwargs = model_kwargs
         self.train_kwargs = train_kwargs
+        self.folder_name = 'models/MODEL' + '_' + self.experiment_name 
 
     def get_results(self):
         tf.keras.backend.clear_session() # make sure we are working clean
@@ -120,13 +121,13 @@ class Model_Container():
         # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
         #
         # with strategy.scope():
-        folder_name = self.model_kwargs['model_type'] + '_' + self.experiment_name 
 
         self.__build_model(**self.model_kwargs)
-
+        
+        self.experiment_name = self.experiment_name + '-pre-trained' # to save tensorboard curves in an appropriate folder
         train_history, test_results = self.__train_model()
-        print('Saving model to ...', folder_name)
-        self.model.save_weights(folder_name + "/model_ckpt")
+        print('Saving model to ...', self.folder_name)
+        self.model.save_weights(self.folder_name + "/model_ckpt")
         del self.model
 
         tf.keras.backend.clear_session()
@@ -144,20 +145,24 @@ class Model_Container():
         # # cross_ops = tf.distribute.ReductionToOneDevice()
         # cross_ops = tf.distribute.HierarchicalCopyAllReduce()
         # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
-        #
+        # '/media/elizaveta/Seagate Portable Drive/' + 
         # with strategy.scope():
-        folder_name = self.model_kwargs['model_type'] + '_' + self.experiment_name
-        if not os.path.isdir('./' + folder_name): # if there are no weights in the folder 
-            print('There is an error with finding model checkpoint. Folder', folder_name, 'does not exist.')
+
+        if not os.path.isdir('./' + self.folder_name): #'./' + folder_name): # if there are no weights in the folder 
+            print('There is an error with finding model checkpoint. Folder', self.folder_name, 'does not exist.')
 
         self.__build_model(**self.model_kwargs)
 
-        print('...Loading model weights from checkpoint...', folder_name)
-        self.model.load_weights(folder_name + "/model_ckpt")
+        self.experiment_name = self.experiment_name + '-fine-tuned-' + self.dataset_path_list[0] # to save tensorboard curves in an appropriate folder
+
+        print('...Loading model weights from checkpoint...', self.folder_name)
+        self.model.load_weights(self.folder_name + "/model_ckpt")
 
         train_history, test_results = self.__train_model()
-        print('Saving fine-tuned model to ...', folder_name + 'fine-tuned')
-        self.model.save_weights(folder_name + 'fine-tuned' + "/model_ckpt")
+
+        self.folder_name = self.folder_name + '-fine-tuned-' + self.dataset_path_list[0] # to save the new model
+        print('Saving fine-tuned model to ...', self.folder_name)
+        self.model.save_weights(self.folder_name + "/model_ckpt")
         del self.model
 
         tf.keras.backend.clear_session()
@@ -175,14 +180,14 @@ class Model_Container():
         # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
         #
         # with strategy.scope():
-        folder_name = self.model_kwargs['model_type']  + '_' + self.experiment_name
-        if not os.path.isdir('./'+folder_name): # if there are no weights in the folder 
-            print('There is an error with finding model checkpoint. Folder', folder_name, 'does not exist.')
+
+        if not os.path.isdir('./'+self.folder_name): # if there are no weights in the folder 
+            print('There is an error with finding model checkpoint. Folder', self.folder_name, 'does not exist.')
 
         self.__build_model(**self.model_kwargs)
 
-        print('...Loading model weights from checkpoint...', folder_name)
-        self.model.load_weights(folder_name + "/model_ckpt").expect_partial()
+        print('...Loading model weights from checkpoint...', self.folder_name)
+        self.model.load_weights(self.folder_name + "/model_ckpt").expect_partial()
 
         test_results = self.__test_model()
         del self.model

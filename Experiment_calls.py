@@ -88,6 +88,7 @@ def do_experiment(model_type,
                                         sw_len_days=sliding_window_length_days,
                                         model_kwargs=model_kwargs,
                                         train_kwargs=train_kwargs,)
+            experiment_name = experiment_name + '-pre-trained'
             print('Training model', model_type, experiment_name)
             results_dict = experiment.get_results()
             tf.keras.backend.clear_session()
@@ -99,6 +100,7 @@ def do_experiment(model_type,
                                         sw_len_days=sliding_window_length_days,
                                         model_kwargs=model_kwargs,
                                         train_kwargs=train_kwargs,)
+            experiment_name = experiment_name + '-fine-tuned-' + dataset_path_list[0]
             print('Fine-tuning model', model_type, experiment_name)
             results_dict = experiment.fine_tune()
             tf.keras.backend.clear_session()
@@ -110,6 +112,7 @@ def do_experiment(model_type,
                                         sw_len_days=sliding_window_length_days,
                                         model_kwargs=model_kwargs,
                                         train_kwargs=train_kwargs,)
+            experiment_name = experiment_name + '-test'
             print('Testing model', model_type, experiment_name)
             results_dict = experiment.test()
             tf.keras.backend.clear_session()
@@ -355,7 +358,6 @@ experiments.append({'model_type': 'FFNN-Generator',
                     'dataset_path_list': ['egauge2474grid', 'egauge4183grid'],
                     })
 
-# do_experiment(**experiments[0])
 
 # do our experiments
 for exp_args in experiments: #range(len(experiments)):

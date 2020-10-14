@@ -540,7 +540,7 @@ class Model_Container():
         else:
             print('setting autostop criteria to fifnetune')
             callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
-                                                              patience=40,
+                                                              patience=10,
                                                               mode='min',
                                                               restore_best_weights=True))
         return callbacks
@@ -572,20 +572,27 @@ class Model_Container():
         test_steps = dataset.get_test_steps_per_epoch()
 
         # For fine-tuning we want smaller learning rate
-        # ToDo: make the learning rate or the optimizer adaptible from fine-tuning to pretraining....
         if self.train_kwargs['fine_tune']: #assuming we will be able to use the Transformer schedule for fine-tuning
-            schedule_parameter = self.model_kwargs['decoder_units']
-            optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps * 4),
-                                                 beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+            schedule_parameter = int(self.model_kwargs['decoder_units'])
+            optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter,
+                                                                warmup_steps=train_steps * 4),
+                                                                beta_1=0.9,
+                                                                beta_2=0.98,
+                                                                epsilon=1e-9)
 
         else: #we assume we pretrain
-            schedule_parameter = self.model_kwargs['decoder_units']/8
-            optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps * 16),
-                                             beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+            schedule_parameter = int(self.model_kwargs['decoder_units']/8)
+            optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter,
+                                                                warmup_steps=train_steps * 16),
+                                                                beta_1=0.9,
+                                                                beta_2=0.98,
+                                                                epsilon=1e-9)
 
 
-        # ToDo: figure this out, read the papert first
-        # optimizer = tfa.optimizers.SWA(optimizer, start_averaging=(5*train_steps), average_period=int(train_steps/1000), sequential_update=True)
+        optimizer = tfa.optimizers.SWA(optimizer,
+                                       start_averaging=int(5*train_steps),
+                                       average_period=int(max(20, train_steps/100)),
+                                       sequential_update=True)
 
         loss, metrics = self.get_losses_and_metrics()
 
@@ -912,7 +919,7 @@ class dataset_generator():
         dataset = dataset.map(process_sample, num_parallel_calls=5)
         dataset = dataset.repeat()
 
-        dataset = dataset.shuffle(50 * batch_size, reshuffle_each_iteration=True)
+        dataset = dataset.shuffle(20 * batch_size, reshuffle_each_iteration=True)
         dataset = dataset.batch(batch_size, drop_remainder=False)
         dataset = dataset.prefetch(3)
         return dataset

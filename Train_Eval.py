@@ -14,6 +14,7 @@ def check_dataset_length(dataset_path):
     if os.path.isdir(dataset_path):
         file_list = glob.glob(dataset_path + '/*.tfrecord')
         return len(file_list)
+
 def aggregate_dataset_info(dataset_path_list):
     print('extracting dataset information')
 
@@ -71,6 +72,7 @@ def aggregate_dataset_info(dataset_path_list):
 
     print(aggregated_dataset_info)
     return aggregated_dataset_info
+
 class Model_Container():
     def __init__(self,
                  dataset_path_list,
@@ -110,9 +112,9 @@ class Model_Container():
 
         self.model_kwargs = model_kwargs
         self.train_kwargs = train_kwargs
-        self.folder_name = 'models/MODEL' + '_' + self.experiment_name 
+        self.folder_name = 'models/' + self.experiment_name
 
-    def get_results(self):
+    def train(self):
         tf.keras.backend.clear_session() # make sure we are working clean
 
         self.metrics = {}
@@ -122,10 +124,21 @@ class Model_Container():
         #
         # with strategy.scope():
 
+
         self.__build_model(**self.model_kwargs)
-        
-        self.experiment_name = self.experiment_name + '-pre-trained' # to save tensorboard curves in an appropriate folder
+
+        if self.train_kwargs['mode'] == 'fine-tune':
+            pretrain_folder = self.folder_name + '-pre-trained'
+            if not os.path.isdir('./' + pretrain_folder): #'./' + folder_name): # if there are no weights in the folder
+                print('There is an error with finding model checkpoint. Folder ', pretrain_folder, 'does not exist.')
+            else:
+                print('...Loading model weights from checkpoint...', pretrain_folder)
+                self.model.load_weights(pretrain_folder + "/model_ckpt")
+
+        self.experiment_name = self.experiment_name  # to save tensorboard curves in an appropriate folder
+
         train_history, test_results = self.__train_model()
+
         print('Saving model to ...', self.folder_name)
         self.model.save_weights(self.folder_name + "/model_ckpt")
         del self.model
@@ -137,39 +150,6 @@ class Model_Container():
         return results_dict
 
     # ToDo: maybe build the model separately before when we call the experiment, and then in fine tune load the weights and go from there?
-
-    def fine_tune(self):
-        tf.keras.backend.clear_session() # make sure we are working clean
-
-        self.metrics = {}
-        # # cross_ops = tf.distribute.ReductionToOneDevice()
-        # cross_ops = tf.distribute.HierarchicalCopyAllReduce()
-        # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
-        # '/media/elizaveta/Seagate Portable Drive/' + 
-        # with strategy.scope():
-
-        if not os.path.isdir('./' + self.folder_name): #'./' + folder_name): # if there are no weights in the folder 
-            print('There is an error with finding model checkpoint. Folder', self.folder_name, 'does not exist.')
-
-        self.__build_model(**self.model_kwargs)
-
-        self.experiment_name = self.experiment_name + '-fine-tuned-' + self.dataset_path_list[0] # to save tensorboard curves in an appropriate folder
-
-        print('...Loading model weights from checkpoint...', self.folder_name)
-        self.model.load_weights(self.folder_name + "/model_ckpt")
-
-        train_history, test_results = self.__train_model()
-
-        self.folder_name = self.folder_name + '-fine-tuned-' + self.dataset_path_list[0] # to save the new model
-        print('Saving fine-tuned model to ...', self.folder_name)
-        self.model.save_weights(self.folder_name + "/model_ckpt")
-        del self.model
-
-        tf.keras.backend.clear_session()
-        results_dict = self.__manage_metrics(train_history, test_results)
-        del self.train_kwargs
-
-        return results_dict
 
     def test(self):
         tf.keras.backend.clear_session() # make sure we are working clean
@@ -518,7 +498,6 @@ class Model_Container():
         return loss, metrics
 
     def __get_callbacks(self,
-                        fine_tuning=True,
                         tboard=True,
                         ):
         callbacks = []
@@ -530,20 +509,47 @@ class Model_Container():
                                                             # update_freq='epoch',
                                                             ))
 
-        if not fine_tuning:
-            print('setting autostop criteria to pretrain')
+        if self.train_kwargs['mode'] ==  'pre-train':
+            print('setting autostop criteria to lowest training loss')
             callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='loss',
                                                               min_delta=1e-4,
                                                               patience=20,
                                                               mode='min',
                                                               restore_best_weights=True))
-        else:
-            print('setting autostop criteria to fifnetune')
+        elif self.train_kwargs['mode'] ==  'fine-tune' or self.train_kwargs['mode'] == 'normal':
+            print('setting autostop criteria to lowest validation nRMSE')
             callbacks.append(tf.keras.callbacks.EarlyStopping(monitor='val_nRMSE',
                                                               patience=10,
                                                               mode='min',
                                                               restore_best_weights=True))
         return callbacks
+
+    def __get_optimizer(self, train_steps):
+        # For fine-tuning we want smaller learning rate
+        if self.train_kwargs['mode'] == 'fine-tune':  # assuming we will be able to use the Transformer schedule for fine-tuning
+            print('setting optimizer parameters to fine tuning')
+            schedule_parameter = int(self.model_kwargs['decoder_units'])
+            warmup_steps = train_steps * 4
+        elif self.train_kwargs['mode'] == 'normal':
+            print('setting optimizer parameters to normal training')
+            schedule_parameter = int(self.model_kwargs['decoder_units']/4)
+            warmup_steps = train_steps * 4
+        elif self.train_kwargs['mode'] == 'pre-train':
+            print('setting optimizer parameters to pre-training')
+            schedule_parameter = int(self.model_kwargs['decoder_units'] / 8)
+            warmup_steps = train_steps * 8
+
+        optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter,
+                                                            warmup_steps=warmup_steps),
+                                             beta_1=0.9,
+                                             beta_2=0.98,
+                                             epsilon=1e-9)
+
+        optimizer = tfa.optimizers.SWA(optimizer,
+                                       start_averaging=int(warmup_steps),
+                                       average_period=int(max(20, train_steps / 100)),
+                                       sequential_update=True)
+        return optimizer
 
     def __train_model(self):
 
@@ -571,32 +577,11 @@ class Model_Container():
         val_steps = dataset.get_val_steps_per_epoch()
         test_steps = dataset.get_test_steps_per_epoch()
 
-        # For fine-tuning we want smaller learning rate
-        if self.train_kwargs['fine_tune']: #assuming we will be able to use the Transformer schedule for fine-tuning
-            schedule_parameter = int(self.model_kwargs['decoder_units'])
-            optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter,
-                                                                warmup_steps=train_steps * 4),
-                                                                beta_1=0.9,
-                                                                beta_2=0.98,
-                                                                epsilon=1e-9)
-
-        else: #we assume we pretrain
-            schedule_parameter = int(self.model_kwargs['decoder_units']/8)
-            optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter,
-                                                                warmup_steps=train_steps * 16),
-                                                                beta_1=0.9,
-                                                                beta_2=0.98,
-                                                                epsilon=1e-9)
-
-
-        optimizer = tfa.optimizers.SWA(optimizer,
-                                       start_averaging=int(5*train_steps),
-                                       average_period=int(max(20, train_steps/100)),
-                                       sequential_update=True)
-
         loss, metrics = self.get_losses_and_metrics()
-
-        self.model.compile(optimizer=optimizer, loss=loss, metrics=metrics)  # compile, print summary
+        optimizer = self.__get_optimizer(train_steps)
+        self.model.compile(optimizer=optimizer,
+                           loss=loss,
+                           metrics=metrics)  # compile, print summary
 
         print('starting to train model')
         train_history = self.model.fit(train_set(),
@@ -605,7 +590,7 @@ class Model_Container():
                                         verbose=2,
                                         validation_data=val_set(),
                                         validation_steps=val_steps,
-                                        callbacks=self.__get_callbacks(fine_tuning=self.train_kwargs['fine_tune'], tboard=True))
+                                        callbacks=self.__get_callbacks(tboard=True))
 
         # ToDo: why do we test here if we also have a class that is called test??
         test_results = self.model.evaluate(test_set(),
@@ -634,15 +619,11 @@ class Model_Container():
         elif 'E-D' in self.model_kwargs['model_type'] or self.model_kwargs['model_type'] == 'Transformer':
             test_set = dataset.pdf_s2s_test_dataset
 
-        train_steps = dataset.get_train_steps_per_epoch()
         test_steps = dataset.get_test_steps_per_epoch()
-
-        # For fine-tuning we want smaller learning rate
-        schedule_parameter = self.model_kwargs['decoder_units']*10 if self.train_kwargs['fine_tune'] else self.model_kwargs['decoder_units']/4
 
         # Transformer LR schedule, doesnt work .... too fast
         # ToDO: what do we need the optimizer for?
-        optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter, warmup_steps=train_steps*12), beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        optimizer = tf.keras.optimizers.Adam(1e-9, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
         loss, metrics = self.get_losses_and_metrics()
 
         self.model.compile(optimizer=optimizer, loss=loss, metrics=metrics)  # compile, print summary
@@ -654,7 +635,6 @@ class Model_Container():
         del dataset
 
         return test_results
-
 
 
     def __manage_metrics(self, train_history, test_results):

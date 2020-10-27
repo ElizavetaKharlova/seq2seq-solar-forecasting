@@ -16,6 +16,17 @@ import numpy as np
 import tensorflow as tf
 import os
 #-----------------------------------------------------------------------------------------------------------------------
+def _check_df_for_nans(dataframe):
+    print(dataframe.columns)
+    for column in dataframe.columns:
+        if 'Time' not in column:
+            print(column)
+            array = dataframe[column].to_numpy()
+            is_nan = np.isnan(array)
+            if any(is_nan) == True:
+                print('discovered NaN(s) in columns', column)
+                positions = np.argwhere(is_nan)
+                print('positions:', positions)
 # create list of profile names
 def list_of_profile_names(engine):
     find_profile_names = """
@@ -79,7 +90,7 @@ def assemble_weather_info(profile_name, location):
             nwp_pd.append(single_csv)
         nwp_pd = pd.concat(nwp_pd,  ignore_index=True)
                 # merge the two together
-
+        nwp_pd = nwp_pd.drop(nwp_pd.index[0])
         return nwp_pd
     else:
         print('didnt find the profile you wanted to use in the NWP_data folder')
@@ -87,42 +98,42 @@ def assemble_weather_info(profile_name, location):
 def read_and_process_single_csv(file_path):
     nwp_pd = pd.read_csv(file_path)
 
-    drop_indices = nwp_pd[nwp_pd['Time']=='Time'].index #catch if Nigel fucked up merging still
+    drop_indices = nwp_pd[nwp_pd['Time (UTC)']=='Time (UTC)'].index #catch if Nigel fucked up merging still
     nwp_pd = nwp_pd.drop(drop_indices)
     nwp_pd = nwp_pd.reset_index()
 
     for index in range(nwp_pd.shape[0]): #for some reason its doing dumb instable shit without the -1 ...
-        time_string = nwp_pd['Time'][index]
+        time_string = nwp_pd['Time (UTC)'][index]
         # optionally guess datetime_format here once
         time_tuple = datetime.datetime.strptime(time_string, '%Y-%m-%d %H:%M').timetuple()
         time_stamp = time.mktime(time_tuple)
-        nwp_pd.at[index, 'Time'] = int(time_stamp)
+        nwp_pd.at[index, 'Time (UTC)'] = int(time_stamp)
 
     return nwp_pd
 
 # We'll need to synchronize this shit with the datetime arrays
 def crop_dataframes_accordingly(nwp_df, profile_df):
     # Find the inner start index for both arrays and crop
-    common_start_ts = max(nwp_df.iloc[0]['Time'], profile_df.iloc[0]['tstamp'])
+    common_start_ts = max(nwp_df.iloc[0]['Time (UTC)'], profile_df.iloc[0]['tstamp'])
     profile_df = profile_df[profile_df['tstamp'] >= common_start_ts]
     profile_df.reset_index()
 
-    nwp_df = nwp_df[nwp_df['Time'] >= common_start_ts]
+    nwp_df = nwp_df[nwp_df['Time (UTC)'] >= common_start_ts]
     nwp_df.reset_index()
     print('Cropped to the same starting timestamp at: ', common_start_ts)
-    print('Nwp dataframe shape is ', nwp_df.shape, ' starting at ts', nwp_df.iloc[0]['Time'], 'going to ',
-          nwp_df.iloc[-1]['Time'])
+    print('Nwp dataframe shape is ', nwp_df.shape, ' starting at ts', nwp_df.iloc[0]['Time (UTC)'], 'going to ',
+          nwp_df.iloc[-1]['Time (UTC)'])
     print('profile dataframe shape is ', profile_df.shape, ' starting at ts', profile_df.iloc[0]['tstamp'], 'going to ',
           profile_df.iloc[-1]['tstamp'])
     # find the last inner index for both, but remember that we need to adjust their time resolutions ...
     # basically we expect the NWP to be sth like this:                   *   *   *   *   *   *
     # So the historical shit will have to be cropped like this:          ************************
     # so the last profile point has to be 1 profile_sample point before the potential next NWP sample point in time
-    nwp_last_ts = nwp_df.iloc[-1]['Time']
+    nwp_last_ts = nwp_df.iloc[-1]['Time (UTC)']
     profile_last_ts = profile_df.iloc[-1]['tstamp']
 
     profile_delta_ts = profile_df.iloc[1]['tstamp'] - profile_df.iloc[0]['tstamp']
-    nwp_delta_ts = nwp_df.iloc[1]['Time'] - nwp_df.iloc[0]['Time']
+    nwp_delta_ts = nwp_df.iloc[1]['Time (UTC)'] - nwp_df.iloc[0]['Time (UTC)']
     necessary_offset = nwp_delta_ts - profile_delta_ts
 
     # this assumes that the resolution and timespots of shots are synchronized!
@@ -143,11 +154,11 @@ def crop_dataframes_accordingly(nwp_df, profile_df):
 
     profile_df = profile_df[profile_df['tstamp'] <= profile_crop_ts]
     profile_df.reset_index()
-    nwp_df = nwp_df[nwp_df['Time'] <= nwp_crop_ts]
+    nwp_df = nwp_df[nwp_df['Time (UTC)'] <= nwp_crop_ts]
     nwp_df.reset_index()
     print('Cropped to the adequate end timestamps')
-    print('Nwp dataframe shape is ', nwp_df.shape, ' starting at ts', nwp_df.iloc[0]['Time'], 'going to ',
-          nwp_df.iloc[-1]['Time'])
+    print('Nwp dataframe shape is ', nwp_df.shape, ' starting at ts', nwp_df.iloc[0]['Time (UTC)'], 'going to ',
+          nwp_df.iloc[-1]['Time (UTC)'])
     print('profile dataframe shape is ', profile_df.shape, ' starting at ts', profile_df.iloc[0]['tstamp'], 'going to ',
           profile_df.iloc[-1]['tstamp'])
     return nwp_df, profile_df
@@ -187,15 +198,17 @@ def split_into_sets(profile_df, nwp_df):
         test_profile_df = test_val_profile_df.iloc[0:int(test_val_profile_df.shape[0] / 2)]
         val_profile_df = test_val_profile_df.iloc[int(test_val_profile_df.shape[0] / 2):]
 
-        train_nwp_df = nwp_df[nwp_df['Time'] >= min(nwp_df['Time']) + 2 * 365 * 24 * 60 * 60]
-        test_val_nwp_df = nwp_df[nwp_df['Time'] < min(nwp_df['Time']) + 2 * 365 * 24 * 60 * 60]
+        train_nwp_df = nwp_df[nwp_df['Time (UTC)'] >= min(nwp_df['Time (UTC)']) + 2 * 365 * 24 * 60 * 60]
+        test_val_nwp_df = nwp_df[nwp_df['Time (UTC)'] < min(nwp_df['Time (UTC)']) + 2 * 365 * 24 * 60 * 60]
         test_nwp_df = test_val_nwp_df.iloc[0:int(test_val_nwp_df.shape[0] / 2)]
         val_nwp_df = test_val_nwp_df.iloc[int(test_val_nwp_df.shape[0] / 2):]
 
     return train_profile_df, val_profile_df, test_profile_df, train_nwp_df, val_nwp_df, test_nwp_df
 
 # We'll chunk it up in samples, do a data blabla
-def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, bins=50, set_name='TrialSet', subset_type='train', intersample_factor=None):
+def split_into_and_save_samples(profile_df, nwp_df,
+                                sliding_window=7*24*60*60,
+                                bins=50, set_name='TrialSet', subset_type='train', every_xth_sample=1):
     # for each timestep in the nwp_df, crop the sliding window
     # find the corresponding start in the profile_df +24*60*60 ahead and crop the corresponding window
 
@@ -215,12 +228,14 @@ def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, b
     os.mkdir(subset_type)  # create a folder, move to the folder
     os.chdir((dataset_folder_path + '/' + subset_type))
 
-    nwp_df = downsample_df(nwp_df, factor=2)  # ToDo: for now because Nigel's fault
-    if intersample_factor is not None:
-        nwp_df = interpolate_weather(nwp_df, factor=intersample_factor)
+    # ToDo: might no longer be necessary
+    # nwp_df = downsample_df(nwp_df, factor=2)
+    # if intersample_factor is not None:
+    #     nwp_df = interpolate_weather(nwp_df, factor=intersample_factor)
 
-    valid_timestamps = nwp_df[nwp_df['Time']< (max(nwp_df['Time'])-sliding_window)]
-    valid_timestamps = valid_timestamps['Time'].to_list()
+    valid_timestamps = nwp_df[nwp_df['Time (UTC)']< (max(nwp_df['Time (UTC)'])-sliding_window)]
+    valid_timestamps = valid_timestamps['Time (UTC)'].to_list()
+    valid_timestamps = valid_timestamps[::every_xth_sample]
     progress_norm = len(valid_timestamps)
     counter = 0
     targets = []
@@ -228,25 +243,23 @@ def split_into_and_save_samples(profile_df, nwp_df, sliding_window=7*24*60*60, b
 
     prev_modulo = np.inf
     baseline_dict = {}
-    #ToDo: maybe do not take every 5 min sample of the nwp but instead every 15min sample of the nwp?
+
     for start_tstamp in valid_timestamps:
 
         #This query takes from a dataframe: all the entries with a timestamp larger than the start timestamp
         # and then discards all the entries with a timestamp larger than start+sw
-        nwp_sample_df = nwp_df[nwp_df['Time']>=start_tstamp]
-        nwp_sample_df = nwp_sample_df[start_tstamp+sliding_window > nwp_sample_df['Time']]
-        # downsample back to 15 min
-        if intersample_factor is not None:
-            nwp_sample_df = downsample_df(nwp_sample_df, factor=intersample_factor) #ToDo: For now because Nigel
+        nwp_sample_df = nwp_df[nwp_df['Time (UTC)']>=start_tstamp]
+        nwp_sample_df = nwp_sample_df[start_tstamp+sliding_window > nwp_sample_df['Time (UTC)']]
+
+        nwp_sample_df = downsample_df(nwp_sample_df, factor=3)
 
         # ToDo: those lenghts should be a function fo the sliding window size if we wanna be fancy
-        if nwp_sample_df.shape[0] == sliding_window/(2*15*60):
-            nwp_sample_df = nwp_sample_df.drop('Time', axis=1)
+        if nwp_sample_df.shape[0] == int(sliding_window/(15*60)):
+            nwp_sample_df = nwp_sample_df.drop('Time (UTC)', axis=1)
 
             profile_sample_df = profile_df[profile_df['tstamp']>=start_tstamp]
             profile_sample_df = profile_sample_df[profile_sample_df['tstamp'] < start_tstamp + sliding_window]
             profile_sample_df = profile_sample_df.drop('tstamp', axis=1)
-
             # ToDo: those lenghts should be a function fo the sliding window size if we wanna be fancy
             if profile_sample_df.shape[0] == sliding_window/60:
                 raw_profile_sample_np = profile_sample_df.to_numpy()
@@ -366,9 +379,9 @@ def manage_features(nwp_df, target_data_type='solar+', location='Seattle'):
 
     #ToDO: remove once Nigel has new NWP with fixed timezone
     if location is 'Seattle':
-        nwp_df['Time'] = nwp_df['Time'] - 7*60*60
+        nwp_df['Time (UTC)'] = nwp_df['Time (UTC)'] - 6 * 60 * 60
     elif location is 'Edmonton':
-        nwp_df['Time'] = nwp_df['Time'] - 8 * 60 * 60
+        nwp_df['Time (UTC)'] = nwp_df['Time (UTC)'] - 6 * 60 * 60
     # general
     if "index" in nwp_df.columns:
         nwp_df = nwp_df.drop(columns=['index'])
@@ -382,20 +395,20 @@ def manage_features(nwp_df, target_data_type='solar+', location='Seattle'):
         nwp_df = nwp_df.drop(columns=['Long_Wave_Flux_Up [W/m2]'])
 
     if 'solar' in target_data_type:
-        year_sin, year_cos = add_sine(nwp_df['Time'], interval=365.25*24*60*60)
+        year_sin, year_cos = add_sine(nwp_df['Time (UTC)'], interval=365.25*24*60*60)
         nwp_df['Season_sin'] = year_sin
 
     elif 'grid' in target_data_type:
 
-        year_sin, year_cos = add_sine(nwp_df['Time'], interval=365.25*24*60*60)
+        year_sin, year_cos = add_sine(nwp_df['Time (UTC)'], interval=365.25*24*60*60)
         nwp_df['Season_sin'] = year_sin
 
-        week_sin, week_cos = add_sine(nwp_df['Time'], interval=7*24*60*60)
+        week_sin, week_cos = add_sine(nwp_df['Time (UTC)'], interval=7*24*60*60)
         nwp_df['Week_sin'] = week_sin
         nwp_df['Week_cos'] = week_cos
 
         if location == 'Seattle':
-            holidays_list = add_holidays(nwp_df['Time'])
+            holidays_list = add_holidays(nwp_df['Time (UTC)'])
             nwp_df['Holidays'] = holidays_list
 
         if 'Surface_Pressure [Pa]' in nwp_df.columns:
@@ -485,12 +498,17 @@ def generate_dataset(target_data_type, target_profile_name, location='Seattle'):
 
     nwp_df, profile_df = crop_dataframes_accordingly(nwp_df, profile_df) #crops and resets indixes so shit doesnt get bad
 
-    # downsampled_profile = downsample_df(profile_df, 15)
-    # downsampled_profile = downsampled_profile['solar+'].to_numpy()
-    # nwp_solar = nwp_df['Short_Wave_Flux_Down [W/m2]'].to_numpy()
-    # min_len = min(nwp_solar.shape[0], downsampled_profile.shape[0])
-    # corcoeffs = np.corrcoef(nwp_solar[:min_len], downsampled_profile[:min_len])
-    # print(corcoeffs)
+    downsampled_profile = downsample_df(profile_df, 5)
+    _check_df_for_nans(downsampled_profile)
+    downsampled_profile = downsampled_profile['solar+'].to_numpy()
+    _check_df_for_nans(nwp_df)
+    nwp_solar = nwp_df['Short_Wave_Flux_Down [W/m2]'].to_numpy()
+    min_len = min(nwp_solar.shape[0], downsampled_profile.shape[0])
+    nwp_solar = nwp_solar[:min_len]
+    downsampled_profile = downsampled_profile[:min_len]
+    print(nwp_solar.shape, downsampled_profile.shape)
+    corcoeffs = np.corrcoef(nwp_solar, downsampled_profile)
+    print('dataset corellation', corcoeffs)
 
     profile_df = __fix_history(profile_df, target_data_type, target_profile_name)
 
@@ -508,28 +526,28 @@ def generate_dataset(target_data_type, target_profile_name, location='Seattle'):
     set_name = target_profile_name + target_data_type
     dataset_info['test_baseline'], shape_dict = split_into_and_save_samples(profile_df=test_profile_df,
                                                                             nwp_df=test_nwp_df,
-                                                                            sliding_window=7*24*60*60,
+                                                                            sliding_window=5*24*60*60,
                                                                             bins=dataset_info['fc_tiles'],
                                                                             set_name=set_name,
                                                                             subset_type='test',
-                                                                            intersample_factor=None)
+                                                                            every_xth_sample=5)
     print('test shapes', shape_dict)
     dataset_info['val_baseline'], shape_dict= split_into_and_save_samples(profile_df=val_profile_df,
                                                                             nwp_df=val_nwp_df,
-                                                                            sliding_window=7*24*60*60,
+                                                                            sliding_window=5*24*60*60,
                                                                             bins=dataset_info['fc_tiles'],
                                                                             set_name=set_name,
                                                                             subset_type='validation',
-                                                                            intersample_factor=None)
+                                                                            every_xth_sample=5)
     print('val shapes', shape_dict)
 
     dataset_info['train_baseline'], shape_dict = split_into_and_save_samples(profile_df=train_profile_df,
                                                                             nwp_df=train_nwp_df,
-                                                                            sliding_window=7*24*60*60,
+                                                                            sliding_window=5*24*60*60,
                                                                             bins=dataset_info['fc_tiles'],
                                                                             set_name=set_name,
                                                                             subset_type='train',
-                                                                            intersample_factor=5)
+                                                                            every_xth_sample=1)
     print('train shapes', shape_dict)
     for key in shape_dict:
         dataset_info[key] = shape_dict[key]
@@ -539,7 +557,7 @@ def generate_dataset(target_data_type, target_profile_name, location='Seattle'):
 
 # Generate and save dataset for load/PV and house.
 col_list = ['"solar+"','grid + "solar+"']
-generate_dataset(target_data_type=col_list[1], target_profile_name = 'egauge2474')
+generate_dataset(target_data_type=col_list[0], target_profile_name = 'egauge2474')
 #houses that are interesting:
 # egauge4183, but not grid
 # egauge22785

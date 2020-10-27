@@ -34,7 +34,7 @@ def do_experiment(model_type,
                     # --> which model do we load for fine-tuning?
                   # pretrain is a list of datasets --> pretrain on those
                     # --> what do we evaluate the pretrained model on? all the sets and then the fine tune set?
-                fine_tune=True,
+                mode='fine-tune', # normal, pre-train or fine-tune
                 test=False,
                 dataset_path_list=['egauge4183solar+', 'egauge2474solar+'],
                 ):
@@ -72,39 +72,43 @@ def do_experiment(model_type,
 
                     # Regularization Hyperparameters
                         # 'use_dropout' : False, 'dropout_rate' : 0.0,
-                        'L1': 0.0, 'L2': 0.0,
+                        'L1': 0.0, 'L2': 1e-5,
                         'use_norm' : use_norm,
                     }
 
-    train_kwargs = {'batch_size': 2**7,
-                    'fine_tune': fine_tune}
+    train_kwargs = {'batch_size': 2**5,
+                    'mode': mode}
     runs = 1
     metrics = {}
     for run in range(runs):
 
-        if not fine_tune and not test:
-            experiment = Model_Container(dataset_path_list=dataset_path_list,
-                                        experiment_name=experiment_name+str(run),
-                                        sw_len_days=sliding_window_length_days,
-                                        model_kwargs=model_kwargs,
-                                        train_kwargs=train_kwargs,)
+        if mode == 'normal':
+            print('Training model', model_type, experiment_name)
+
+        elif mode == 'pre-train':
             experiment_name = experiment_name + '-pre-trained'
             print('Training model', model_type, experiment_name)
-            results_dict = experiment.get_results()
-            tf.keras.backend.clear_session()
-            del experiment
-        
-        if fine_tune:
-            experiment = Model_Container(dataset_path_list=dataset_path_list,
-                                        experiment_name=experiment_name+str(run),
-                                        sw_len_days=sliding_window_length_days,
-                                        model_kwargs=model_kwargs,
-                                        train_kwargs=train_kwargs,)
+
+        elif mode =='fine-tune':
             experiment_name = experiment_name + '-fine-tuned-' + dataset_path_list[0]
             print('Fine-tuning model', model_type, experiment_name)
+
+        else:
+            print('no recognized training procedure requested')
+
+        experiment = Model_Container(dataset_path_list=dataset_path_list,
+                                    experiment_name=experiment_name+str(run),
+                                    sw_len_days=sliding_window_length_days,
+                                    model_kwargs=model_kwargs,
+                                    train_kwargs=train_kwargs,)
+
+        if mode == 'fine-tune':
             results_dict = experiment.fine_tune()
-            tf.keras.backend.clear_session()
-            del experiment
+        else:
+            results_dict = experiment.train()
+
+        tf.keras.backend.clear_session()
+        del experiment
 
         if test:
             experiment = Model_Container(dataset_path_list=dataset_path_list,
@@ -115,8 +119,9 @@ def do_experiment(model_type,
             experiment_name = experiment_name + '-test'
             print('Testing model', model_type, experiment_name)
             results_dict = experiment.test()
-            tf.keras.backend.clear_session()
-            del experiment
+
+
+
 
 
         for key in results_dict:
@@ -220,7 +225,7 @@ experiments = []
 #                     'attention_heads': 3,
 #                     'fine_tune': False,
 #                     'test': False,
-#                     'dataset_path_list': ['/media/elizaveta/Seagate Portable Drive/egauge22785solar+'], #, '/media/elizaveta/Seagate Portable Drive/egauge22785solar+'],
+#                     'dataset_path_list': ['egauge2474grid', 'egauge4183grid'], #, '/media/elizaveta/Seagate Portable Drive/egauge22785solar+'],
 #                     })
 #
 # # Classic Transformer.
@@ -340,22 +345,22 @@ experiments = []
 
 # Generator with full targets: supposed to be best!
 experiments.append({'model_type': 'FFNN-Generator',
-                    'exp_name': 'FFNNGen-full-grid-L1',
+                    'exp_name': 'FFNNGen-full',
                     'full_targets': True, # only set for full target
-                    'encoder_units': 256,
+                    'encoder_units': 256, #256
                      'encoder_self_attention': True,
                     'encoder_transformer_blocks': 1,
-                    'decoder_units': 256,
+                    'decoder_units': 256, #256
                     'decoder_self_attention': True,
                     'decoder_attention': True,
-                    'decoder_transformer_blocks': 3,
-                    'attention_heads': 12,
+                    'decoder_transformer_blocks': 3, #3
+                    'attention_heads': 12, #12
                     'positional_embedding': True,
                     'use_residual': True,
                     'use_norm': True,
-                    'fine_tune': False,
+                    'mode': 'normal',
                     'test': False,
-                    'dataset_path_list': ['egauge2474grid', 'egauge4183grid'],
+                    'dataset_path_list': ['egauge2474solar+'],
                     })
 
 
@@ -363,10 +368,10 @@ experiments.append({'model_type': 'FFNN-Generator',
 for exp_args in experiments: #range(len(experiments)):
     do_experiment(**exp_args)
     # test on the new dataset
-    exp_args['test'] = True
-    exp_args['dataset_path_list'] = ['egauge22785grid'] # TODO: CHANGE DATASET NAMES HERE
-    do_experiment(**exp_args)
-    # fine-tune on the new dataset
-    exp_args['test'] = False
-    exp_args['fine_tune'] = True
-    do_experiment(**exp_args)
+    # exp_args['test'] = True
+    # exp_args['dataset_path_list'] = ['egauge2474solar+'] # TODO: CHANGE DATASET NAMES HERE
+    # do_experiment(**exp_args)
+    # # fine-tune on the new dataset
+    # exp_args['test'] = False
+    # exp_args['fine_tune'] = True
+    # do_experiment(**exp_args)

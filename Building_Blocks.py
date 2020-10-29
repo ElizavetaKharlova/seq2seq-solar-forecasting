@@ -1474,7 +1474,7 @@ class FFNN_decoder(tf.keras.layers.Layer):
         if not self.full_targets:
             signal = signal[:, -timesteps:, :]
         else:
-            signal = signal[:,24:,:]
+            signal = signal
         forecast = self.projection_layer(signal)
         return forecast
 

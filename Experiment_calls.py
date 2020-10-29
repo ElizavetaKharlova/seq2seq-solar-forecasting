@@ -36,7 +36,7 @@ def do_experiment(model_type,
                     # --> what do we evaluate the pretrained model on? all the sets and then the fine tune set?
                 mode='fine-tune', # normal, pre-train or fine-tune
                 test=False,
-                dataset_path_list=['egauge4183solar+', 'egauge2474solar+'],
+                dataset_path_list=None,
                 ):
 
 
@@ -72,7 +72,7 @@ def do_experiment(model_type,
 
                     # Regularization Hyperparameters
                         # 'use_dropout' : False, 'dropout_rate' : 0.0,
-                        'L1': 0.0, 'L2': 1e-5,
+                        'L1': 0.0, 'L2': 0.0,
                         'use_norm' : use_norm,
                     }
 

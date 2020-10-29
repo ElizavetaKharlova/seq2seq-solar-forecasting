@@ -59,7 +59,6 @@ def extract_data_ts_from_db(profile_name, data_type, engine):
     tstamp_pd = pd.read_sql_query(tstamp_query, engine)
     return data_pd.join(tstamp_pd)
 
-
 def find_all_files_of_type_in_folder(folder_path, datatype):
     file_list = []
     for file in os.listdir(folder_path):
@@ -469,10 +468,11 @@ def __fix_history(profile_df, target_data_type, target_profile_name):
 
 
     if target_profile_name == 'egauge4183':
+        print('fixing known errors in this profile')
         target_data_array = profile_df[target_data_type].to_numpy()
         max_pos = np.where(target_data_array == np.amax(target_data_array))[0]
         lower_values = max_pos - (len(max_pos) + 1)
-        print(lower_values)
+
         upper_values = max_pos + (len(max_pos) + 1)
         target_data_array[max_pos] = (target_data_array[lower_values] + target_data_array[upper_values])/2
         profile_df[target_data_type] = target_data_array
@@ -557,7 +557,7 @@ def generate_dataset(target_data_type, target_profile_name, location='Seattle'):
 
 # Generate and save dataset for load/PV and house.
 col_list = ['"solar+"','grid + "solar+"']
-generate_dataset(target_data_type=col_list[0], target_profile_name = 'egauge2474')
+generate_dataset(target_data_type=col_list[0], target_profile_name = 'egauge4183')
 #houses that are interesting:
 # egauge4183, but not grid
 # egauge22785

@@ -532,12 +532,12 @@ class Model_Container():
             warmup_steps = train_steps * 4
         elif self.train_kwargs['mode'] == 'normal':
             print('setting optimizer parameters to normal training')
-            schedule_parameter = int(self.model_kwargs['decoder_units']/4)
+            schedule_parameter = int(self.model_kwargs['decoder_units']/2)
             warmup_steps = train_steps * 4
         elif self.train_kwargs['mode'] == 'pre-train':
             print('setting optimizer parameters to pre-training')
-            schedule_parameter = int(self.model_kwargs['decoder_units'] / 8)
-            warmup_steps = train_steps * 8
+            schedule_parameter = int(self.model_kwargs['decoder_units'] / 2)
+            warmup_steps = train_steps * 6
 
         optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter,
                                                             warmup_steps=warmup_steps),
@@ -545,10 +545,10 @@ class Model_Container():
                                              beta_2=0.98,
                                              epsilon=1e-9)
 
-        optimizer = tfa.optimizers.SWA(optimizer,
-                                       start_averaging=int(warmup_steps),
-                                       average_period=int(max(20, train_steps / 100)),
-                                       sequential_update=True)
+        # optimizer = tfa.optimizers.SWA(optimizer,
+        #                                start_averaging=int(warmup_steps),
+        #                                average_period=int(max(20, train_steps / 100)),
+        #                                sequential_update=True)
         return optimizer
 
     def __train_model(self):
@@ -836,7 +836,7 @@ class dataset_generator():
         support_data = tf.reshape(tensor=raw_unprocessed_sample['support'], shape=self.support_shape)
 
         if self.full_targets:
-            target = full_pdf_history[1+24:, :] # for predicting full targets vs. last 24 steps
+            target = full_pdf_history[1:, :] # for predicting full targets vs. last 24 steps
         else:
             target = full_pdf_history[-self.val_target_shape[0]:, :]
 

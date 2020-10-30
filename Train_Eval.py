@@ -128,19 +128,24 @@ class Model_Container():
         self.__build_model(**self.model_kwargs)
 
         if self.train_kwargs['mode'] == 'fine-tune':
-            pretrain_folder = self.folder_name + '-pre-trained'
-            if not os.path.isdir('./' + pretrain_folder): #'./' + folder_name): # if there are no weights in the folder
+            pretrain_folder = self.folder_name + '-pre-trained' # to extract the weights
+            self.experiment_name = self.experiment_name + '-fine-tuned' + self.dataset_path_list[0] # to save tboard logs
+            self.folder_name = self.folder_name + '-fine-tuned' + self.dataset_path_list[0] # to save the fine-tuned model
+            if not os.path.isdir('./' + pretrain_folder): # if there are no weights in the folder
                 print('There is an error with finding model checkpoint. Folder ', pretrain_folder, 'does not exist.')
             else:
                 print('...Loading model weights from checkpoint...', pretrain_folder)
                 self.model.load_weights(pretrain_folder + "/model_ckpt")
 
-        self.experiment_name = self.experiment_name  # to save tensorboard curves in an appropriate folder
+        elif self.train_kwargs['mode'] == 'pre-train':
+            self.experiment_name = self.experiment_name + '-pre-trained' # to save tboard logs
+            self.folder_name = self.folder_name + '-pre-trained' # to save pre-trained model
 
         train_history, test_results = self.__train_model()
 
         print('Saving model to ...', self.folder_name)
         self.model.save_weights(self.folder_name + "/model_ckpt")
+
         del self.model
 
         tf.keras.backend.clear_session()
@@ -161,13 +166,17 @@ class Model_Container():
         #
         # with strategy.scope():
 
-        if not os.path.isdir('./'+self.folder_name): # if there are no weights in the folder 
-            print('There is an error with finding model checkpoint. Folder', self.folder_name, 'does not exist.')
+        pretrain_folder = self.folder_name + '-pre-trained' # to extract the weights
+
+        if not os.path.isdir('./'+pretrain_folder): # if there are no weights in the folder 
+            print('There is an error with finding model checkpoint. Folder', pretrain_folder, 'or', self.folder_name, 'does not exist.')
 
         self.__build_model(**self.model_kwargs)
 
-        print('...Loading model weights from checkpoint...', self.folder_name)
-        self.model.load_weights(self.folder_name + "/model_ckpt").expect_partial()
+        print('...Loading model weights from checkpoint...', pretrain_folder)
+        self.model.load_weights(pretrain_folder + "/model_ckpt").expect_partial()
+
+        self.experiment_name = self.experiment_name + 'test' # to save tboard logs
 
         test_results = self.__test_model()
         del self.model

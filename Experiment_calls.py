@@ -34,8 +34,7 @@ def do_experiment(model_type,
                     # --> which model do we load for fine-tuning?
                   # pretrain is a list of datasets --> pretrain on those
                     # --> what do we evaluate the pretrained model on? all the sets and then the fine tune set?
-                mode='fine-tune', # normal, pre-train or fine-tune
-                test=False,
+                mode='fine-tune', # normal, pre-train or fine-tune or test
                 dataset_path_list=None,
                 ):
 
@@ -86,39 +85,31 @@ def do_experiment(model_type,
             print('Training model', model_type, experiment_name)
 
         elif mode == 'pre-train':
-            experiment_name = experiment_name + '-pre-trained'
-            print('Training model', model_type, experiment_name)
+            print('Training model', model_type, experiment_name, '-pre-trained')
 
         elif mode =='fine-tune':
-            experiment_name = experiment_name + '-fine-tuned-' + dataset_path_list[0]
-            print('Fine-tuning model', model_type, experiment_name)
+            print('Fine-tuning model', model_type, experiment_name, '-fine-tuned')
+
+        elif mode == 'test':
+            print('Testing model', model_type, experiment_name, '-test')
 
         else:
             print('no recognized training procedure requested')
 
         experiment = Model_Container(dataset_path_list=dataset_path_list,
-                                    experiment_name=experiment_name+str(run),
+                                    experiment_name=experiment_name,
                                     sw_len_days=sliding_window_length_days,
                                     model_kwargs=model_kwargs,
                                     train_kwargs=train_kwargs,)
 
-        if mode == 'fine-tune':
-            results_dict = experiment.fine_tune()
-        else:
+
+        if mode == 'fine-tune' or mode == 'normal' or mode == 'pre-train':
             results_dict = experiment.train()
+        elif mode == 'test':
+            results_dict = experiment.test()
 
         tf.keras.backend.clear_session()
         del experiment
-
-        if test:
-            experiment = Model_Container(dataset_path_list=dataset_path_list,
-                                        experiment_name=experiment_name+str(run),
-                                        sw_len_days=sliding_window_length_days,
-                                        model_kwargs=model_kwargs,
-                                        train_kwargs=train_kwargs,)
-            experiment_name = experiment_name + '-test'
-            print('Testing model', model_type, experiment_name)
-            results_dict = experiment.test()
 
 
 
@@ -358,20 +349,19 @@ experiments.append({'model_type': 'FFNN-Generator',
                     'positional_embedding': True,
                     'use_residual': True,
                     'use_norm': True,
-                    'mode': 'normal',
-                    'test': False,
+                    'mode': 'pre-train',
+                    'dataset_path_list': ['/media/elizaveta/Seagate Portable Drive/egauge2474solar+'] #, '/media/elizaveta/Seagate Portable Drive/egauge4183solar+'],,
                     'dataset_path_list': ['egauge2474solar+'],
                     })
 
 
 # do our experiments
-for exp_args in experiments: #range(len(experiments)):
+for exp_args in experiments: 
     do_experiment(**exp_args)
     # test on the new dataset
-    # exp_args['test'] = True
-    # exp_args['dataset_path_list'] = ['egauge2474solar+'] # TODO: CHANGE DATASET NAMES HERE
-    # do_experiment(**exp_args)
-    # # fine-tune on the new dataset
-    # exp_args['test'] = False
-    # exp_args['fine_tune'] = True
-    # do_experiment(**exp_args)
+    exp_args['mode'] = 'test'
+    exp_args['dataset_path_list'] = ['/media/elizaveta/Seagate Portable Drive/egauge22785solar+']  # TODO: CHANGE DATASET NAMES HERE
+    do_experiment(**exp_args)
+    # fine-tune on the new dataset
+    exp_args['mode'] = 'fine-tune'
+    do_experiment(**exp_args)

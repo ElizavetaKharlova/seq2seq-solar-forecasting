@@ -541,11 +541,11 @@ class Model_Container():
             warmup_steps = train_steps * 4
         elif self.train_kwargs['mode'] == 'normal':
             print('setting optimizer parameters to normal training')
-            schedule_parameter = int(self.model_kwargs['decoder_units']/2)
+            schedule_parameter = int(self.model_kwargs['decoder_units'])
             warmup_steps = train_steps * 4
         elif self.train_kwargs['mode'] == 'pre-train':
             print('setting optimizer parameters to pre-training')
-            schedule_parameter = int(self.model_kwargs['decoder_units'] / 2)
+            schedule_parameter = int(self.model_kwargs['decoder_units'])
             warmup_steps = train_steps * 6
 
         optimizer = tf.keras.optimizers.Adam(CustomSchedule(schedule_parameter,
@@ -828,12 +828,10 @@ class dataset_generator():
         support_data = tf.reshape(tensor=raw_unprocessed_sample['support'], shape=self.support_shape)
         full_pdf_history = tf.reshape(tensor=raw_unprocessed_sample['pdf_history'], shape=self.history_shape)
         target = full_pdf_history[-self.val_target_shape[0]:,:]
-        teacher = full_pdf_history[-(self.val_target_shape[0]+1):-1,:]
         history_input =  full_pdf_history[:-self.val_target_shape[0],:]
 
         return {'support_input': support_data,
-                'history_input': history_input,
-                'teacher': teacher}, target
+                'history_input': history_input}, target
 
     def get_pdf_generator_train_sample(self, example):
         features = {
@@ -846,16 +844,12 @@ class dataset_generator():
 
         if self.full_targets:
             target = full_pdf_history[1:, :] # for predicting full targets vs. last 24 steps
-        else:
-            target = full_pdf_history[-self.val_target_shape[0]:, :]
 
-        teacher = full_pdf_history[-(self.val_target_shape[0]+1):-1,:]
-        history_input =  full_pdf_history[:-self.val_target_shape[0],:]
+        history_input =  full_pdf_history[:-1,:]
 
         # ATM sampling last 2days plus forecast day from NWP and last 2 days from history
         return {'support_input': support_data,
-                'history_input': history_input,
-                'teacher': teacher}, target
+                'history_input': history_input}, target
 
     #ToDo: fix those
     def get_s2s_train_sample(self, example):
@@ -889,8 +883,7 @@ class dataset_generator():
         inputs = inputs[:-self.val_target_shape[0],:]
 
         # ATM sampling last 2days plus forecast day from NWP and last 2 days from history
-        return {'nwp_pv_input': inputs,
-                'teacher': teacher}, target
+        return {'nwp_pv_input': inputs}, target
 
     def __calculate_expected_value(self, signal, last_output_dim_size):
         indices = tf.range(last_output_dim_size)  # (last_output_dim_size)

@@ -1448,15 +1448,15 @@ class FFNN_decoder(tf.keras.layers.Layer):
             self.transformer.append(block)
 
 
-    def call(self, history_input, teacher, attention_value, timesteps):
-        forecast = tf.keras.backend.in_train_phase(self.training_call(history_input, teacher, attention_value, timesteps),
-                                               alt=self.inference_call(history_input, teacher, attention_value,
+    def call(self, history_input, attention_value, timesteps):
+        forecast = tf.keras.backend.in_train_phase(self.training_call(history_input, attention_value, timesteps),
+                                               alt=self.inference_call(history_input, attention_value,
                                                                        timesteps),)
         return forecast
 
-    def training_call(self, history_input, teacher, attention_value, timesteps):
-        self.max_length = history_input.shape[1] + teacher.shape[1]
-        signal = tf.concat([history_input, teacher], axis=1)
+    def training_call(self, history_input, attention_value, timesteps):
+        self.max_length = history_input.shape[1]
+        signal = history_input
 
         signal = self.pseudo_embedding(signal) #Pseudo Embeddings
         # signal = self.crop(signal)
@@ -1478,7 +1478,7 @@ class FFNN_decoder(tf.keras.layers.Layer):
         forecast = self.projection_layer(signal)
         return forecast
 
-    def inference_call(self, history_input, teacher, attention_value, timesteps):
+    def inference_call(self, history_input, attention_value, timesteps):
 
         input_signal = history_input
         for step in range(timesteps):
@@ -1940,20 +1940,17 @@ class ForecasterModel(tf.keras.Model):
         # undictionary inputs (TF doesn't let you have multiple inputs)
         support_input = inputs['support_input']
         history_input = inputs['history_input']
-        teacher = inputs['teacher'][:, 1:, :]
         # print(support_input, history_input, teacher)
         # run the model
         if self.history_and_features:
             encoder_features = self.encoder(support_input)
             forecast = self.decoder(history_input,
                                     attention_value=encoder_features,
-                                    timesteps=self.out_steps,
-                                    teacher=teacher)
+                                    timesteps=self.out_steps)
         else:
             forecast = self.decoder(history_input,
                                     attention_value=None,
-                                    timesteps=self.out_steps,
-                                    teacher=teacher)
+                                    timesteps=self.out_steps)
         return forecast
 
 class S2SModel(tf.keras.Model):

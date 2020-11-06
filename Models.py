@@ -28,14 +28,12 @@ def forecaster_model(encoder_block, decoder_block,
     # print(encoder_features)
     # If we are training and using teacher forcing, do one step faaaaaaast
     # else do recurrent decoding
-    teacher = tf.keras.layers.Input(shape=(out_steps, out_dims), name='teacher_input')
     print('removing 0th step to prevent overlap between history and teacher!!')
 
-    forecast = decoder_block(history_input, attention_value=encoder_features, timesteps=out_steps,
-                      teacher=teacher[:, 1:, :])
+    forecast = decoder_block(history_input, attention_value=encoder_features, timesteps=out_steps)
 
     print('final forecast', forecast)
-    return tf.keras.Model([support_input, history_input, teacher], forecast)
+    return tf.keras.Model([support_input, history_input], forecast)
 
 
 def S2S_model(encoder_block, decoder_block,

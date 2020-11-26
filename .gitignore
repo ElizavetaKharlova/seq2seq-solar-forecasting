@@ -6,6 +6,14 @@ egauge2474grid/
 egauge22785grid/
 egauge4183grid/
 
+egauge4183solar_1st_batch_30mins/
+egauge4183solar_2nd_batch_15_mins/
+egauge4183solar_2nd_batch_30mins/
+
+Daniels_Dataset_1/
+
+
+
 venv/
 
 _data/
@@ -133,3 +141,5 @@ FFNNGen-full-grid-L10/train/plugins/profile/2020_10_08_18_00_22/DESKTOP-F0HR6PR.
 *.pb
 
 *.gz
+
+*.tfrecord

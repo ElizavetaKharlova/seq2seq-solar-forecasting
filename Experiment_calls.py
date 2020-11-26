@@ -75,7 +75,7 @@ def do_experiment(model_type,
                         'use_norm' : use_norm,
                     }
 
-    train_kwargs = {'batch_size': 2**5,
+    train_kwargs = {'batch_size': 2**7,
                     'mode': mode}
     runs = 1
     metrics = {}

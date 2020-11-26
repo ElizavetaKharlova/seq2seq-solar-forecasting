@@ -71,7 +71,7 @@ def do_experiment(model_type,
 
                     # Regularization Hyperparameters
                         # 'use_dropout' : False, 'dropout_rate' : 0.0,
-                        'L1': 0.0, 'L2': 0.0,
+                        'L1': 0.0, 'L2': 1e-5,
                         'use_norm' : use_norm,
                     }
 
@@ -336,7 +336,7 @@ experiments = []
 
 # Generator with full targets: supposed to be best!
 experiments.append({'model_type': 'FFNN-Generator',
-                    'exp_name': 'FFNNGen-full',
+                    'exp_name': 'FFNNGen_Edmonton_ThomasOldPipeline',
                     'full_targets': True, # only set for full target
                     'encoder_units': 256, #256
                      'encoder_self_attention': True,
@@ -349,9 +349,8 @@ experiments.append({'model_type': 'FFNN-Generator',
                     'positional_embedding': True,
                     'use_residual': True,
                     'use_norm': True,
-                    'mode': 'pre-train',
-                    'dataset_path_list': ['/media/elizaveta/Seagate Portable Drive/egauge2474solar+'] #, '/media/elizaveta/Seagate Portable Drive/egauge4183solar+'],,
-                    'dataset_path_list': ['egauge2474solar+'],
+                    'mode': 'normal',
+                    'dataset_path_list': ['Daniels_Dataset_1'],
                     })
 
 
@@ -359,9 +358,10 @@ experiments.append({'model_type': 'FFNN-Generator',
 for exp_args in experiments: 
     do_experiment(**exp_args)
     # test on the new dataset
-    exp_args['mode'] = 'test'
-    exp_args['dataset_path_list'] = ['/media/elizaveta/Seagate Portable Drive/egauge22785solar+']  # TODO: CHANGE DATASET NAMES HERE
     do_experiment(**exp_args)
-    # fine-tune on the new dataset
-    exp_args['mode'] = 'fine-tune'
-    do_experiment(**exp_args)
+    # exp_args['mode'] = 'test'
+    # exp_args['dataset_path_list'] = ['/media/elizaveta/Seagate Portable Drive/egauge22785solar+']  # TODO: CHANGE DATASET NAMES HERE
+    # do_experiment(**exp_args)
+    # # fine-tune on the new dataset
+    # exp_args['mode'] = 'fine-tune'
+    # do_experiment(**exp_args)

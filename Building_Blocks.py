@@ -1450,8 +1450,8 @@ class FFNN_decoder(tf.keras.layers.Layer):
 
     def call(self, history_input, attention_value, timesteps):
         forecast = tf.keras.backend.in_train_phase(self.training_call(history_input, attention_value, timesteps),
-                                               alt=self.inference_call(history_input, attention_value,
-                                                                       timesteps),)
+                                                   alt=self.inference_call(history_input, attention_value, timesteps),
+                                                   )
         return forecast
 
     def training_call(self, history_input, attention_value, timesteps):
@@ -1475,8 +1475,9 @@ class FFNN_decoder(tf.keras.layers.Layer):
             signal = signal[:, -timesteps:, :]
         else:
             signal = signal
-        forecast = self.projection_layer(signal)
-        return forecast
+
+        # signal = signal[:, 24:,:]
+        return self.projection_layer(signal)
 
     def inference_call(self, history_input, attention_value, timesteps):
 

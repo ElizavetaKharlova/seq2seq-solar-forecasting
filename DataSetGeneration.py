@@ -41,6 +41,14 @@ def list_of_profile_names(engine):
     for elem in prof_list_of_list:
         prof_list.extend(elem)
     return prof_list
+
+def import_zp(filename):
+    import gzip, pickle
+    f = gzip.open(filename + '.zp', 'rb')
+    p_obj = pickle.load(f)
+    f.close()
+    return p_obj
+
 #-----------------------------------------------------------------------------------------------------------------------
 # read database
 
@@ -113,23 +121,24 @@ def read_and_process_single_csv(file_path):
 # We'll need to synchronize this shit with the datetime arrays
 def crop_dataframes_accordingly(nwp_df, profile_df):
     # Find the inner start index for both arrays and crop
-    common_start_ts = max(nwp_df.iloc[0]['Time (UTC)'], profile_df.iloc[0]['tstamp'])
+    common_start_ts = max(min(nwp_df['Time (UTC)']), min(profile_df['tstamp']))
     profile_df = profile_df[profile_df['tstamp'] >= common_start_ts]
     profile_df.reset_index()
 
     nwp_df = nwp_df[nwp_df['Time (UTC)'] >= common_start_ts]
     nwp_df.reset_index()
+    print('Nwp dataframe shape is ', nwp_df.shape, ' starting at ts', min(nwp_df['Time (UTC)']), 'going to ',
+          max(nwp_df['Time (UTC)']))
+    print('profile dataframe shape is ', profile_df.shape, ' starting at ts', min(profile_df['tstamp']), 'going to ',
+          max(profile_df['tstamp']))
     print('Cropped to the same starting timestamp at: ', common_start_ts)
-    print('Nwp dataframe shape is ', nwp_df.shape, ' starting at ts', nwp_df.iloc[0]['Time (UTC)'], 'going to ',
-          nwp_df.iloc[-1]['Time (UTC)'])
-    print('profile dataframe shape is ', profile_df.shape, ' starting at ts', profile_df.iloc[0]['tstamp'], 'going to ',
-          profile_df.iloc[-1]['tstamp'])
+
     # find the last inner index for both, but remember that we need to adjust their time resolutions ...
     # basically we expect the NWP to be sth like this:                   *   *   *   *   *   *
     # So the historical shit will have to be cropped like this:          ************************
     # so the last profile point has to be 1 profile_sample point before the potential next NWP sample point in time
-    nwp_last_ts = nwp_df.iloc[-1]['Time (UTC)']
-    profile_last_ts = profile_df.iloc[-1]['tstamp']
+    nwp_last_ts = max(nwp_df['Time (UTC)'])
+    profile_last_ts = max(profile_df['tstamp'])
 
     profile_delta_ts = profile_df.iloc[1]['tstamp'] - profile_df.iloc[0]['tstamp']
     nwp_delta_ts = nwp_df.iloc[1]['Time (UTC)'] - nwp_df.iloc[0]['Time (UTC)']
@@ -156,10 +165,10 @@ def crop_dataframes_accordingly(nwp_df, profile_df):
     nwp_df = nwp_df[nwp_df['Time (UTC)'] <= nwp_crop_ts]
     nwp_df.reset_index()
     print('Cropped to the adequate end timestamps')
-    print('Nwp dataframe shape is ', nwp_df.shape, ' starting at ts', nwp_df.iloc[0]['Time (UTC)'], 'going to ',
-          nwp_df.iloc[-1]['Time (UTC)'])
-    print('profile dataframe shape is ', profile_df.shape, ' starting at ts', profile_df.iloc[0]['tstamp'], 'going to ',
-          profile_df.iloc[-1]['tstamp'])
+    print('Nwp dataframe shape is ', nwp_df.shape, ' starting at ts', min(nwp_df['Time (UTC)']), 'going to ',
+          max(nwp_df['Time (UTC)']))
+    print('profile dataframe shape is ', profile_df.shape, ' starting at ts', min(profile_df['tstamp']), 'going to ',
+          max(profile_df['tstamp']))
     return nwp_df, profile_df
 
 def scale_dataframe(df, target_columns=None):
@@ -249,7 +258,7 @@ def split_into_and_save_samples(profile_df, nwp_df,
         # and then discards all the entries with a timestamp larger than start+sw
         nwp_sample_df = nwp_df[nwp_df['Time (UTC)']>=start_tstamp]
         nwp_sample_df = nwp_sample_df[start_tstamp+sliding_window > nwp_sample_df['Time (UTC)']]
-
+        nwp_sample_df = nwp_sample_df.sort_values(by='Time (UTC)', ascending=True)
         nwp_sample_df = downsample_df(nwp_sample_df, factor=3)
 
         # ToDo: those lenghts should be a function fo the sliding window size if we wanna be fancy
@@ -258,6 +267,7 @@ def split_into_and_save_samples(profile_df, nwp_df,
 
             profile_sample_df = profile_df[profile_df['tstamp']>=start_tstamp]
             profile_sample_df = profile_sample_df[profile_sample_df['tstamp'] < start_tstamp + sliding_window]
+            profile_sample_df = profile_sample_df.sort_values(by='tstamp', ascending=True)
             profile_sample_df = profile_sample_df.drop('tstamp', axis=1)
             # ToDo: those lenghts should be a function fo the sliding window size if we wanna be fancy
             if profile_sample_df.shape[0] == sliding_window/60:
@@ -349,7 +359,6 @@ def __convert_to_feature(np_data):
     return tf.train.Feature(float_list=tf.train.FloatList(value=list_flat))
 
 def interpolate_weather(nwp_df, factor):
-    nwp_shape = nwp_df.shape
     new_indices = np.arange(nwp_df.shape[0]*factor)
     nwp_indices = np.arange(0, nwp_df.shape[0]*factor, int(factor))
     columns = nwp_df.keys()
@@ -360,7 +369,6 @@ def interpolate_weather(nwp_df, factor):
         features = np.asarray(nwp_df[feature_axis], dtype=np.float64)
         insert = np.interp(new_indices, nwp_indices, features)
         nwp_interpolated[feature_axis] = insert.tolist()
-    del nwp_shape
 
     return nwp_interpolated
 
@@ -380,7 +388,7 @@ def manage_features(nwp_df, target_data_type='solar+', location='Seattle'):
     if location is 'Seattle':
         nwp_df['Time (UTC)'] = nwp_df['Time (UTC)'] - 6 * 60 * 60
     elif location is 'Edmonton':
-        nwp_df['Time (UTC)'] = nwp_df['Time (UTC)'] - 6 * 60 * 60
+        nwp_df['Time (UTC)'] = nwp_df['Time (UTC)'] - 7 * 60 * 60
     # general
     if "index" in nwp_df.columns:
         nwp_df = nwp_df.drop(columns=['index'])
@@ -466,6 +474,29 @@ def add_holidays(time_array):
 
 def __fix_history(profile_df, target_data_type, target_profile_name):
 
+    if target_profile_name == 'egauge18366':
+        print('adjusting curtailment for egauge18366')
+        start = int(1.45*1e9)
+        y2ts = int(365.25*24*60*60)
+        slice_1 = profile_df[(start < profile_df['tstamp']) & (profile_df['tstamp']< start + y2ts)]
+
+        slice_2 = profile_df[(start + y2ts < profile_df['tstamp']) & (profile_df['tstamp']< start + 2*y2ts)]
+        pre_1 = slice_1[target_data_type].to_numpy()
+        pre_2 = slice_2[target_data_type].to_numpy()
+        pre_corr = np.corrcoef(pre_1, pre_2 )
+        print('pre-adjusted corcoeffs: ', pre_corr )
+
+        max_value = slice_2[target_data_type].to_list()
+        max_value = max(max_value)
+        clip_value = 145
+        slice_1[target_data_type] = [max_value/clip_value * min(element, clip_value) for element in slice_1[target_data_type]]
+        plt.plot(slice_1['tstamp'], slice_1[target_data_type])
+        plt.plot(slice_1['tstamp'], slice_2[target_data_type])
+
+        plt.show()
+        post_1 = slice_1[target_data_type].to_numpy()
+        post_corr = np.corrcoef(post_1, pre_2)
+        print('post-adjusted corcoeffs: ', post_corr)
 
     if target_profile_name == 'egauge4183':
         print('fixing known errors in this profile')
@@ -477,13 +508,16 @@ def __fix_history(profile_df, target_data_type, target_profile_name):
         target_data_array[max_pos] = (target_data_array[lower_values] + target_data_array[upper_values])/2
         profile_df[target_data_type] = target_data_array
 
-    plt.plot(profile_df[target_data_type])
-    plt.show()
     return profile_df
 
 # ToDo: wrap this into a function, so we can generate load/pv datasets for specific houses
 def generate_dataset(target_data_type, target_profile_name, location='Seattle'):
-    engine = create_engine('postgresql://postgres:postgres@stargate/profiles')
+    if location == 'Seattle':
+        print('checking Seattle profiles')
+        engine = create_engine('postgresql://postgres:postgres@stargate/profiles')
+    elif location == 'Edmonton':
+        print('checking Edmonton profiles')
+        engine = create_engine('postgresql://postgres:postgres@stargate/profiles-edmonton')
     prof_list = list_of_profile_names(engine)
 
     if target_profile_name not in prof_list:
@@ -491,26 +525,59 @@ def generate_dataset(target_data_type, target_profile_name, location='Seattle'):
     else:
         profile_df = extract_data_ts_from_db(target_profile_name, target_data_type, engine)
         target_data_type = profile_df.columns[0]
+        print(target_data_type)
+        if location == 'Edmonton':
+            path = os.path.join(os.getcwd(), 'old_house_data')
+            files = [file[:-3] for file in os.listdir(path) if file[-3:] == '.zp']
+            print(files)
+            if target_profile_name in files:
+                print('found legacy version of profile', target_profile_name, '... appending')
+                path = os.path.join(path, target_profile_name)
+                file = import_zp(path)
+                if 'solar' in target_data_type:
+                    key = 'gen'
+                elif 'grid' in target_data_type:
+                    key = 'load'
+                # ToDo: make sure we dont fuck up time conversion!
+                profile_start = datetime.datetime.timestamp(file[key]['time_start'])
+                old_profile_df = {}
+                old_profile_df[target_data_type] = max(profile_df[target_data_type])/max(file[key]['profile']) * np.array(file[key]['profile'])
+
+                tstamps = [profile_start]
+                for ts in range(len(file[key]['profile'])-1):
+                    tstamps.append(profile_start + ts*60)
+                old_profile_df['tstamp'] = tstamps
+                old_profile_df = pd.DataFrame(old_profile_df)
+                old_profile_df = old_profile_df[old_profile_df['tstamp'] < min(profile_df['tstamp'])]
+                profile_df = profile_df.append(old_profile_df)
+                profile_df = profile_df.reset_index( drop=True)
+
+                plt.plot(profile_df['tstamp'], profile_df[target_data_type])
+                plt.show()
+
+            else:
+                print('didnt find legacy version, sorry :-(')
+
+        target_data_type = profile_df.columns[0]
+
+
 
     nwp_df = assemble_weather_info(target_profile_name, location) #reads from csv and assembles in one df with reset indices
 
+
+    profile_df = profile_df.sort_values(by='tstamp', ascending=True,)
+    nwp_df = nwp_df.sort_values(by='Time (UTC)', ascending=True, )
+
+    profile_df = __fix_history(profile_df, target_data_type, target_profile_name)
     nwp_df = manage_features(nwp_df, target_data_type=target_data_type, location=location)
 
     nwp_df, profile_df = crop_dataframes_accordingly(nwp_df, profile_df) #crops and resets indixes so shit doesnt get bad
 
-    downsampled_profile = downsample_df(profile_df, 5)
-    _check_df_for_nans(downsampled_profile)
-    downsampled_profile = downsampled_profile['solar+'].to_numpy()
-    _check_df_for_nans(nwp_df)
-    nwp_solar = nwp_df['Short_Wave_Flux_Down [W/m2]'].to_numpy()
-    min_len = min(nwp_solar.shape[0], downsampled_profile.shape[0])
-    nwp_solar = nwp_solar[:min_len]
-    downsampled_profile = downsampled_profile[:min_len]
-    print(nwp_solar.shape, downsampled_profile.shape)
-    corcoeffs = np.corrcoef(nwp_solar, downsampled_profile)
+
+    common = nwp_df.merge(profile_df, left_on='Time (UTC)', right_on='tstamp', how='inner')
+    corcoeffs = np.corrcoef(common[target_data_type], common['Short_Wave_Flux_Down [W/m2]'])
     print('dataset corellation', corcoeffs)
 
-    profile_df = __fix_history(profile_df, target_data_type, target_profile_name)
 
 
     nwp_df = scale_dataframe(nwp_df, target_columns=nwp_df.columns[1:]) # We do not want to normalize the time
@@ -557,11 +624,17 @@ def generate_dataset(target_data_type, target_profile_name, location='Seattle'):
 
 # Generate and save dataset for load/PV and house.
 col_list = ['"solar+"','grid + "solar+"']
-generate_dataset(target_data_type=col_list[0], target_profile_name = 'egauge4183')
+generate_dataset(target_data_type=col_list[0], target_profile_name = 'egauge18369', location='Edmonton')
 #houses that are interesting:
 # egauge4183, but not grid
 # egauge22785
 # egauge2474
+
+# Edmonton Datasets
+# egauge18369, egauge18360 - curtailed datasets
+# egauge18366, egauge18361, egauge18356  uncurtailed years and curtailed year Maybe Fix
+# egauge18365, - gross dataset :-(
+
 
 
 

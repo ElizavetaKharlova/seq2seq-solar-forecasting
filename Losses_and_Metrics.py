@@ -63,7 +63,7 @@ def calculate_KL_Divergence(target, prediction):
 def calculate_EMC(target, prediction):
     kl_d = calculate_KL_Divergence(target, prediction)
 
-    epsilon = 0.01
+    epsilon = 0.0001
     condition = tf.math.less_equal(kl_d, epsilon)
     condition = tf.cast(condition, dtype=tf.float16)
     percentage = tf.reduce_mean(condition)

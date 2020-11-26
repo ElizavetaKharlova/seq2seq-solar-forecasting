@@ -22,11 +22,8 @@ def import_nwp_for_profile(csv_path='path of csv file',
     # the csv is expected to contain weather data
     pass
 
-
-
-
 def get_Daniels_data(target_data='Pv',
-                     input_len_samples=int(3 * 24 * (60 / 5)),
+                     input_len_samples=int(4 * 24 * (60 / 5)),
                      fc_len_samples=int(1 * 24 * (60 / 5)),
                      fc_steps=24,
                      fc_tiles=50):
@@ -82,7 +79,7 @@ def get_Lizas_data():
     return inp, ev_targets, ev_teacher, pdf_targets, pdf_teacher, sample_spacing_in_mins
 
 def Create_full_dataset(dataset_name='Daniels_Dataset_1',
-                    weather_data_folder='\_data\Weather_2016', pv_data_path="/_data/",
+                    weather_data_folder='\old_house_data\Weather_2016', pv_data_path="/old_house_data/",
                      sw_len_samples=int(5 * 24 * 60),
                      fc_len_samples=int(1 * 24 * 60),
                      fc_steps=24,
@@ -137,22 +134,15 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
     support_steps = int(sw_len_samples / target_downsampling_rate)
     sw_len_samples = int(sw_len_samples)
 
-    def _features_to_example(nwp_input, historical_support_raw, teacher_raw, target_raw):
-        target_pdf = __convert_to_pdf(target_raw, num_steps=target_steps, num_tiles=target_tiles, min_max=history_min_max)  # pdf for probability distribution thingie
-        teacher_pdf = __convert_to_pdf(teacher_raw, num_steps=target_steps, num_tiles=target_tiles, min_max=history_min_max)
-        historical_support_pdf = __convert_to_pdf(historical_support_raw, num_steps=support_steps, num_tiles=target_tiles, min_max=history_min_max)
+    def _features_to_example(nwp_input, historical_support_raw, ):
+        historical_support_pdf = __convert_to_pdf(historical_support_raw, num_steps=support_steps + target_steps, num_tiles=target_tiles, min_max=history_min_max) # pdf for probability distribution thingie
+        features = {'support': __create_float_feature(nwp_input.flatten()),
+                    'pdf_history': __create_float_feature(historical_support_pdf.flatten())}
+        if 'pdf_history' not in features:
+            print('missing pfd history for some fucken reason')
+        if 'support' not in features:
+            print('missing support for some fucken reason')
 
-        features = {'nwp_input': __create_float_feature(nwp_input.flatten()),
-
-                    'raw_historical_input': __create_float_feature(historical_support_raw.flatten()),
-                    'raw_teacher': __create_float_feature(teacher_raw.flatten()),
-                    'raw_target': __create_float_feature(target_raw.flatten()),
-
-                    'pdf_historical_input': __create_float_feature(historical_support_pdf.flatten()),
-                    'pdf_teacher': __create_float_feature(teacher_pdf.flatten()),
-                    'pdf_target': __create_float_feature(target_pdf.flatten())}
-        if 'nwp_input' not in features:
-            print('WTF, lost NWP input!!')
         example = tf.train.Example(features=tf.train.Features(feature=features))
         return example.SerializeToString()
 
@@ -190,13 +180,13 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
                 print('fuck, sth went wrong,index too high!!')
 
             nwp_input = weather_nwp_interpolated[sample_index:(sample_index+sw_len_samples+fc_len_samples):nwp_downsampling_rate, :]
-            history_support = historical_pv[sample_index:(sample_index+sw_len_samples)]
+            #print(nwp_input.shape)
+            history_support = historical_pv[sample_index:(sample_index+sw_len_samples + fc_len_samples)]
 
             target_start_index = sample_index + sw_len_samples
             target = historical_pv[target_start_index:(target_start_index+fc_len_samples)]
-
-            teacher_start_index = target_start_index - one_addl_fc_timestep
-            teacher = historical_pv[teacher_start_index:(teacher_start_index+fc_len_samples)]
+            # teacher_start_index = target_start_index - one_addl_fc_timestep
+            # teacher = historical_pv[teacher_start_index:(teacher_start_index+fc_len_samples)]
 
             persistency_start_index = target_start_index - fc_len_samples
             persistency = historical_pv[persistency_start_index:(persistency_start_index+fc_len_samples)]
@@ -209,7 +199,8 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
             num_sample += 1
             if partials and num_sample+1 >= len(sub_dataset)/100:
                 num_sample = 0
-                partial_baseline = __calculatate_skillscore_baseline(target_pdf, persistent_forecast=persistency_pdf, normalizer_value=np.amax(historical_pv))
+                partial_baseline = __calculatate_skillscore_baseline(target_pdf,
+                                                                     persistent_forecast=persistency_pdf)
                 set_nME.append(partial_baseline['nME'])
                 set_nRMSE.append(partial_baseline['nRMSE'])
                 set_CRPS.append(partial_baseline['CRPS'])
@@ -217,15 +208,13 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
             with tf.io.TFRecordWriter(str(sample_index) + '.tfrecord') as writer:
 
                 example = _features_to_example(nwp_input=nwp_input,
-                                               historical_support_raw=history_support,
-                                               teacher_raw=teacher,
-                                               target_raw=target)
+                                               historical_support_raw=history_support)
                 writer.write(example)
 
                     # we're done with val set, so jump back to the dataset folder
         os.chdir(dataset_folder_path)
         if not partials:
-            sample_baseline = __calculatate_skillscore_baseline(target_pdf, persistent_forecast=persistency_pdf, normalizer_value=np.amax(historical_pv))
+            sample_baseline = __calculatate_skillscore_baseline(target_pdf, persistent_forecast=persistency_pdf)
         else:
             sample_baseline = {
                 'nME': tf.reduce_mean(set_nME).numpy(),
@@ -235,20 +224,26 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
         return sample_baseline
 
     dataset_info = {}
+    # 'fc_steps', 'fc_tiles', 'support_shape', 'pdf_history_shape', 'raw_history_shape'
     sw_as_pdf_len = sw_len_samples*fc_steps/fc_len_samples
-    dataset_info['nwp_downsampling_rate'] = nwp_downsampling_rate
-    dataset_info['nwp_dims'] = weather_nwp_interpolated.shape[1]
-    dataset_info['sw_len_samples'] = sw_len_samples
-    dataset_info['fc_len_samples'] = fc_len_samples
+    # dataset_info['nwp_downsampling_rate'] = nwp_downsampling_rate
+    dataset_info['support_shape'] = [int((sw_len_samples+fc_len_samples)/nwp_downsampling_rate), weather_nwp_interpolated.shape[-1]]
+
+    #dataset_info['sw_len_samples'] = sw_len_samples
+    #dataset_info['fc_len_samples'] = fc_len_samples
     dataset_info['fc_tiles'] = fc_tiles
     dataset_info['fc_steps'] = fc_steps
-    dataset_info['input_shape'] = [(sw_len_samples+fc_len_samples)/nwp_downsampling_rate, weather_nwp_interpolated.shape[1]]
+    dataset_info['input_shape'] = [int((sw_len_samples+fc_len_samples)/nwp_downsampling_rate), weather_nwp_interpolated.shape[1]]
     dataset_info['teacher_shape'] = [fc_steps, fc_tiles]
     dataset_info['target_shape'] = [fc_steps, fc_tiles]
-    dataset_info['history_support_shape'] = [sw_len_samples*fc_steps/fc_len_samples, fc_tiles]
+    dataset_info['pdf_history_shape'] = [int((sw_len_samples+fc_len_samples)/(60)), fc_tiles]
+    print('history pdf shape', dataset_info['pdf_history_shape'])
+    dataset_info['raw_history_shape'] = 0
+
     dataset_info['normalizer_value'] = np.amax(historical_pv) - np.amin(historical_pv)
 
-
+    print('dataset info')
+    print(dataset_info.keys())
     val_baseline = __save_set_to_folder(val_indices,
                                         folder_name='validation',
                                         save_every_xth_step=10)
@@ -466,7 +461,7 @@ def __convert_to_mv(target, num_steps):  # creates expected value targets
 
 # Help functions for Daniel to load his Data
 
-def load_dataset(weather_data_folder='\_data\Weather_2016', pv_data_path="/_data/"):
+def load_dataset(weather_data_folder='\old_house_data\Weather_2016', pv_data_path="/_data/"):
 
     print('fetching NWP...')
 
@@ -772,11 +767,8 @@ def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins
     val_len = (remainder_for_test_val/2.0) * inp.shape[0]
 
     from Losses_and_Metrics import __calculatate_skillscore_baseline
-    persistency_baseline = __calculatate_skillscore_baseline(target,
-                                                           sample_spacing_in_mins=sample_spacing_in_mins,
-                                                           normalizer_value=normalizer_value)
+
     tf.keras.backend.clear_session()
-    print('Persistency baseline for whole Dataset', persistency_baseline)
     dataset = {}
     [dataset['test_inputs'], dataset['test_teacher'], dataset['test_blend']], dataset['test_targets'], test_persistent_forecast,  inp, teacher, target, previously_taken_start_indices, previously_taken_end_indices = __slice_and_delete(inp,
                                                                                                                                                                             teacher,
@@ -786,9 +778,7 @@ def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins
                                                                                                                                                                             sample_spacing_in_mins=sample_spacing_in_mins,
                                                                                                                                                                             input_rate_in_1_per_min=input_rate_in_1_per_min)
     dataset['test_persistency_baseline'] = __calculatate_skillscore_baseline(dataset['test_targets'],
-                                                                             persistent_forecast=test_persistent_forecast,
-                                                                           sample_spacing_in_mins=sample_spacing_in_mins,
-                                                                           normalizer_value=normalizer_value)
+                                                                             persistent_forecast=test_persistent_forecast)
     tf.keras.backend.clear_session()
     print('test baseline values:', dataset['test_persistency_baseline'])
     [dataset['val_inputs'], dataset['val_teacher'], dataset['val_blend']], dataset['val_targets'], val_persistent_forecast, inp, teacher, target, previously_taken_start_indices, previously_taken_end_indices = __slice_and_delete(inp,
@@ -799,9 +789,7 @@ def __split_dataset(inp, target, teacher, training_ratio, sample_spacing_in_mins
                                                                                                                                                                       sample_spacing_in_mins=sample_spacing_in_mins,
                                                                                                                                                                       input_rate_in_1_per_min=input_rate_in_1_per_min, previously_taken_start_indices=previously_taken_start_indices, previously_taken_end_indices=previously_taken_end_indices)
     dataset['val_persistency_baseline'] = __calculatate_skillscore_baseline(dataset['val_targets'],
-                                                                            persistent_forecast=val_persistent_forecast,
-                                                                           sample_spacing_in_mins=sample_spacing_in_mins,
-                                                                           normalizer_value=normalizer_value)
+                                                                            persistent_forecast=val_persistent_forecast)
     tf.keras.backend.clear_session()
 
     print('val baseline values:', dataset['val_persistency_baseline'])

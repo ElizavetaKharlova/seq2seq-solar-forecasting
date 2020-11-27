@@ -452,6 +452,8 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
         super(multihead_attentive_layer, self).__init__()
         # units is a list of lists, containing the numbers of units in the attention head
         self.num_heads = len(units_per_head)
+        # TODO: DANIEL CHECK THE ATTENTION FEATURE SIZE 
+        # we rewrite units_per_head without getting the attention features size
         self.units_per_head = int(output_units*2/self.num_heads)
         self.attention_features = self.units_per_head*self.num_heads
         self.layer_name = layer_name
@@ -1330,6 +1332,7 @@ class FFNN_encoder(tf.keras.layers.Layer):
 
         self.use_self_attention = use_self_attention
         if use_self_attention:
+            # TODO: DANIEL CHECK THE ATTENTION FEATURE SIZE
             attention_features = num_initial_features * attention_squeeze
             self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
                                                   use_dropout=False,
@@ -1402,6 +1405,7 @@ class FFNN_decoder(tf.keras.layers.Layer):
         if use_norm:
             self.pseudo_embedding = Norm_wrapper(self.pseudo_embedding, norm='layer')
 
+        # TODO: DANIEL CHECK THE ATTENTION FEATURE SIZE
         attention_features = num_initial_features * attention_squeeze
         self.use_self_attention = use_self_attention
         self.transformer = []

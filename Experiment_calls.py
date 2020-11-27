@@ -71,11 +71,11 @@ def do_experiment(model_type,
 
                     # Regularization Hyperparameters
                         # 'use_dropout' : False, 'dropout_rate' : 0.0,
-                        'L1': 0.0, 'L2': 1e-5,
+                        'L1': 0.0, 'L2': 1e-6,
                         'use_norm' : use_norm,
                     }
 
-    train_kwargs = {'batch_size': 2**7,
+    train_kwargs = {'batch_size': 2**6+2**5,
                     'mode': mode}
     runs = 1
     metrics = {}

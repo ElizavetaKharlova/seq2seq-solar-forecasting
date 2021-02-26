@@ -442,7 +442,7 @@ class Attention(tf.keras.layers.Layer):
         return context_vector
 
 class multihead_attentive_layer(tf.keras.layers.Layer):
-    def __init__(self, units_per_head=[80, 80],
+    def __init__(self, num_heads=3,
                  output_units=20,
                  L1=0.0, L2=0.0,
                  use_dropout=True, dropout_rate=0.2,
@@ -451,7 +451,7 @@ class multihead_attentive_layer(tf.keras.layers.Layer):
                  layer_name=None):
         super(multihead_attentive_layer, self).__init__()
         # units is a list of lists, containing the numbers of units in the attention head
-        self.num_heads = len(units_per_head)
+        self.num_heads = num_heads
         # TODO: DANIEL CHECK THE ATTENTION FEATURE SIZE 
         # we rewrite units_per_head without getting the attention features size
         self.units_per_head = int(output_units*2/self.num_heads)
@@ -1334,7 +1334,7 @@ class FFNN_encoder(tf.keras.layers.Layer):
         if use_self_attention:
             # TODO: DANIEL CHECK THE ATTENTION FEATURE SIZE
             attention_features = num_initial_features * attention_squeeze
-            self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
+            self_attention = multihead_attentive_layer(num_heads= attention_heads,
                                                   use_dropout=False,
                                                   L2=L2, L1=L1,
                                                   output_units=num_initial_features,
@@ -1413,7 +1413,7 @@ class FFNN_decoder(tf.keras.layers.Layer):
         for num_block in range(transformer_blocks):
             block = {}
             if use_self_attention:
-                self_attention = multihead_attentive_layer(units_per_head=[int(attention_features)] * attention_heads,
+                self_attention = multihead_attentive_layer(num_heads= attention_heads,
                                                       use_dropout=False,
                                                       L2=L2, L1=L1,
                                                       output_units=num_initial_features,

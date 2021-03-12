@@ -270,6 +270,21 @@ class LSTM_Norm_wrapper(tf.keras.layers.Wrapper):
 
         return self.norm(layer_out) , state_h, state_c
 
+class GRU_Norm_wrapper(tf.keras.layers.Wrapper):
+    def __init__(self, layer, norm_type='Layer norm'):
+        super(GRU_Norm_wrapper, self).__init__(layer)
+        if norm_type == 'Layer norm':
+            self.norm = tf.keras.layers.LayerNormalization(axis=-1,
+                                                           center=True,
+                                                           scale=True)
+        else:
+            print('wrong norm type supplied to NormWrapper, supplied', norm_type)
+
+    def call(self, input, initial_state=None):
+        layer_out, state_f = self.layer(input, initial_state=initial_state)
+
+        return self.norm(layer_out) , state_f
+
 ########################################################################################################################
 
 class MultiLayer_LSTM(tf.keras.layers.Layer):
@@ -357,9 +372,94 @@ class MultiLayer_LSTM(tf.keras.layers.Layer):
 
         return signal, out_states
 
+class MultiLayer_GRU(tf.keras.layers.Layer):
+    '''
+    this builds the wrapper class for the multilayer LSTM
+    in addition to the multiple LSTM layers it adds dropout
+    layer norm (or maybe recurrent layer norm, whatever feels best)
+    inits are the num_layers, num_units per layer and dropout rate
+    call needs the inputs and the initial state
+    it gives the outputs of all RNN layers (or should it be just one?)
+    and the states at the last step
+    '''
+    def __init__(self, units=[[20, 20], [20,20]],
+                 use_dropout=False,
+                 dropout_rate=0.0,
+                 use_norm=False,
+                 use_hw=False,
+                 use_residuals = False,
+                 return_all_states = True,
+                 L1=0.0,
+                 L2=0.0):
+        super(MultiLayer_GRU, self).__init__()
+
+        self.units = units
+        self.use_dropout = use_dropout
+        self.dropout_rate = dropout_rate
+        self.use_norm = use_norm
+        self.use_hw = use_hw
+        self.use_residuals = use_residuals
+        self.return_all_states = return_all_states
+
+        self.multilayer_lstm = []  # Multiple layers work easiest as a list of layers, so here we start
+
+        for block in range(len(self.units)):
+            lstm_block = []
+            for layer in range(len(self.units[block])):
+                # get one LSTM layer per layer we speciefied, with the units we need
+                # Do we need to initialize the layer in the loop?
+                one_lstm = tf.keras.layers.GRU(units=self.units[block][layer],
+                                                      activation='tanh',
+                                                      recurrent_activation='sigmoid',
+                                                      recurrent_dropout=dropout_rate,
+                                                      kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                                      dropout=dropout_rate,
+                                                      unroll=False,
+                                                      use_bias=True,
+                                                      return_sequences=True,
+                                                      implementation=1,
+                                                      return_state=True,
+                                                      kernel_initializer=initializer,
+                                                      recurrent_initializer='orthogonal',
+                                                      bias_initializer='zeros')
+
+                # do we wanna highway
+                # if self.use_hw:
+                #     one_lstm = LSTM_Highway_wrapper(one_lstm)
+                if self.use_residuals:
+                    one_lstm = LSTM_Residual_wrapper(one_lstm)
+                # do we wanna norm
+                if self.use_norm:
+                    one_lstm = GRU_Norm_wrapper(one_lstm)
+
+                lstm_block.append(one_lstm) # will be len(layers_in_block)
+            self.multilayer_lstm.append(lstm_block)
+
+    def call(self, signal, initial_states=None):
+        out_states = []
+        # Initialize as zero states if No state is given
+        if initial_states is None:
+            for lstm_block in self.multilayer_lstm:
+                out_states_block = []
+                for lstm in lstm_block:
+                    signal, state_f = lstm(signal, initial_state=None)
+                    out_states_block.append([state_f])
+                out_states.append(out_states_block)
+
+        else:
+            for lstm_block, states_block in zip(self.multilayer_lstm, initial_states):
+                out_states_block = []
+                for lstm, states in zip(lstm_block, states_block):
+                    signal, state_f = lstm(signal, initial_state=states)
+                    out_states_block.append([state_f])
+
+                out_states.append(out_states_block)
+
+        return signal, out_states
+
 ########################################################################################################################
 
-class Attention(tf.keras.layers.Layer):
+class new_bad_Attention(tf.keras.layers.Layer):
     '''
     Implements an attention layer.
     Implemented are Bahdanau and Transformer style attention.
@@ -440,6 +540,126 @@ class Attention(tf.keras.layers.Layer):
         context_vector = tf.matmul(score, value)
 
         return context_vector
+
+class Attention(tf.keras.layers.Layer):
+    '''
+    Implements an attention layer.
+    Implemented are Bahdanau and Transformer style attention.
+    If query/key kernel and strides are supplied this mimics the proposed convolutional attention mechanism.
+    '''
+    def __init__(self, units,
+                 mode='Transformer',
+                 causal_attention=False,
+                 only_context=True,
+                 query_kernel=1,
+                 query_stride=1,
+                 key_kernel=1,
+                 key_stride=1,
+                 use_dropout=True,
+                 dropout_rate=0.2,
+                 L1=0.0, L2=0.0,
+                 ):
+        super(Attention, self).__init__()
+        self.mode = mode
+        self.use_dropout = use_dropout
+        self.dropout_rate = dropout_rate
+        self.only_context = only_context
+        self.causal_attention = causal_attention
+        self.W_query = tf.keras.layers.Conv1D(units,
+                                         #activation=tf.nn.sigmoid,
+                                         strides=query_stride,
+                                         kernel_size=query_kernel,
+                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                         padding='causal',
+                                         kernel_initializer=initializer,
+                                         use_bias=False)
+        if use_dropout:
+            self.W_query = Dropout_wrapper(self.W_query, dropout_rate=dropout_rate)
+
+        self.W_value = tf.keras.layers.Conv1D(units,
+                                         #activation=tf.nn.sigmoid,
+                                         strides=1,
+                                         kernel_size=1,
+                                         padding='causal',
+                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                         kernel_initializer=initializer,
+                                         use_bias=False)
+        if use_dropout:
+            self.W_value = Dropout_wrapper(self.W_value, dropout_rate=dropout_rate)
+
+        if mode == 'Bahdanau':
+            self.V = tf.keras.layers.Dense(1)
+        elif mode == 'Transformer':
+            self.W_key = tf.keras.layers.Conv1D(units,
+                                         #activation=tf.nn.sigmoid,
+                                         strides=key_stride,
+                                         kernel_size=key_kernel,
+                                         kernel_regularizer=tf.keras.regularizers.l1_l2(l1=L1, l2=L2),
+                                         padding='causal',
+                                         kernel_initializer=initializer,
+                                         use_bias=False)
+            if use_dropout:
+                self.W_key = Dropout_wrapper(self.W_key, dropout_rate=dropout_rate)
+
+    def dropout_mask(self, score):
+        dropout_mask = tf.random.uniform(shape=tf.shape(score), minval=0.0, maxval=1.0)
+        dropout_mask = tf.where(dropout_mask <= self.dropout_rate/2, x=-1e12, y=0.0)
+        return dropout_mask
+
+    # def build_mask(self, input_tensor):
+    #     mask = tf.linalg.band_part(tf.ones_like(input_tensor)*-1e12, 0, -1) #upper triangular ones, INCLUDING diagonal
+    #     return mask
+    def add_causal_mask(self, input_tensor):
+        causal_mask = -1e12* (tf.ones_like(input_tensor) - tf.linalg.band_part(tf.ones_like(input_tensor), -1, 0)) #strictly upper triagonal -inf
+
+        return input_tensor + causal_mask
+
+    def call(self, query, value=None, key=None):
+        # If value is none, we assume self attention and set value = query
+        # if key is none we assume standard usage and set key = value
+
+        if value is None:
+            value = query
+            self_attention = True
+        else:
+            self_attention = False
+        if key is None:
+            key = value
+
+        if self.mode == 'Bahdanau':
+            # Bahdaau style attention: score = tanh(Q + V)
+            # score shape == (batch_size, max_length, 1)
+            # we get 1 at the last axis because we are applying score to self.V
+            # the shape of the tensor before applying self.V is (batch_size, max_length, units)
+            # attention_weights shape == (batch_size, max_length, 1)
+            attention_weights = tf.nn.softmax(self.V(tf.nn.tanh(self.W_query(query) + self.W_value(key))), axis=1)
+            context_vector = attention_weights * value
+
+        elif self.mode == 'Transformer':
+
+            # Trasformer style attention: score=Q*K/sqrt(dk)
+            # in this case keys = values
+            if len(query.shape) < len(key.shape):
+                query = tf.expand_dims(query,1)
+
+            score_pre_softmax = tf.matmul(self.W_query(query), self.W_value(key), transpose_b=True)
+            score_pre_softmax = score_pre_softmax / tf.math.sqrt(tf.cast(tf.shape(value)[-1], tf.float32))
+
+            if self_attention:
+                score_pre_softmax = self.add_causal_mask(score_pre_softmax)
+
+            # score_pre_softmax = tf.keras.backend.in_train_phase(x=score_pre_softmax + self.dropout_mask(score_pre_softmax),
+            #                                         alt=score_pre_softmax,
+            #                                         training=tf.keras.backend.learning_phase())
+
+            score = tf.nn.softmax(score_pre_softmax, axis=-1)
+
+            context_vector = tf.matmul(score, self.W_key(value))
+
+        if self.only_context:
+            return context_vector
+        else:
+            return context_vector, attention_weights
 
 class multihead_attentive_layer(tf.keras.layers.Layer):
     def __init__(self, num_heads=3,
@@ -936,12 +1156,9 @@ class decoder_LSTM_block(tf.keras.layers.Layer):
                     #equivalent to the dimensionality of attention heads
                     attention = Attention(units,
                                         mode='Transformer',
-                                        query_kernel= 1,
-                                        key_kernel=1,
                                         use_dropout=use_dropout,
                                         dropout_rate=dropout_rate,
-                                        L2=L2, L1=L1,
-                                        only_context=True)
+                                        L2=L2, L1=L1,)
 
                 else:
                     units_per_head =[int(units*attention_squeeze)]*attention_heads
@@ -1906,6 +2123,281 @@ class FFNN_block(tf.keras.layers.Layer):
         signal = signal[:,-timesteps:,:]
         return signal
 
+#################################################################################################################################################
+# DELETE AFTER S2S EXPERIMENTS DELETE AFTER S2S EXPERIMENTS DELETE AFTER S2S EXPERIMENTS DELETE AFTER S2S EXPERIMENTS DELETE AFTER S2S EXPERIMENTS 
+
+class old_block_LSTM(tf.keras.layers.Layer):
+    def __init__(self, units=20,
+                num_encoder_blocks=1,
+                 use_dropout=False,
+                 dropout_rate=0.0,
+                 use_norm=False,
+                 use_hw=False, use_residual=False,
+                 L1=0.0, L2=0.0,
+                 return_state=True,
+                 gru=True):
+        super(old_block_LSTM, self).__init__()
+        self.return_state = return_state
+        self.encoder_blocks = []
+        for block in range(num_encoder_blocks):
+            if not gru:
+                self.encoder_blocks.append(MultiLayer_LSTM(units=[[units]],
+                                                    use_dropout=use_dropout, dropout_rate=dropout_rate,
+                                                    use_norm=use_norm,
+                                                    use_hw=use_hw, use_residuals=use_residual,
+                                                    L1=L1, L2=L2))
+            else:
+                self.encoder_blocks.append(MultiLayer_GRU(units=[[units]],
+                                                    use_dropout=use_dropout, dropout_rate=dropout_rate,
+                                                    use_norm=use_norm,
+                                                    use_hw=use_hw, use_residuals=use_residual,
+                                                    L1=L1, L2=L2))
+
+    def call(self, signal, initial_states=None):
+        
+        encoder_outs = []
+        encoder_last_states = []
+        
+        for block in range(len(self.encoder_blocks)):
+            signal, block_states = self.encoder_blocks[block](signal, initial_states=initial_states)
+            encoder_outs.append(signal)
+            encoder_last_states.append(block_states[0])
+            
+        if self.return_state:
+            return encoder_outs, encoder_last_states
+        else:
+            return encoder_outs
+
+class old_decoder_LSTM_block(tf.keras.layers.Layer):
+    def __init__(self,
+                 units=20,
+                 num_decoder_blocks=1,
+                 use_dropout=False,
+                 dropout_rate=0.0,
+                 use_hw=False, use_residual=False,
+                 use_norm=False,
+                 L1=0.0, L2=0.0,
+                 use_attention=False, attention_heads=3,
+                 projection_layer=None,
+                 gru=True):
+        super(old_decoder_LSTM_block, self).__init__()
+        self.units = units
+        self.use_attention = use_attention
+        self.projection_layer=projection_layer
+
+        if self.use_attention:
+            self.attention_blocks = []
+            # self.input_attention = Attention(int(units[0][0]/2),
+            #                         mode='Transformer',
+            #                         query_kernel= 1,
+            #                         key_kernel=1,
+            #                         use_dropout=use_dropout,
+            #                         dropout_rate=dropout_rate,
+            #                         L2=L2, L1=L1,
+            #                         only_context=True)
+        self.decoder_blocks = []
+
+        for block in range(num_decoder_blocks):
+            if not gru:
+                self.decoder_blocks.append(MultiLayer_LSTM(units=[[units]],
+                                                    use_dropout=use_dropout, dropout_rate=dropout_rate,
+                                                    use_norm=use_norm,
+                                                    use_hw=use_hw, use_residuals=use_residual,
+                                                    L1=L1, L2=L2))
+            else:
+                self.decoder_blocks.append(MultiLayer_GRU(units=[[units]],
+                                                use_dropout=use_dropout, dropout_rate=dropout_rate,
+                                                use_norm=use_norm,
+                                                use_hw=use_hw, use_residuals=use_residual,
+                                                L1=L1, L2=L2))
+            if self.use_attention:
+                attention_units = int(units/2) #equivalent to the dimensionality of attention heads
+                attention = Attention(attention_units,
+                                    mode='Transformer',
+                                    use_dropout=use_dropout,
+                                    dropout_rate=dropout_rate,
+                                    L2=L2, L1=L1,)
+                # attention = Attention(attention_units,
+                #                     mode='Transformer',
+                #                     query_kernel= 1,
+                #                     key_kernel=1,
+                #                     use_dropout=use_dropout,
+                #                     dropout_rate=dropout_rate,
+                #                     L2=L2, L1=L1,
+                #                     only_context=True)
+                self.attention_blocks.append(attention)
+
+    def call(self, prev_history, decoder_init_state, teacher=None, attention_value=None, timesteps=12):
+
+        decoder_state = decoder_init_state # [[[state_h, state_c]]] #(blocks, layers_in_block, 2)
+        # decoder state is supposed to be the storage for the states
+        # block state is the temporal buffer, because the layout suxx
+        # ToDo: this is throwing errors for anything with
+        for timestep in range(timesteps + prev_history.shape[1] - 1):
+            if timestep < prev_history.shape[1]:
+                input = tf.expand_dims(prev_history[:,timestep,:], axis=1)
+                decoder_out, decoder_state = self.decoder_step(input, decoder_state, attention_value)
+                if timestep == prev_history.shape[1] - 1:
+                    forecast = self.project_and_concat(decoder_out, None, first_step=True)
+            else:
+
+                if teacher is not None:
+                    input = tf.keras.backend.in_train_phase(tf.expand_dims(teacher[:,timestep - prev_history.shape[1],:], axis=1),
+                                                             alt=tf.expand_dims(forecast[:,-1,:], axis=1),
+                                                             training=tf.keras.backend.learning_phase())
+                else:
+                    input = tf.expand_dims(forecast[:, -1, :], axis=1)
+                decoder_out, decoder_state = self.decoder_step(input, decoder_state, attention_value)
+                forecast = self.project_and_concat(decoder_out, forecast, first_step=False)
+
+        return forecast
+
+
+    def decoder_step(self, input, decoder_state, attention_value):
+            # attention layers and assign those to the decoder states later.
+            signal = input
+
+            block_states = []
+            for num_block in range(len(self.decoder_blocks)):
+
+                if self.use_attention:
+                    query = tf.concat(decoder_state[num_block][-1] , axis=-1)
+                    query = tf.expand_dims(query, axis=1)
+                    if num_block == 0:
+                        query = tf.concat([query, signal], axis=-1)
+                    attention_context = self.attention_blocks[num_block](query, value=attention_value[num_block])
+                    signal = tf.concat([signal, attention_context], axis=-1)
+                    
+                signal, block_state = self.decoder_blocks[num_block](signal, initial_states=[decoder_state[num_block]])
+                block_states.append(block_state[0])
+
+            decoder_state = block_states
+            return signal, decoder_state
+
+    def project_and_concat(self, unprocessed_timestep, previous_processed_timesteps, first_step=True):
+            if first_step:
+                return self.projection_layer(unprocessed_timestep)
+            else:
+                return tf.concat([previous_processed_timesteps, self.projection_layer(unprocessed_timestep)], axis=1)
+
+class luong_decoder_LSTM_block(tf.keras.layers.Layer):
+    def __init__(self,
+                 units=20,
+                 num_decoder_blocks=1,
+                 use_dropout=False,
+                 dropout_rate=0.0,
+                 use_hw=False, use_residual=False,
+                 use_norm=False,
+                 L1=0.0, L2=0.0,
+                 use_attention=False, attention_heads=3,
+                 projection_layer=None,
+                 gru=True):
+        super(luong_decoder_LSTM_block, self).__init__()
+        self.units = units
+        self.use_attention = use_attention
+        self.projection_layer=projection_layer
+
+        if self.use_attention:
+            self.attention_blocks = []
+        self.decoder_blocks = []
+
+        self.input_projection = tf.keras.layers.Dense(units=50+units)
+
+        for block in range(num_decoder_blocks):
+            if not gru:
+                self.decoder_blocks.append(MultiLayer_LSTM(units=[[units]],
+                                                    use_dropout=use_dropout, dropout_rate=dropout_rate,
+                                                    use_norm=use_norm,
+                                                    use_hw=use_hw, use_residuals=use_residual,
+                                                    L1=L1, L2=L2))
+            else:
+                self.decoder_blocks.append(MultiLayer_GRU(units=[[units]],
+                                                use_dropout=use_dropout, dropout_rate=dropout_rate,
+                                                use_norm=use_norm,
+                                                use_hw=use_hw, use_residuals=use_residual,
+                                                L1=L1, L2=L2))
+        if self.use_attention:
+            attention_units = int(units/2) #equivalent to the dimensionality of attention heads
+            attention = Attention(attention_units,
+                                    mode='Transformer',
+                                    use_dropout=use_dropout,
+                                    dropout_rate=dropout_rate,
+                                    L2=L2, L1=L1,)
+            self.attention_blocks.append(attention)
+            
+            self.attn_proj = tf.keras.layers.Dense(units)
+
+    def call(self, prev_history, decoder_init_state, teacher=None, attention_value=None, timesteps=12):
+
+        decoder_state = decoder_init_state # [[[state_h, state_c]]] #(blocks, layers_in_block, 2)
+        # decoder state is supposed to be the storage for the states
+        # block state is the temporal buffer, because the layout suxx
+        # ToDo: this is throwing errors for anything with
+        for timestep in range(timesteps + prev_history.shape[1] - 1):
+            if timestep < prev_history.shape[1]:
+                input = tf.expand_dims(prev_history[:,timestep,:], axis=1)
+                input = self.input_projection(input)
+                decoder_out, decoder_state, attention_context = self.decoder_step(input, decoder_state, attention_value)
+                if timestep == prev_history.shape[1] - 1:
+                    forecast = self.project_and_concat(decoder_out, None, first_step=True)
+            else:
+
+                if teacher is not None:
+                    input = tf.keras.backend.in_train_phase(tf.expand_dims(teacher[:,timestep - prev_history.shape[1],:], axis=1),
+                                                             alt=tf.expand_dims(forecast[:,-1,:], axis=1),
+                                                             training=tf.keras.backend.learning_phase())
+                else:
+                    input = tf.expand_dims(forecast[:, -1, :], axis=1)
+
+                input = tf.concat([input,attention_context], axis=-1)
+                decoder_out, decoder_state, attention_context = self.decoder_step(input, decoder_state, attention_value)
+                forecast = self.project_and_concat(decoder_out, forecast, first_step=False)
+
+        return forecast
+
+
+    def decoder_step(self, input, decoder_state, attention_value):
+            # attention layers and assign those to the decoder states later.
+            signal = input
+
+            block_states = []
+            for num_block in range(len(self.decoder_blocks)):
+
+                # if self.use_attention:
+                #     query = tf.concat(decoder_state[num_block][-1] , axis=-1)
+                #     query = tf.expand_dims(query, axis=1)
+                #     if num_block == 0:
+                #         query = tf.concat([query, signal], axis=-1)
+                #     attention_context = self.attention_blocks[num_block](query, value=attention_value[num_block])
+                #     signal = tf.concat([signal, attention_context], axis=-1)
+                    
+                signal, block_state = self.decoder_blocks[num_block](signal, initial_states=[decoder_state[num_block]])
+                block_states.append(block_state[0])
+
+            if self.use_attention:
+                # query = tf.concat(block_states[-1][-1] , axis=-1)
+                # query = tf.expand_dims(query, axis=1)
+                # value = tf.concat(attention_value, axis=-1)
+                # attention_context = self.attention_blocks[0](query, value)
+                # signal = tf.concat([signal, attention_context], axis=-1)
+                query = signal
+                # query = tf.expand_dims(query, axis=1)
+                value = tf.concat(attention_value, axis=-1)
+                attention_context = self.attention_blocks[0](query, value)
+
+                attn_vector = tf.concat([attention_context, query], axis=-1)
+                attn_vector = self.attn_proj(attn_vector)
+                attn_vector = tf.tanh(attn_vector)
+
+            decoder_state = block_states
+            return attn_vector, decoder_state, attn_vector
+
+    def project_and_concat(self, unprocessed_timestep, previous_processed_timesteps, first_step=True):
+            if first_step:
+                return self.projection_layer(unprocessed_timestep)
+            else:
+                return tf.concat([previous_processed_timesteps, self.projection_layer(unprocessed_timestep)], axis=1)
+
 ########################################################################################################################
 class ForecasterModel(tf.keras.Model):
     def __init__(self,
@@ -1969,9 +2461,13 @@ class S2SModel(tf.keras.Model):
         self.out_steps = output_shape[-2]
         self.model_type = model_type
 
+        # if model_type == 'E-D':
+        #     self.encoder = block_LSTM(**encoder_specs)
+        #     self.decoder = decoder_LSTM_block(**decoder_specs)
+        # DELETE AFTER EXPERIMENTS
         if model_type == 'E-D':
-            self.encoder = block_LSTM(**encoder_specs)
-            self.decoder = decoder_LSTM_block(**decoder_specs)
+            self.encoder = old_block_LSTM(**encoder_specs)
+            self.decoder = old_decoder_LSTM_block(**decoder_specs)
         elif model_type == 'Transformer':
             self.encoder = Transformer_encoder(**encoder_specs)
             self.decoder = FFNN_decoder(**decoder_specs)
@@ -1996,6 +2492,33 @@ class S2SModel(tf.keras.Model):
                                     timesteps=self.out_steps,
                                     teacher=teacher[:,1:,:])
 
+        return forecast
+
+class MIMOModel(tf.keras.Model):
+    def __init__(self,
+                output_shape,
+                encoder_specs,
+                model_type,
+                projection_block=None,
+                ):
+        super().__init__()
+
+        self.out_steps = output_shape[-2]
+        if model_type == 'MiMo-LSTM':
+            self.encoder = old_block_LSTM(**encoder_specs)
+        self.squeeze_time = tf.keras.layers.Dense(self.out_steps)
+        self.projection_layer = projection_block
+
+    def call(self, inputs):
+        nwp_pv_input = inputs['nwp_pv_input']
+
+        forecast, _ = self.encoder(nwp_pv_input)
+
+        forecast = tf.transpose(forecast, perm=[0, 2, 1])
+        forecast = self.squeeze_time(forecast)
+        forecast = tf.transpose(forecast, perm=[0, 2, 1])
+
+        forecast = self.projection_layer(forecast)
         return forecast
 
 

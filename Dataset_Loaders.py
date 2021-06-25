@@ -118,10 +118,10 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
 
     print('fetching indices')
     train_indices, val_indices, test_indices = assign_samples_to_set(faults,
-                                                                     train_ratio=0.8,
+                                                                     train_ratio=0.7,
                                                                      sample_length=sw_len_samples+fc_len_samples,
-                                                                     val_seed=4,
-                                                                     test_seed=4,
+                                                                     val_seed=3,
+                                                                     test_seed=3,
                                                                      )
     print('fetches', len(train_indices), 'train samples, ', len(test_indices), 'test samples ', len(val_indices), 'val_samples')
 
@@ -137,7 +137,8 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
     def _features_to_example(nwp_input, historical_support_raw, ):
         historical_support_pdf = __convert_to_pdf(historical_support_raw, num_steps=support_steps + target_steps, num_tiles=target_tiles, min_max=history_min_max) # pdf for probability distribution thingie
         features = {'support': __create_float_feature(nwp_input.flatten()),
-                    'pdf_history': __create_float_feature(historical_support_pdf.flatten())}
+                    'pdf_history': __create_float_feature(historical_support_pdf.flatten()),
+                    'raw_history':__create_float_feature(historical_support_raw.flatten())}
         if 'pdf_history' not in features:
             print('missing pfd history for some fucken reason')
         if 'support' not in features:
@@ -238,7 +239,7 @@ def Create_full_dataset(dataset_name='Daniels_Dataset_1',
     dataset_info['target_shape'] = [fc_steps, fc_tiles]
     dataset_info['pdf_history_shape'] = [int((sw_len_samples+fc_len_samples)/(60)), fc_tiles]
     print('history pdf shape', dataset_info['pdf_history_shape'])
-    dataset_info['raw_history_shape'] = 0
+    dataset_info['raw_history_shape'] = sw_len_samples+fc_len_samples
 
     dataset_info['normalizer_value'] = np.amax(historical_pv) - np.amin(historical_pv)
 
@@ -606,6 +607,7 @@ def _get_weather_data(weather_data_folder):
         weather_mvts[:, axis] = np.where(faults == 1, mean, weather_mvts[:, axis])
     faults = np.expand_dims(faults, axis=-1)
     # weather_mvts = np.concatenate((weather_mvts, daytime_cos, daytime_sin, yeartime_cos, yeartime_sin, faults), axis=-1)
+    # weather_mvts = np.concatenate((weather_mvts, faults), axis=-1)
     return weather_mvts, [start_nwp, end_nwp], faults
 
 def _get_PV(path, start_end_date, profile_nbr=6): #getting the PV data

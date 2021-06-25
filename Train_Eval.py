@@ -154,7 +154,6 @@ class Model_Container():
 
         return results_dict
 
-    # ToDo: maybe build the model separately before when we call the experiment, and then in fine tune load the weights and go from there?
 
     def test(self):
         tf.keras.backend.clear_session() # make sure we are working clean
@@ -189,7 +188,8 @@ class Model_Container():
 
     def __build_model(self,
                       out_shape,
-                      support_shape, history_shape,
+                      support_shape, 
+                      history_shape,
                       input_shape=None,
                       forecast_mode='pdf',
                       model_type='MiMo-sth',
@@ -213,7 +213,8 @@ class Model_Container():
                       decoder_self_attention=False,
                       decoder_attention=False,
                       decoder_transformer_blocks=1,
-                      full_targets=True
+                      full_targets=True,
+                      use_gru=False,
                       ):
 
         if self.forecast_mode == 'pdf':
@@ -236,40 +237,25 @@ class Model_Container():
             print('wrong forecast mode flag, must be either pdf or ev')
 
         if model_type == 'MiMo-LSTM':
-            from Building_Blocks import block_LSTM
             encoder_specs = {'units': encoder_units,
+                            'num_encoder_blocks': encoder_transformer_blocks,
                              'use_dropout': use_dropout,
                              'dropout_rate': dropout_rate,
                              'use_norm': use_norm,
                              'use_hw': use_hw,
-                             'return_state': False}
+                             'use_residual': use_residual,
+                             'L1': L1, 'L2': L2,
+                             'return_state': False,
+                             'gru':use_gru,
+                             }
 
-            from Models import mimo_model
-            self.model = mimo_model(function_block=block_LSTM(**encoder_specs),
-                               input_shape=input_shape,
-                               output_shape=self.target_shape,
-                               downsample_input=downsample,
-                                projection_block=projection_block,
-                               downsampling_rate=(60 / 5),
-                               mode=mode)
+            from Building_Blocks import MIMOModel
+            self.model = MIMOModel(output_shape=self.target_shape,
+                                    encoder_specs=encoder_specs,
+                                    model_type=model_type,
+                                    projection_block=projection_block,)
 
-        elif model_type == 'MiMo-FFNN':
-            from Building_Blocks import FFW_block
-            encoder_specs = {'units': encoder_units,
-                             'use_dropout': use_dropout,
-                             'dropout_rate': dropout_rate,
-                             'use_norm': use_norm,}
-
-            from Models import mimo_model
-            self.model = mimo_model(function_block=FFW_block(**encoder_specs),
-                               input_shape=input_shape,
-                               output_shape=self.target_shape,
-                               downsample_input=downsample,
-                               downsampling_rate=(60 / 5),
-                               projection_block = projection_block,
-                               mode=mode)
-
-        elif model_type == 'Encoder-Decoder' or model_type == 'E-D':
+        elif model_type == 'Encoder-Decoder' or model_type == 'E-D' or model_type == 'E-D-luong':
             print('building E-D')
             encoder_specs = {'units': encoder_units,
                             'num_encoder_blocks': encoder_transformer_blocks,
@@ -278,7 +264,8 @@ class Model_Container():
                             'use_norm': use_norm,
                             'use_hw': use_hw,
                             'use_residual': use_residual,
-                            'L1': L1, 'L2': L2}
+                            'L1': L1, 'L2': L2,
+                            'gru':use_gru}
             decoder_specs = {'units': decoder_units,
                             'num_decoder_blocks': decoder_transformer_blocks,
                             'use_dropout': use_dropout,
@@ -287,6 +274,7 @@ class Model_Container():
                             'use_hw': use_hw,
                             'use_residual': use_residual,
                             'L1': L1, 'L2': L2,
+                            'gru':use_gru,
                             'use_attention': decoder_attention,
                             'attention_heads': attention_heads,
                             'projection_layer': projection_block}
@@ -577,7 +565,7 @@ class Model_Container():
             train_set = dataset.pdf_generator_training_dataset
             val_set = dataset.pdf_generator_val_dataset
             test_set = dataset.pdf_generator_test_dataset
-        elif 'E-D' in self.model_kwargs['model_type'] or self.model_kwargs['model_type'] == 'Transformer':
+        elif 'E-D' in self.model_kwargs['model_type'] or self.model_kwargs['model_type'] == 'Transformer' or 'MiMo' in self.model_kwargs['model_type']:
             train_set = dataset.pdf_s2s_training_dataset
             val_set = dataset.pdf_s2s_val_dataset
             test_set = dataset.pdf_s2s_test_dataset
@@ -587,7 +575,8 @@ class Model_Container():
         test_steps = dataset.get_test_steps_per_epoch()
 
         loss, metrics = self.get_losses_and_metrics()
-        optimizer = self.__get_optimizer(train_steps)
+        # optimizer = self.__get_optimizer(train_steps)
+        optimizer = tf.keras.optimizers.SGD(learning_rate=0.001, momentum=0.75, nesterov=True) # from previous setup
         self.model.compile(optimizer=optimizer,
                            loss=loss,
                            metrics=metrics)  # compile, print summary
@@ -625,7 +614,7 @@ class Model_Container():
 
         if 'Generator' in self.model_kwargs['model_type']:
             test_set = dataset.pdf_generator_test_dataset
-        elif 'E-D' in self.model_kwargs['model_type'] or self.model_kwargs['model_type'] == 'Transformer':
+        elif 'E-D' in self.model_kwargs['model_type'] or self.model_kwargs['model_type'] == 'Transformer' or 'MiMo' in self.model_kwargs['model_type']:
             test_set = dataset.pdf_s2s_test_dataset
 
         test_steps = dataset.get_test_steps_per_epoch()
@@ -851,39 +840,41 @@ class dataset_generator():
         return {'support_input': support_data,
                 'history_input': history_input}, target
 
-    #ToDo: fix those
     def get_s2s_train_sample(self, example):
         
-        features = {'support': tf.io.FixedLenFeature(self.flattened_support_shape, tf.float32),
-                    'raw_history': tf.io.FixedLenFeature(self.raw_history_shape, tf.float32),
-                    'pdf_history': tf.io.FixedLenFeature(self.flattened_historical_shape, tf.float32),
+        features = {'support': tf.io.FixedLenFeature(self.support_shape, tf.float32),
+                    'raw_history': tf.io.FixedLenFeature([self.raw_history_shape,1], tf.float32),
+                    'pdf_history': tf.io.FixedLenFeature(self.history_shape, tf.float32),
                     }
-                    # 'pdf_target': tf.io.FixedLenFeature(self.flattened_val_targets_shape, tf.float32),
-                    # 'pdf_teacher': tf.io.FixedLenFeature(self.flattened_val_targets_shape, tf.float32),
-                    # }
 
         raw_unprocessed_sample = tf.io.parse_single_example(example, features)
-
-        nwp_inputs = tf.reshape(tensor=raw_unprocessed_sample['support'], shape=self.support_shape)
-        history = tf.reshape(tensor=raw_unprocessed_sample['raw_history'], shape=self.raw_history_shape)
-        full_pdf_history = tf.reshape(tensor=raw_unprocessed_sample['pdf_history'], shape=self.history_shape)
+        nwp_inputs = raw_unprocessed_sample['support']
+        full_pdf_history = raw_unprocessed_sample['pdf_history']
+        history = raw_unprocessed_sample['raw_history']
 
         target = full_pdf_history[-self.val_target_shape[0]:,:]
         teacher = full_pdf_history[-(self.val_target_shape[0]+1):-1,:]
-        history_input =  full_pdf_history[:-self.val_target_shape[0],:]
 
-        # downsample both to (hourly) rate accodring to the target
-        history_downs_factor = int(history.shape[0]/full_pdf_history.shape[0])
-        nwp_downs_factor = int(nwp_inputs.shape[0]/full_pdf_history.shape[0])
-        nwp_inputs = nwp_inputs[::nwp_downs_factor,:]
+        # downsample to concat with nwp
+        history_downs_factor = int(history.shape[0]/nwp_inputs.shape[0])
+
         history = history[::history_downs_factor,:]
+
+        # shifted cutting off (including forecast)
+        nwp_inputs = nwp_inputs[self.val_target_shape[0]*4:,:]
+        history = history[:-self.val_target_shape[0]*4,:]
+
         # concat into one input
         inputs = tf.concat([nwp_inputs,history], axis=-1)
-        # cut off until target
-        inputs = inputs[:-self.val_target_shape[0],:]
+
+        # non shifted cut off
+        # inputs = inputs[:-self.val_target_shape[0]*4,:] # 24*4 for 15 minute samples
+
+        print('SHAPES', inputs.shape, target.shape)
 
         # ATM sampling last 2days plus forecast day from NWP and last 2 days from history
-        return {'nwp_pv_input': inputs}, target
+        return {'nwp_pv_input': inputs,
+                'teacher':teacher}, target
 
     def __calculate_expected_value(self, signal, last_output_dim_size):
         indices = tf.range(last_output_dim_size)  # (last_output_dim_size)

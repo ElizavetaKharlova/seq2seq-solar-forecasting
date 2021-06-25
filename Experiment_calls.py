@@ -24,6 +24,7 @@ def do_experiment(model_type,
                 positional_embedding=True,
                 use_residual=True,
                 use_norm=True,
+                use_gru=False,
                 #ToDo: format this a little better ...
                   # what happens when fine-tune is true but we only have one folder
                   # what happens when it is false and we have several folders
@@ -67,15 +68,16 @@ def do_experiment(model_type,
                         'force_relevant_context': False,
                         'use_dense': False,
                         'use_residual': use_residual,
+                        'use_gru': use_gru,
                         # 'downsample': False, 'mode': 'project',
 
                     # Regularization Hyperparameters
                         # 'use_dropout' : False, 'dropout_rate' : 0.0,
-                        'L1': 0.0, 'L2': 1e-6,
+                        'L1': 0.0, 'L2': 0.0, #1e-6,
                         'use_norm' : use_norm,
                     }
 
-    train_kwargs = {'batch_size': 2**6+2**5,
+    train_kwargs = {'batch_size': 2**7,
                     'mode': mode}
     runs = 1
     metrics = {}
@@ -126,7 +128,7 @@ def do_experiment(model_type,
             print(key, ': ', metrics[key])
 
 
-    with open(experiment_name+'.pickle', 'wb') as handle:
+    with open('exp/'+experiment_name+'.pickle', 'wb') as handle:
         pickle.dump(metrics, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
    # __plot_training_curves(metrics, experiment_name=experiment_name)
@@ -201,23 +203,71 @@ def __plot_training_curves(metrics, experiment_name):
 
 #########################################################################################################################
 # Perform experiments. 
-# TODO: consider doing parameter changes for same models. 
 
 experiments = []
+# dataset_list = ['thesis_dataset_3-3', 'thesis_dataset_3-4', 'thesis_dataset_42-43'] #'thesis_dataset',
+dataset_name = 'thesis_dataset'
+# for dataset_name in dataset_list:
 
-# # LSTM encoder-decoder with attention.
-# experiments.append({'model_type': 'E-D',
-#                     'exp_name': 'S2S-3x-12H-256',
-#                     'encoder_units':16,
-#                     'encoder_transformer_blocks': 1,
-#                     'decoder_units': 16,
-#                     'decoder_attention': True,
-#                     'decoder_transformer_blocks': 1,
-#                     'attention_heads': 3,
-#                     'fine_tune': False,
-#                     'test': False,
-#                     'dataset_path_list': ['egauge2474grid', 'egauge4183grid'], #, '/media/elizaveta/Seagate Portable Drive/egauge22785solar+'],
-#                     })
+    # experiments.append({'model_type': 'E-D-luong',
+    #                             'exp_name': 'S2S-ATTN-Luong_2x110'+'_shifted_SW'+'_TF_'+dataset_name,
+    #                             'encoder_units':110,
+    #                             'encoder_transformer_blocks': 2,
+    #                             'decoder_units': 110,
+    #                             'decoder_attention': True,
+    #                             'decoder_transformer_blocks': 2,
+    #                             'attention_heads': 1,
+    #                             'mode': 'normal',
+    #                             'use_residual':False,
+    #                             'full_targets':False,
+    #                             'use_gru':False,
+    #                             'dataset_path_list': ['./'+dataset_name]#['/media/elizaveta/Seagate Portable Drive/egauge2474solar+'] #, 'egauge4183grid'], #, '/media/elizaveta/Seagate Portable Drive/egauge22785solar+'],
+    #                             })
+
+experiments.append({'model_type': 'E-D',
+                                'exp_name': 'S2S-ATTN_2x110'+'_shifted_SW'+'_TF_'+dataset_name, 
+                                'encoder_units':110,
+                                'encoder_transformer_blocks': 2,
+                                'decoder_units': 110,
+                                'decoder_attention': True,
+                                'decoder_transformer_blocks': 2,
+                                'attention_heads': 1,
+                                'mode': 'normal',
+                                'use_residual':False,
+                                'full_targets':False,
+                                'use_gru':False,
+                                'dataset_path_list': ['./'+dataset_name]
+                                })
+
+experiments.append({'model_type': 'E-D',
+                                'exp_name': 'S2S_2x128'+'_shifted_SW'+'_TF_'+dataset_name,
+                                'encoder_units':128,
+                                'encoder_transformer_blocks': 2,
+                                'decoder_units': 128,
+                                'decoder_attention': False,
+                                'decoder_transformer_blocks': 2,
+                                'attention_heads': 1,
+                                'mode': 'normal',
+                                'use_residual':False,
+                                'full_targets':False,
+                                'use_gru':False,
+                                'dataset_path_list': ['./'+dataset_name]
+                                })
+
+experiments.append({'model_type': 'MiMo-LSTM',
+                                'exp_name': 'LSTM_2x184'+'_shifted_SW'+'_TF_'+dataset_name,
+                                'encoder_units':184,
+                                'encoder_transformer_blocks': 2,
+                                'decoder_units': 184,
+                                'decoder_attention': False,
+                                'decoder_transformer_blocks': 2,
+                                'attention_heads': 1,
+                                'mode': 'normal',
+                                'use_residual':False,
+                                'full_targets':False,
+                                'use_gru':False,
+                                'dataset_path_list': ['./'+dataset_name]
+                                })
 #
 # # Classic Transformer.
 # experiments.append({'model_type': 'Transformer',
@@ -335,30 +385,29 @@ experiments = []
 #                     })
 
 # Generator with full targets: supposed to be best!
-experiments.append({'model_type': 'FFNN-Generator',
-                    'exp_name': 'FFNNGen_Edmonton_ThomasOldPipeline',
-                    'full_targets': True, # only set for full target
-                    'encoder_units': 256, #256
-                     'encoder_self_attention': True,
-                    'encoder_transformer_blocks': 1,
-                    'decoder_units': 256, #256
-                    'decoder_self_attention': True,
-                    'decoder_attention': True,
-                    'decoder_transformer_blocks': 3, #3
-                    'attention_heads': 12, #12
-                    'positional_embedding': True,
-                    'use_residual': True,
-                    'use_norm': True,
-                    'mode': 'normal',
-                    'dataset_path_list': ['Daniels_Dataset_1'],
-                    })
+# experiments.append({'model_type': 'FFNN-Generator',
+#                     'exp_name': 'FFNNGen_Edmonton_ThomasOldPipeline',
+#                     'full_targets': True, # only set for full target
+#                     'encoder_units': 256, #256
+#                      'encoder_self_attention': True,
+#                     'encoder_transformer_blocks': 1,
+#                     'decoder_units': 256, #256
+#                     'decoder_self_attention': True,
+#                     'decoder_attention': True,
+#                     'decoder_transformer_blocks': 3, #3
+#                     'attention_heads': 12, #12
+#                     'positional_embedding': True,
+#                     'use_residual': True,
+#                     'use_norm': True,
+#                     'mode': 'normal',
+#                     'dataset_path_list': ['Daniels_Dataset_1'],
+#                     })
 
 
 # do our experiments
 for exp_args in experiments: 
     do_experiment(**exp_args)
     # test on the new dataset
-    do_experiment(**exp_args)
     # exp_args['mode'] = 'test'
     # exp_args['dataset_path_list'] = ['/media/elizaveta/Seagate Portable Drive/egauge22785solar+']  # TODO: CHANGE DATASET NAMES HERE
     # do_experiment(**exp_args)

@@ -334,39 +334,8 @@ class Model_Container():
             self.model = ForecasterModel(output_shape=self.target_shape,
                                         encoder_specs=encoder_specs,
                                         decoder_specs=decoder_specs,
-                                        model_type='LSTM')
+                                        model_type='LSTM-Generator')
 
-        elif model_type=='CNN-Generator':
-            decoder_specs = {'num_initial_features': decoder_units,
-                             'max_length_sequence': decoder_max_length_sequence,
-                             'length_receptive_window': decoder_receptive_window,
-                             'attention_heads': attention_heads,
-                             'use_residual': use_residual,
-                             'use_norm': use_norm,
-                             'use_dense': use_dense,
-                             'force_relevant_context': force_relevant_context,
-                             'attention_squeeze': 0.5,
-                             'use_self_attention': decoder_self_attention,
-                             'transformer_blocks': decoder_transformer_blocks,
-                             'positional_embedding': positional_embedding,
-                             'projection_layer': projection_block}
-            encoder_specs = {'num_initial_features': encoder_units,
-                             'max_length_sequence': encoder_max_length_sequence,
-                             'length_receptive_window': encoder_receptive_window,
-                             'use_residual': use_residual,
-                             'use_norm': use_norm,
-                             'use_dense': use_dense,
-                             'force_relevant_context': force_relevant_context,
-                             'attention_heads': attention_heads,
-                             'use_self_attention': encoder_self_attention,
-                             'transformer_blocks': encoder_transformer_blocks,
-                              'positional_embedding': positional_embedding,
-                             'attention_squeeze': 0.5}
-            from Building_Blocks import ForecasterModel
-            self.model = ForecasterModel(output_shape=self.target_shape,
-                                        encoder_specs=encoder_specs,
-                                        decoder_specs=decoder_specs,
-                                        model_type=model_type)
         elif model_type == 'FFNN-Generator':
             from Building_Blocks import FFNN_encoder, FFNN_decoder
             # decoder: width=256, depth=3, attention_heads=3, norm=True, attention_squeeze=0.5, L1=0.0, L2=0.0, projection_layer=None)
@@ -550,7 +519,7 @@ class Model_Container():
 
     def __train_model(self):
 
-        epochs = 100
+        epochs = 1
         dataset = dataset_generator(dataset_path_list=self.dataset_path_list,
                               train_batch_size=self.train_kwargs['batch_size'],
                               support_shape=self.model_kwargs['support_shape'],
@@ -570,9 +539,12 @@ class Model_Container():
             val_set = dataset.pdf_s2s_val_dataset
             test_set = dataset.pdf_s2s_test_dataset
 
-        train_steps = dataset.get_train_steps_per_epoch()
-        val_steps = dataset.get_val_steps_per_epoch()
-        test_steps = dataset.get_test_steps_per_epoch()
+        # train_steps = dataset.get_train_steps_per_epoch()
+        # val_steps = dataset.get_val_steps_per_epoch()
+        # test_steps = dataset.get_test_steps_per_epoch()
+        train_steps = 100
+        val_steps = 10
+        test_steps = 10
 
         loss, metrics = self.get_losses_and_metrics()
         # optimizer = self.__get_optimizer(train_steps)
@@ -735,7 +707,7 @@ class dataset_generator():
 
         self.support_shape = support_shape
         self.history_shape = history_shape
-        self.raw_history_shape = raw_history_shape
+        self.raw_history_shape = raw_history_shape if isinstance(raw_history_shape, int) else raw_history_shape[0]
         self.train_target_shape = train_target_shape if train_target_shape is not None else self.history_shape
         self.val_target_shape = val_target_shape
         self.dataset_info = dataset_info
@@ -833,6 +805,9 @@ class dataset_generator():
 
         if self.full_targets:
             target = full_pdf_history[1:, :] # for predicting full targets vs. last 24 steps
+        else:
+            target_shape = self.dataset_info['fc_steps']
+            target = full_pdf_history[-target_shape:,:]
 
         history_input =  full_pdf_history[:-1,:]
 
@@ -841,7 +816,7 @@ class dataset_generator():
                 'history_input': history_input}, target
 
     def get_s2s_train_sample(self, example):
-        
+
         features = {'support': tf.io.FixedLenFeature(self.support_shape, tf.float32),
                     'raw_history': tf.io.FixedLenFeature([self.raw_history_shape,1], tf.float32),
                     'pdf_history': tf.io.FixedLenFeature(self.history_shape, tf.float32),

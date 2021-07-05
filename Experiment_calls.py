@@ -25,16 +25,6 @@ def do_experiment(model_type,
                 use_residual=True,
                 use_norm=True,
                 use_gru=False,
-                #ToDo: format this a little better ...
-                  # what happens when fine-tune is true but we only have one folder
-                  # what happens when it is false and we have several folders
-                  # how do we evaluate on several datasets?
-                  # etc
-                  # maybe have a fine-tune dataset and a pretrain dataset handle?
-                  # fine_tune dataset not none --> finetune on this
-                    # --> which model do we load for fine-tuning?
-                  # pretrain is a list of datasets --> pretrain on those
-                    # --> what do we evaluate the pretrained model on? all the sets and then the fine tune set?
                 mode='fine-tune', # normal, pre-train or fine-tune or test
                 dataset_path_list=None,
                 ):
@@ -77,7 +67,7 @@ def do_experiment(model_type,
                         'use_norm' : use_norm,
                     }
 
-    train_kwargs = {'batch_size': 2**7,
+    train_kwargs = {'batch_size': 2**5,
                     'mode': mode}
     runs = 1
     metrics = {}
@@ -205,69 +195,67 @@ def __plot_training_curves(metrics, experiment_name):
 # Perform experiments. 
 
 experiments = []
-# dataset_list = ['thesis_dataset_3-3', 'thesis_dataset_3-4', 'thesis_dataset_42-43'] #'thesis_dataset',
 dataset_name = 'thesis_dataset'
-# for dataset_name in dataset_list:
 
-    # experiments.append({'model_type': 'E-D-luong',
-    #                             'exp_name': 'S2S-ATTN-Luong_2x110'+'_shifted_SW'+'_TF_'+dataset_name,
-    #                             'encoder_units':110,
-    #                             'encoder_transformer_blocks': 2,
-    #                             'decoder_units': 110,
-    #                             'decoder_attention': True,
-    #                             'decoder_transformer_blocks': 2,
-    #                             'attention_heads': 1,
-    #                             'mode': 'normal',
-    #                             'use_residual':False,
-    #                             'full_targets':False,
-    #                             'use_gru':False,
-    #                             'dataset_path_list': ['./'+dataset_name]#['/media/elizaveta/Seagate Portable Drive/egauge2474solar+'] #, 'egauge4183grid'], #, '/media/elizaveta/Seagate Portable Drive/egauge22785solar+'],
-    #                             })
+# experiments.append({'model_type': 'E-D-luong',
+#                                 'exp_name': 'S2S-ATTN-Luong_2x110'+'_shifted_SW'+'_TF_'+dataset_name,
+#                                 'encoder_units':110,
+#                                 'encoder_transformer_blocks': 2,
+#                                 'decoder_units': 110,
+#                                 'decoder_attention': True,
+#                                 'decoder_transformer_blocks': 2,
+#                                 'attention_heads': 1,
+#                                 'mode': 'normal',
+#                                 'use_residual':False,
+#                                 'full_targets':False,
+#                                 'use_gru':False,
+#                                 'dataset_path_list': ['./'+dataset_name]#['/media/elizaveta/Seagate Portable Drive/egauge2474solar+'] #, 'egauge4183grid'], #, '/media/elizaveta/Seagate Portable Drive/egauge22785solar+'],
+#                                 })
 
 experiments.append({'model_type': 'E-D',
-                                'exp_name': 'S2S-ATTN_2x110'+'_shifted_SW'+'_TF_'+dataset_name, 
+                                'exp_name': 'S2S-ATTN_2x110'+'_shifted_SW'+'_noTF_'+dataset_name, 
                                 'encoder_units':110,
                                 'encoder_transformer_blocks': 2,
                                 'decoder_units': 110,
                                 'decoder_attention': True,
                                 'decoder_transformer_blocks': 2,
                                 'attention_heads': 1,
-                                'mode': 'normal',
+                                'mode': 'test',
                                 'use_residual':False,
                                 'full_targets':False,
                                 'use_gru':False,
                                 'dataset_path_list': ['./'+dataset_name]
                                 })
 
-experiments.append({'model_type': 'E-D',
-                                'exp_name': 'S2S_2x128'+'_shifted_SW'+'_TF_'+dataset_name,
-                                'encoder_units':128,
-                                'encoder_transformer_blocks': 2,
-                                'decoder_units': 128,
-                                'decoder_attention': False,
-                                'decoder_transformer_blocks': 2,
-                                'attention_heads': 1,
-                                'mode': 'normal',
-                                'use_residual':False,
-                                'full_targets':False,
-                                'use_gru':False,
-                                'dataset_path_list': ['./'+dataset_name]
-                                })
+# experiments.append({'model_type': 'E-D',
+#                                 'exp_name': 'S2S_2x128'+'_shifted_SW'+'_TF_'+dataset_name,
+#                                 'encoder_units':128,
+#                                 'encoder_transformer_blocks': 2,
+#                                 'decoder_units': 128,
+#                                 'decoder_attention': False,
+#                                 'decoder_transformer_blocks': 2,
+#                                 'attention_heads': 1,
+#                                 'mode': 'normal',
+#                                 'use_residual':False,
+#                                 'full_targets':False,
+#                                 'use_gru':False,
+#                                 'dataset_path_list': ['./'+dataset_name]
+#                                 })
 
-experiments.append({'model_type': 'MiMo-LSTM',
-                                'exp_name': 'LSTM_2x184'+'_shifted_SW'+'_TF_'+dataset_name,
-                                'encoder_units':184,
-                                'encoder_transformer_blocks': 2,
-                                'decoder_units': 184,
-                                'decoder_attention': False,
-                                'decoder_transformer_blocks': 2,
-                                'attention_heads': 1,
-                                'mode': 'normal',
-                                'use_residual':False,
-                                'full_targets':False,
-                                'use_gru':False,
-                                'dataset_path_list': ['./'+dataset_name]
-                                })
+# experiments.append({'model_type': 'MiMo-LSTM',
+#                                 'exp_name': 'LSTM_2x184'+'_shifted_SW'+'_TF_'+dataset_name,
+#                                 'encoder_units':184,
+#                                 'encoder_transformer_blocks': 2,
+#                                 'decoder_units': 184,
+#                                 'decoder_attention': False,
+#                                 'decoder_transformer_blocks': 2,
+#                                 'attention_heads': 1,
+#                                 'mode': 'normal',
+#                                 'use_residual':False,
+#                                 'full_targets':False,
+#                                 'use_gru':False,
+#                                 'dataset_path_list': ['./'+dataset_name]
+#                                 })
 #
 # # Classic Transformer.
 # experiments.append({'model_type': 'Transformer',
@@ -282,12 +270,14 @@ experiments.append({'model_type': 'MiMo-LSTM',
 #                     'attention_heads': 12,
 #                     'positional_embedding': True,
 #                     'use_residual': True,
-#                     'use_norm': True,})
+#                     'use_norm': True,
+#                     'mode': 'normal',
+#                     'dataset_path_list': ['/media/elizaveta/Seagate Portable Drive/egauge2474solar+'],})
 #
 # # Transformer encoder + generator.
 # experiments.append({'model_type': 'Transformer-Generator',
 #                     'exp_name': 'Transformer-Gen-3x-12H-256',
-#                     # 'target_size': 'full', # set for full target case
+#                     # 'full_targets': True, # set for full target case
 #                     'encoder_units': 256,
 #                     'encoder_self_attention': True,
 #                     'encoder_transformer_blocks': 3,
@@ -303,7 +293,7 @@ experiments.append({'model_type': 'MiMo-LSTM',
 # # Transformer encoder + generator with full targets
 # experiments.append({'model_type': 'Transformer-Generator',
 #                     'exp_name': 'Transformer-Gen-3x-12H-256-full-targets',
-#                     'target_size': 'full', # set for full target case
+#                     'full_targets': True, # set for full target case
 #                     'encoder_units': 256,
 #                     'encoder_self_attention': True,
 #                     'encoder_transformer_blocks': 3,
@@ -314,12 +304,14 @@ experiments.append({'model_type': 'MiMo-LSTM',
 #                     'attention_heads': 12,
 #                     'positional_embedding': True,
 #                     'use_residual': True,
-#                     'use_norm': True,})
+#                     'use_norm': True,
+#                     'mode': 'normal',
+#                     'dataset_path_list': ['/media/elizaveta/Seagate Portable Drive/egauge2474solar+'],})
 #
 # # Generator with full targets and with NO encoder.
 # experiments.append({'model_type': 'FFNN-Generator',
 #                     'exp_name': 'FFNNGen-3x-12H-256-NoFeatures-full-targets',
-#                     'target_size': 'full', # only set for full target
+#                     'full_targets': True, # only set for full target
 #                     'encoder_units': 256,
 #                     'encoder_self_attention': True,
 #                     'encoder_transformer_blocks': 1,
@@ -331,12 +323,14 @@ experiments.append({'model_type': 'MiMo-LSTM',
 #                     'positional_embedding': True,
 #                     'use_residual': True,
 #                     'use_norm': True,
+#                     'mode': 'normal',
+#                     'dataset_path_list': ['/media/elizaveta/Seagate Portable Drive/egauge2474solar+'],
 #                     })
 #
 # # Generator with LSTM instead of SA and full targets.
 # experiments.append({'model_type': 'FFNN-LSTM-Generator',
 #                     'exp_name': 'FFNN-LSTM-Gen-3x-3H-256-full-targets',
-#                     'target_size': 'full', # only set for full target
+#                     'full_targets': True, # only set for full target
 #                     'encoder_units': 256,
 #                     'encoder_self_attention': True,
 #                     'encoder_transformer_blocks': 1,
@@ -348,12 +342,14 @@ experiments.append({'model_type': 'MiMo-LSTM',
 #                     'positional_embedding': True,
 #                     'use_residual': True,
 #                     'use_norm': True,
+                    # 'mode': 'normal',
+                    # 'dataset_path_list': ['/media/elizaveta/Seagate Portable Drive/egauge2474solar+'],
 #                     })
 #
 # # Generator with LSTM instead of SA and NO encoder. (full targets)
 # experiments.append({'model_type': 'FFNN-LSTM-Generator',
 #                     'exp_name': 'FFNN-LSTM-Gen-3x-12H-256-NoFeatures-full-targets',
-#                     'target_size': 'full', # only set for full target
+#                     'full_targets': True, # only set for full target
 #                     'encoder_units': 256,
 #                     'encoder_self_attention': True,
 #                     'encoder_transformer_blocks': 1,
@@ -382,6 +378,8 @@ experiments.append({'model_type': 'MiMo-LSTM',
 #                     'positional_embedding': True,
 #                     'use_residual': True,
 #                     'use_norm': True,
+#                     'mode': 'normal',
+#                     'dataset_path_list': ['/media/elizaveta/Seagate Portable Drive/egauge2474solar+'],
 #                     })
 
 # Generator with full targets: supposed to be best!
@@ -389,7 +387,7 @@ experiments.append({'model_type': 'MiMo-LSTM',
 #                     'exp_name': 'FFNNGen_Edmonton_ThomasOldPipeline',
 #                     'full_targets': True, # only set for full target
 #                     'encoder_units': 256, #256
-#                      'encoder_self_attention': True,
+#                     'encoder_self_attention': True,
 #                     'encoder_transformer_blocks': 1,
 #                     'decoder_units': 256, #256
 #                     'decoder_self_attention': True,
@@ -400,7 +398,25 @@ experiments.append({'model_type': 'MiMo-LSTM',
 #                     'use_residual': True,
 #                     'use_norm': True,
 #                     'mode': 'normal',
-#                     'dataset_path_list': ['Daniels_Dataset_1'],
+#                     'dataset_path_list': ['/media/elizaveta/Seagate Portable Drive/egauge2474solar+'],
+#                     })
+
+# experiments.append({'model_type': 'LSTM-Generator',
+#                     'exp_name': 'FFNNGen_Edmonton_ThomasOldPipeline',
+#                     'full_targets': False, # only set for full target
+#                     'encoder_units': 256, #256
+#                     'encoder_self_attention': True,
+#                     'encoder_transformer_blocks': 1,
+#                     'decoder_units': 256, #256
+#                     'decoder_self_attention': True,
+#                     'decoder_attention': True,
+#                     'decoder_transformer_blocks': 3, #3
+#                     'attention_heads': 12, #12
+#                     'positional_embedding': True,
+#                     'use_residual': True,
+#                     'use_norm': True,
+#                     'mode': 'normal',
+#                     'dataset_path_list': ['/media/elizaveta/Seagate Portable Drive/egauge2474solar+'],
 #                     })
 
 

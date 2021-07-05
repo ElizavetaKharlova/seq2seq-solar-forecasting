@@ -118,15 +118,9 @@ class Model_Container():
         tf.keras.backend.clear_session() # make sure we are working clean
 
         self.metrics = {}
-        # # cross_ops = tf.distribute.ReductionToOneDevice()
-        # cross_ops = tf.distribute.HierarchicalCopyAllReduce()
-        # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
-        #
-        # with strategy.scope():
-
 
         self.__build_model(**self.model_kwargs)
-
+        # for fine-tuning mode, find the pre-trained model
         if self.train_kwargs['mode'] == 'fine-tune':
             pretrain_folder = self.folder_name + '-pre-trained' # to extract the weights
             self.experiment_name = self.experiment_name + '-fine-tuned' + self.dataset_path_list[0] # to save tboard logs
@@ -136,13 +130,13 @@ class Model_Container():
             else:
                 print('...Loading model weights from checkpoint...', pretrain_folder)
                 self.model.load_weights(pretrain_folder + "/model_ckpt")
-
+        # save the model in pre-trained folder
         elif self.train_kwargs['mode'] == 'pre-train':
             self.experiment_name = self.experiment_name + '-pre-trained' # to save tboard logs
             self.folder_name = self.folder_name + '-pre-trained' # to save pre-trained model
-
+        # train
         train_history, test_results = self.__train_model()
-
+        # save
         print('Saving model to ...', self.folder_name)
         self.model.save_weights(self.folder_name + "/model_ckpt")
 
@@ -159,13 +153,8 @@ class Model_Container():
         tf.keras.backend.clear_session() # make sure we are working clean
 
         self.metrics = {}
-        # # cross_ops = tf.distribute.ReductionToOneDevice()
-        # cross_ops = tf.distribute.HierarchicalCopyAllReduce()
-        # strategy = tf.distribute.MirroredStrategy(cross_device_ops=cross_ops)
-        #
-        # with strategy.scope():
-
-        pretrain_folder = self.folder_name + '-pre-trained' # to extract the weights
+        # test pre-trained model
+        pretrain_folder = self.folder_name # + '-pre-trained' # to extract the weights
 
         if not os.path.isdir('./'+pretrain_folder): # if there are no weights in the folder 
             print('There is an error with finding model checkpoint. Folder', pretrain_folder, 'or', self.folder_name, 'does not exist.')
@@ -176,7 +165,7 @@ class Model_Container():
         self.model.load_weights(pretrain_folder + "/model_ckpt").expect_partial()
 
         self.experiment_name = self.experiment_name + 'test' # to save tboard logs
-
+        # test
         test_results = self.__test_model()
         del self.model
         tf.keras.backend.clear_session()
@@ -216,7 +205,7 @@ class Model_Container():
                       full_targets=True,
                       use_gru=False,
                       ):
-
+        # get projection layer
         if self.forecast_mode == 'pdf':
             projection_block = tf.keras.layers.Conv1D(filters=self.target_shape[-1],
                                                     kernel_size=1,
@@ -236,6 +225,7 @@ class Model_Container():
         else:
             print('wrong forecast mode flag, must be either pdf or ev')
 
+        # initialize the model
         if model_type == 'MiMo-LSTM':
             encoder_specs = {'units': encoder_units,
                             'num_encoder_blocks': encoder_transformer_blocks,
@@ -327,7 +317,7 @@ class Model_Container():
             encoder_specs['units'] = encoder_units
             decoder_specs = copy.deepcopy(common_specs)
             decoder_specs['units'] = decoder_units
-            decoder_specs['use_attention'] = use_attention
+            decoder_specs['use_attention'] = decoder_attention
             decoder_specs['attention_heads'] = attention_heads
             decoder_specs['projection_layer'] = projection_block
 
@@ -444,7 +434,6 @@ class Model_Container():
             print('trying to buid', model_type, 'but failed')
 
     def get_losses_and_metrics(self):
-
         # assign the losses depending on scenario
         if self.forecast_mode is not 'pdf' and self.forecast_mode is not 'ev':
             print('forecast mode was not specified as either <pdf> or <ev>, no idea how compilation got this far but expect some issues!!')
@@ -511,14 +500,10 @@ class Model_Container():
                                              beta_2=0.98,
                                              epsilon=1e-9)
 
-        # optimizer = tfa.optimizers.SWA(optimizer,
-        #                                start_averaging=int(warmup_steps),
-        #                                average_period=int(max(20, train_steps / 100)),
-        #                                sequential_update=True)
         return optimizer
 
     def __train_model(self):
-
+        # get the dataset and fit the model
         epochs = 1
         dataset = dataset_generator(dataset_path_list=self.dataset_path_list,
                               train_batch_size=self.train_kwargs['batch_size'],
@@ -549,10 +534,12 @@ class Model_Container():
         loss, metrics = self.get_losses_and_metrics()
         # optimizer = self.__get_optimizer(train_steps)
         optimizer = tf.keras.optimizers.SGD(learning_rate=0.001, momentum=0.75, nesterov=True) # from previous setup
+
+        # compile
         self.model.compile(optimizer=optimizer,
                            loss=loss,
-                           metrics=metrics)  # compile, print summary
-
+                           metrics=metrics) 
+        # train
         print('starting to train model')
         train_history = self.model.fit(train_set(),
                                         steps_per_epoch=train_steps,
@@ -561,8 +548,7 @@ class Model_Container():
                                         validation_data=val_set(),
                                         validation_steps=val_steps,
                                         callbacks=self.__get_callbacks(tboard=True))
-
-        # ToDo: why do we test here if we also have a class that is called test??
+        # test
         test_results = self.model.evaluate(test_set(),
                                            steps=test_steps,
                                             verbose=2)
@@ -571,9 +557,8 @@ class Model_Container():
 
         return train_history.history, test_results
 
-    #ToDO: avoid loading the same datasset multiple times, we should move this to its own function call, make a self.dataset and then refer to this?!
     def __test_model(self):
-
+        # evaluate without training
         dataset = dataset_generator(dataset_path_list=self.dataset_path_list,
                               train_batch_size=self.train_kwargs['batch_size'],
                               support_shape=self.model_kwargs['support_shape'],
@@ -591,9 +576,9 @@ class Model_Container():
 
         test_steps = dataset.get_test_steps_per_epoch()
 
-        # Transformer LR schedule, doesnt work .... too fast
-        # ToDO: what do we need the optimizer for?
-        optimizer = tf.keras.optimizers.Adam(1e-9, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        # Transformer LR schedule
+        # optimizer = tf.keras.optimizers.Adam(1e-9, beta_1=0.9, beta_2=0.98, epsilon=1e-9)
+        optimizer = tf.keras.optimizers.SGD(learning_rate=0.001, momentum=0.75, nesterov=True) # from previous setup
         loss, metrics = self.get_losses_and_metrics()
 
         self.model.compile(optimizer=optimizer, loss=loss, metrics=metrics)  # compile, print summary
@@ -608,7 +593,7 @@ class Model_Container():
 
 
     def __manage_metrics(self, train_history, test_results):
-
+        # process metrics, calculate skill scores
         results_dict = {}
         results_dict['test_loss'] = test_results[0]
         results_dict['test_nME'] = test_results[1]
@@ -638,7 +623,7 @@ class Model_Container():
         return results_dict
 
     def __manage_test_metrics(self, test_results):
-
+        # process metrics, calculate skill scores
         results_dict = {}
         results_dict['test_loss'] = test_results[0]
         results_dict['test_nME'] = test_results[1]
@@ -688,8 +673,10 @@ class CustomSchedule(tf.keras.optimizers.schedules.LearningRateSchedule):
 
         return tf.math.rsqrt(self.d_model) * tf.math.minimum(arg1, arg2)
 
-#ToDo: Rewrite the keras model checkpoint callback to give back and average the last 5 weights!!
 class dataset_generator():
+    '''
+    Load and process TFRecord dataset samples.
+    '''
     def __init__(self,
                  dataset_path_list=None,
                  train_batch_size=None,
@@ -747,7 +734,6 @@ class dataset_generator():
         test_list = self.__get_all_tfrecords_in_folder(self.test_sets)
         return int(np.ceil(len(test_list) / self.val_batch_size))
 
-    # Turn this into get the different types of datasets for generator etc
 
     def pdf_generator_training_dataset(self):
         return self.__dataset_from_folder_and_sample(file_list=self.__get_all_tfrecords_in_folder(self.train_sets),
@@ -781,6 +767,7 @@ class dataset_generator():
 
 
     def get_pdf_generator_inference_sample(self, example):
+        # process one data sample for generator inference
         features = {'support': tf.io.FixedLenFeature(self.flattened_support_shape, tf.float32),
                     'pdf_history': tf.io.FixedLenFeature(self.flattened_historical_shape, tf.float32),
                     }
@@ -795,6 +782,7 @@ class dataset_generator():
                 'history_input': history_input}, target
 
     def get_pdf_generator_train_sample(self, example):
+        # process one data sample for generator training
         features = {
         'support': tf.io.FixedLenFeature(self.flattened_support_shape, tf.float32),
         'pdf_history': tf.io.FixedLenFeature(self.flattened_historical_shape, tf.float32),}
@@ -816,7 +804,7 @@ class dataset_generator():
                 'history_input': history_input}, target
 
     def get_s2s_train_sample(self, example):
-
+        # process one data sample for s2s model 
         features = {'support': tf.io.FixedLenFeature(self.support_shape, tf.float32),
                     'raw_history': tf.io.FixedLenFeature([self.raw_history_shape,1], tf.float32),
                     'pdf_history': tf.io.FixedLenFeature(self.history_shape, tf.float32),

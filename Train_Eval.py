@@ -420,7 +420,6 @@ class Model_Container():
                              'use_norm': use_norm,
                             #  'force_relevant_context': force_relevant_context,
                              'attention_heads': attention_heads,
-                            #  'use_self_attention': encoder_self_attention,
                              'transformer_blocks': encoder_transformer_blocks,
                              'positional_embedding': positional_embedding,}
             from Building_Blocks import ForecasterModel
